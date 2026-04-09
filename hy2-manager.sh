@@ -1,138 +1,159 @@
-<?php
+#!/bin/bash
+# ================================================
+# Hysteria 2 Manager v2.0
+# Управление пользователями, статистика, IP-трекинг
+# Сроки действия, защита от утечек
+# ================================================
 
-namespace App\Repository\ServerPingRepository;
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-trait StatusTrait
-{
-    /**
-     * Сохранить статус сервера
-     * Эффективно: не дублирует данные если они не изменились
-     */
-    public function saveStatus(int $itemId, array $data): bool
-    {
-        // Получаем последний статус
-        $last = $this->getLastStatus($itemId);
-        
-        // Проверяем, изменились ли данные
-        $hasChanged = $this->hasStatusChanged($last, $data);
-        
-        // Обновляем текущий статус в user_folder_items
-        $this->updateItemStatus($itemId, $data);
-        
-        // Записываем в историю
-        if ($hasChanged) {
-            // Полная запись с новыми данными
-            $this->insertHistoryRecord($itemId, $data, false);
-        } else {
-            // Только отметка времени (данные те же)
-            $this->insertHistoryRecord($itemId, $data, true);
-        }
-        
-        return true;
-    }
-    
-    /**
-     * Получить последний статус сервера
-     */
-    public function getLastStatus(int $itemId): ?array
-    {
-        return $this->db->fetchOne(
-            "SELECT * FROM server_ping_history 
-             WHERE item_id = ? AND is_same_as_previous = 0 
-             ORDER BY checked_at DESC LIMIT 1",
-            [$itemId]
-        );
-    }
-    
-    /**
-     * Получить текущий статус сервера из items
-     */
-    public function getCurrentStatus(int $itemId): ?array
-    {
-        $item = $this->db->fetchOne(
-            "SELECT settings FROM user_folder_items WHERE id = ?",
-            [$itemId]
-        );
-        
-        if (!$item || !$item['settings']) return null;
-        
-        $settings = json_decode($item['settings'], true);
-        return $settings['status'] ?? null;
-    }
-    
-    /**
-     * Проверить, изменился ли статус
-     */
-    private function hasStatusChanged(?array $last, array $current): bool
-    {
-        if (!$last) return true;
-        
-        // Сравниваем ключевые поля
-        if ((bool)$last['is_online'] !== (bool)$current['online']) return true;
-        if ((int)$last['players_online'] !== (int)$current['players_online']) return true;
-        if ((int)$last['players_max'] !== (int)$current['players_max']) return true;
-        
-        // Сравниваем список игроков
-        $lastPlayers = $last['players_sample'] ? json_decode($last['players_sample'], true) : [];
-        $currentPlayers = $current['players_sample'] ?? [];
-        
-        $lastNames = array_column($lastPlayers, 'name');
-        $currentNames = array_column($currentPlayers, 'name');
-        
-        sort($lastNames);
-        sort($currentNames);
-        
-        if ($lastNames !== $currentNames) return true;
-        
-        return false;
-    }
-    
-    /**
-     * Обновить статус в настройках элемента
-     */
-    private function updateItemStatus(int $itemId, array $data): void
-    {
-        $item = $this->db->fetchOne(
-            "SELECT settings FROM user_folder_items WHERE id = ?",
-            [$itemId]
-        );
-        
-        if (!$item) return;
-        
-        $settings = $item['settings'] ? json_decode($item['settings'], true) : [];
-        $settings['status'] = [
-            'online' => $data['online'],
-            'players_online' => $data['players_online'],
-            'players_max' => $data['players_max'],
-            'version' => $data['version'] ?? null,
-            'last_check' => date('Y-m-d H:i:s')
-        ];
-        
-        $this->db->execute(
-            "UPDATE user_folder_items SET settings = ? WHERE id = ?",
-            [json_encode($settings), $itemId]
-        );
-    }
-    
-    /**
-     * Вставить запись в историю
-     */
-    private function insertHistoryRecord(int $itemId, array $data, bool $isSame): void
-    {
-        $this->db->execute(
-            "INSERT INTO server_ping_history 
-             (item_id, is_online, players_online, players_max, players_sample, version, source, is_same_as_previous, checked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())",
-            [
-                $itemId,
-                $data['online'] ? 1 : 0,
-                $data['players_online'],
-                $data['players_max'],
-                json_encode($data['players_sample'] ?? []),
-                $data['version'] ?? null,
-                $data['source'] ?? 'unknown',
-                $isSame ? 1 : 0
-            ]
-        );
-    }
-}
+# === ЗАГРУЗКА МОДУЛЕЙ ===
+source "$SCRIPT_DIR/lib/config.sh"
+source "$SCRIPT_DIR/lib/deps.sh"
+source "$SCRIPT_DIR/lib/api.sh"
+source "$SCRIPT_DIR/lib/traffic.sh"
+source "$SCRIPT_DIR/lib/ip_tracking.sh"
+source "$SCRIPT_DIR/lib/online.sh"
+source "$SCRIPT_DIR/lib/expiry.sh"
+source "$SCRIPT_DIR/lib/users.sh"
+source "$SCRIPT_DIR/lib/cron.sh"
+source "$SCRIPT_DIR/lib/migration.sh"
+source "$SCRIPT_DIR/lib/ui.sh"
+
+# === ПРОВЕРКА ЗАВИСИМОСТЕЙ ===
+check_deps
+init_data_dir
+
+# === CLI АРГУМЕНТЫ ===
+
+if [ "$1" = "--check-expiry" ]; then
+    setup_stats_api
+    check_expired_users
+    exit 0
+fi
+
+if [ "$1" = "--collect" ]; then
+    setup_stats_api
+    collect_traffic
+    collect_ips
+    exit 0
+fi
+
+# === ИНИЦИАЛИЗАЦИЯ ===
+
+migrate_auth
+setup_stats_api
+collect_traffic
+collect_ips
+check_expired_users
+setup_cron
+
+CACHED_IP=$(get_ip)
+CACHED_PORT=$(get_port)
+CACHED_OBFS=$(get_obfs_pass)
+CACHED_SNI=$(get_sni)
+refresh_online
+
+# === ГЛАВНОЕ МЕНЮ ===
+
+while true; do
+    refresh_online
+    clear
+
+    active_count=$(get_active_users | grep -c . 2>/dev/null || echo 0)
+    disabled_count=$(grep -c . "$DISABLED_FILE" 2>/dev/null || echo 0)
+    total_count=$((active_count + disabled_count))
+    online_count=$(echo "${CACHED_ONLINE:-{}}" | jq 'to_entries | map(select(.value > 0)) | length' 2>/dev/null || echo "?")
+
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║              Hysteria 2 Manager v2.0                       ║"
+    echo "╠══════════════════════════════════════════════════════════════╣"
+    echo "║ IP сервера      : $CACHED_IP"
+    echo "║ Порт            : $CACHED_PORT"
+    echo "║ SNI / Маскировка: $CACHED_SNI"
+    echo "║ OBFS-пароль     : $(echo "$CACHED_OBFS" | cut -c1-20)..."
+    echo "║ Пользователей   : $total_count (активных: $active_count, онлайн: $online_count)"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "  1. ➕ Добавить нового пользователя"
+    echo "  2. 👥 Пользователи (статистика, IP, действия)"
+    echo "  3. 🔗 Получить ссылку"
+    echo "  4. 🚪 Выход"
+    echo ""
+    read -p "  Выберите (1-4): " choice
+
+    case $choice in
+        1)
+            read -p "  Имя пользователя (латиница, цифры, _): " USERNAME
+            [ -z "$USERNAME" ] && echo "  ❌ Имя не может быть пустым!" && sleep 2 && continue
+
+            if [[ ! "$USERNAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                echo "  ❌ Допустимы: латиница, цифры, _ и -"
+                sleep 2
+                continue
+            fi
+
+            if grep -q "^    $USERNAME: " "$CONFIG"; then
+                echo "  ❌ $USERNAME уже существует!"
+                sleep 2
+                continue
+            fi
+
+            if is_user_disabled "$USERNAME"; then
+                echo "  ❌ $USERNAME существует (отключён). Включите или удалите."
+                sleep 2
+                continue
+            fi
+
+            PASSWORD=$(pwgen -s 64 1)
+            echo "  🔑 Сгенерирован 64-символьный пароль"
+
+            sed -i "/^  userpass:/a\\    $USERNAME: \"$PASSWORD\"" "$CONFIG"
+            echo "  ✅ Пользователь $USERNAME добавлен"
+
+            read -p "  Установить срок действия? (ГГГГ-ММ-ДД или Enter): " EXP
+            if [[ "$EXP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+                set_user_expiry "$USERNAME" "$EXP"
+                echo "  ⏰ Срок действия: $EXP"
+            fi
+
+            echo "  🔄 Перезапуск Hysteria 2..."
+            systemctl restart "$SERVICE"
+            sleep 2
+
+            if systemctl is-active --quiet "$SERVICE"; then
+                echo "  ✅ Сервис запущен"
+            else
+                echo "  ⚠️  Сервис НЕ запустился! journalctl -u $SERVICE -e"
+            fi
+
+            LINK="hysteria2://${USERNAME}:${PASSWORD}@${CACHED_IP}:${CACHED_PORT}/?obfs=salamander&obfs-password=${CACHED_OBFS}&sni=${CACHED_SNI}&insecure=1#${USERNAME}"
+            echo ""
+            echo "  🔗 ГОТОВАЯ ССЫЛКА:"
+            echo "  $LINK"
+            echo ""
+            echo "  💡 Hiddify, Nekobox, Streisand и т.д."
+            read -p "  Enter для возврата..."
+            ;;
+
+        2)
+            collect_traffic
+            collect_ips
+            user_list_menu
+            ;;
+
+        3)
+            get_link_menu
+            ;;
+
+        4)
+            echo "  👋 Выход..."
+            exit 0
+            ;;
+
+        *)
+            echo "  ❌ Неверный выбор!"
+            sleep 1.5
+            ;;
+    esac
+done
