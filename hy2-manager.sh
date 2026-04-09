@@ -60,10 +60,10 @@ while true; do
     refresh_online
     clear
 
-    active_count=$(get_active_users | grep -c . 2>/dev/null || echo 0)
-    disabled_count=$(grep -c . "$DISABLED_FILE" 2>/dev/null || echo 0)
+    active_count=$(get_active_users | grep -c '^' 2>/dev/null | tr -dc '0-9' || echo 0)
+    disabled_count=$(grep -c '^' "$DISABLED_FILE" 2>/dev/null | tr -dc '0-9' || echo 0)
     total_count=$((active_count + disabled_count))
-    online_count=$(echo "${CACHED_ONLINE:-{}}" | jq 'to_entries | map(select(.value > 0)) | length' 2>/dev/null || echo "?")
+    online_count=$(echo "${CACHED_ONLINE:-{}}" | jq 'to_entries | map(select(.value > 0)) | length' 2>/dev/null | tr -dc '0-9' || echo "?")
 
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║              Hysteria 2 Manager v2.0                       ║"
@@ -71,7 +71,7 @@ while true; do
     echo "║ IP сервера      : $CACHED_IP"
     echo "║ Порт            : $CACHED_PORT"
     echo "║ SNI / Маскировка: $CACHED_SNI"
-    echo "║ OBFS-пароль     : $(echo "$CACHED_OBFS" | cut -c1-20)..."
+    echo "║ OBFS-пароль     : $(echo "$CACHED_OBFS" | cut -c1-10)..."
     echo "║ Пользователей   : $total_count (активных: $active_count, онлайн: $online_count)"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
