@@ -93,7 +93,7 @@ while true; do
                 continue
             fi
 
-            if grep -q "^    $USERNAME: " "$CONFIG"; then
+            if grep -q "^[[:space:]]*${USERNAME}:[[:space:]]" "$CONFIG"; then
                 echo "  ❌ $USERNAME уже существует!"
                 sleep 2
                 continue
@@ -108,7 +108,22 @@ while true; do
             PASSWORD=$(pwgen -s 64 1)
             echo "  🔑 Сгенерирован 64-символьный пароль"
 
-            sed -i "/^  userpass:/a\\    $USERNAME: \"$PASSWORD\"" "$CONFIG"
+            if ! grep -q '^[[:space:]]*userpass:' "$CONFIG"; then
+                echo "  ❌ Секция userpass не найдена в конфиге!"
+                echo "  Проверьте $CONFIG"
+                sleep 3
+                continue
+            fi
+
+            sed -i "/^[[:space:]]*userpass:/a\\    $USERNAME: \"$PASSWORD\"" "$CONFIG"
+
+            if ! grep -q "^    ${USERNAME}: " "$CONFIG"; then
+                echo "  ❌ Ошибка! Пользователь не добавлен в конфиг."
+                echo "  Проверьте формат $CONFIG"
+                sleep 3
+                continue
+            fi
+
             echo "  ✅ Пользователь $USERNAME добавлен"
 
             read -p "  Установить срок действия? (ГГГГ-ММ-ДД или Enter): " EXP
