@@ -4,15 +4,15 @@
 # ================================================
 
 collect_ips() {
-    local since_opt=""
+    local since_ts=""
     if [ -f "$LAST_LOG_TS" ]; then
-        since_opt="--since=$(cat "$LAST_LOG_TS")"
+        since_ts=$(cat "$LAST_LOG_TS")
     else
-        since_opt="--since=30 days ago"
+        since_ts="30 days ago"
     fi
     date '+%Y-%m-%d %H:%M:%S' > "$LAST_LOG_TS"
 
-    journalctl -u "$SERVICE" --no-pager -o cat $since_opt 2>/dev/null | \
+    journalctl -u "$SERVICE" --no-pager -o cat --since="$since_ts" 2>/dev/null | \
     grep -E '"(addr|remote|client)"' | grep -E '"username"' | \
     while read -r line; do
         local ip user

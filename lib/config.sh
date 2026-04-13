@@ -24,26 +24,30 @@ get_port() {
 }
 
 get_obfs_pass() {
-    grep -oP '(?<=password: ")[^"]+' <(grep -A 5 "salamander:" "$CONFIG") 2>/dev/null | head -1
+    local result
+    result=$(grep -oP '(?<=password: ")[^"]+' <(grep -A 5 "salamander:" "$CONFIG") 2>/dev/null | head -1)
+    echo "${result:-}"
 }
 
 get_sni() {
-    grep -oP '(?<=url: https://)[^/]+' "$CONFIG" 2>/dev/null | head -1 || echo "www.microsoft.com"
+    local result
+    result=$(grep -oP '(?<=url: https://)[^/]+' "$CONFIG" 2>/dev/null | head -1)
+    echo "${result:-www.microsoft.com}"
 }
 
 get_user_password() {
-    grep -oP "^    ${1}:\s*\"\K[^\"]*" "$CONFIG" 2>/dev/null
+    grep -oP "^\s+${1}:\s*\"\K[^\"]*" "$CONFIG" 2>/dev/null
 }
 
 get_active_users() {
     awk '
-        /^  userpass:/ { in_block=1; next }
-        in_block && /^    [a-zA-Z0-9_-]+:/ {
-            sub(/^[ \t]+/, "")
+        /^[[:space:]]*userpass:/ { in_block=1; next }
+        in_block && /^[[:space:]]+[a-zA-Z0-9_-]+:/ {
+            sub(/^[[:space:]]+/, "")
             sub(/:.*/, "")
             print
         }
-        in_block && /^  [a-zA-Z]/ { in_block=0 }
+        in_block && /^[[:space:]]*[a-zA-Z]/ && !/^[[:space:]]+[a-zA-Z0-9_-]+:/ { in_block=0 }
         in_block && /^[a-zA-Z]/ { in_block=0 }
     ' "$CONFIG" 2>/dev/null
 }

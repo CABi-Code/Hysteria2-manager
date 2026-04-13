@@ -20,7 +20,7 @@ disable_user() {
         return 1
     fi
     grep -q "^${user}|" "$DISABLED_FILE" || echo "${user}|${password}" >> "$DISABLED_FILE"
-    sed -i "/^    ${user}: \"/d" "$CONFIG"
+    sed -i "/^[[:space:]]*${user}:[[:space:]]/d" "$CONFIG"
     api_post "/kick" "[\"$user\"]" &>/dev/null
     [ "$silent" != "silent" ] && echo "  ✅ Пользователь $user отключён"
 }
@@ -33,14 +33,26 @@ enable_user() {
     fi
     local password
     password=$(get_disabled_password "$user")
-    sed -i "/^  userpass:/a\\    ${user}: \"${password}\"" "$CONFIG"
+
+    if ! grep -q '^[[:space:]]*userpass:' "$CONFIG"; then
+        echo "  ❌ Секция userpass не найдена в конфиге!"
+        return 1
+    fi
+
+    sed -i "/^[[:space:]]*userpass:/a\\    ${user}: \"${password}\"" "$CONFIG"
+
+    if ! grep -q "^    ${user}: " "$CONFIG"; then
+        echo "  ❌ Ошибка записи в конфиг! Пользователь не восстановлен."
+        return 1
+    fi
+
     sed -i "/^${user}|/d" "$DISABLED_FILE"
     echo "  ✅ Пользователь $user включён"
 }
 
 delete_user() {
     local user="$1"
-    sed -i "/^    ${user}: \"/d" "$CONFIG"
+    sed -i "/^[[:space:]]*${user}:[[:space:]]/d" "$CONFIG"
     sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE"
     api_post "/kick" "[\"$user\"]" &>/dev/null
     echo "  ✅ Пользователь $user полностью удалён"
@@ -59,12 +71,16 @@ change_user_password() {
     if is_user_disabled "$user"; then
         sed -i "s#^${user}|.*#${user}|${new_pass}#" "$DISABLED_FILE"
     else
-        if ! grep -q "^    ${user}: " "$CONFIG"; then
+        if ! grep -q "^[[:space:]]*${user}:[[:space:]]" "$CONFIG"; then
             echo "  ❌ Пользователь не найден"
             return 1
         fi
-        sed -i "/^    ${user}: \"/d" "$CONFIG"
-        sed -i "/^  userpass:/a\\    ${user}: \"${new_pass}\"" "$CONFIG"
+        sed -i "/^[[:space:]]*${user}:[[:space:]]/d" "$CONFIG"
+        sed -i "/^[[:space:]]*userpass:/a\\    ${user}: \"${new_pass}\"" "$CONFIG"
+        if ! grep -q "^    ${user}: " "$CONFIG"; then
+            echo "  ❌ Ошибка записи нового пароля в конфиг!"
+            return 1
+        fi
     fi
     echo "  ✅ Пароль $user обновлён"
     echo "  🔑 Новый: ${new_pass}"
