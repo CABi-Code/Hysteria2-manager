@@ -155,7 +155,7 @@ user_action_menu() {
                 read -p "  ⚠️  Удалить $user ПОЛНОСТЬЮ? (да/нет): " confirm
                 if [ "$confirm" = "да" ]; then
                     local was_active=false
-                    grep -q "^    ${user}: " "$CONFIG" && was_active=true
+                    grep -q "^[[:space:]]*${user}:[[:space:]]" "$CONFIG" && was_active=true
                     delete_user "$user"
                     if $was_active; then
                         systemctl restart "$SERVICE" 2>/dev/null
@@ -264,14 +264,19 @@ user_list_menu() {
             return
         fi
 
-        echo "  [n] след. стр. | [p] пред. | [номер] действия | [q] назад"
+        echo ""
+        if [ "$USER_LIST_PAGES" -gt 1 ]; then
+            echo "  [1-${USER_LIST_TOTAL}] действия  |  [>] след. стр.  |  [<] пред.  |  [0] назад"
+        else
+            echo "  [1-${USER_LIST_TOTAL}] действия  |  [0] назад"
+        fi
         echo ""
         read -p "  Ввод: " input
 
         case "$input" in
-            q|Q) return ;;
-            n|N) ((page++)); [ "$page" -gt "$USER_LIST_PAGES" ] && page=$USER_LIST_PAGES ;;
-            p|P) ((page--)); [ "$page" -lt 1 ] && page=1 ;;
+            0) return ;;
+            ">") ((page++)); [ "$page" -gt "$USER_LIST_PAGES" ] && page=$USER_LIST_PAGES ;;
+            "<") ((page--)); [ "$page" -lt 1 ] && page=1 ;;
             *)
                 if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "$USER_LIST_TOTAL" ] 2>/dev/null; then
                     user_action_menu "${USER_LIST_ARRAY[$((input - 1))]}"
@@ -294,14 +299,19 @@ get_link_menu() {
             return
         fi
 
-        echo "  [n] след. стр. | [p] пред. | [номер] ссылка | [q] назад"
+        echo ""
+        if [ "$USER_LIST_PAGES" -gt 1 ]; then
+            echo "  [1-${USER_LIST_TOTAL}] ссылка  |  [>] след. стр.  |  [<] пред.  |  [0] назад"
+        else
+            echo "  [1-${USER_LIST_TOTAL}] ссылка  |  [0] назад"
+        fi
         echo ""
         read -p "  Номер: " input
 
         case "$input" in
-            q|Q) return ;;
-            n|N) ((page++)); [ "$page" -gt "$USER_LIST_PAGES" ] && page=$USER_LIST_PAGES ;;
-            p|P) ((page--)); [ "$page" -lt 1 ] && page=1 ;;
+            0) return ;;
+            ">") ((page++)); [ "$page" -gt "$USER_LIST_PAGES" ] && page=$USER_LIST_PAGES ;;
+            "<") ((page--)); [ "$page" -lt 1 ] && page=1 ;;
             *)
                 if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "$USER_LIST_TOTAL" ] 2>/dev/null; then
                     local sel_user="${USER_LIST_ARRAY[$((input - 1))]}"

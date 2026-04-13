@@ -22,8 +22,8 @@ check_expired_users() {
     today=$(date +%Y-%m-%d)
     while IFS='|' read -r user exp_date; do
         [ -z "$user" ] || [ -z "$exp_date" ] && continue
-        if [[ "$exp_date" < "$today" || "$exp_date" == "$today" ]]; then
-            if ! is_user_disabled "$user" && grep -q "^    ${user}: " "$CONFIG"; then
+        if [[ "$exp_date" < "$today" ]]; then
+            if ! is_user_disabled "$user" && grep -q "^[[:space:]]*${user}:[[:space:]]" "$CONFIG"; then
                 disable_user "$user" silent
                 echo "⏰ Автоотключение: $user (срок: $exp_date)"
                 changed=true
