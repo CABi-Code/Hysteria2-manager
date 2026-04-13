@@ -43,9 +43,11 @@ get_active_users() {
     awk '
         /^[[:space:]]*userpass:/ { in_block=1; next }
         in_block && /^[[:space:]]+[a-zA-Z0-9_-]+:/ {
-            sub(/^[[:space:]]+/, "")
-            sub(/:.*/, "")
-            print
+            name=$0
+            sub(/^[[:space:]]+/, "", name)
+            sub(/:.*/, "", name)
+            print name
+            next
         }
         in_block && /^[[:space:]]*[a-zA-Z]/ && !/^[[:space:]]+[a-zA-Z0-9_-]+:/ { in_block=0 }
         in_block && /^[a-zA-Z]/ { in_block=0 }
