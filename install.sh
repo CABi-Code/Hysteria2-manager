@@ -1,11 +1,16 @@
 #!/bin/bash
 # ================================================
-# Hysteria 2 — полная установка с нуля
+# Hysteria 2 — полная установка с нуля (curl|bash)
 # Устанавливает Hysteria 2, генерирует конфиг,
 # сертификаты, firewall и менеджер пользователей
 # ================================================
 
-set -e
+set -euo pipefail
+
+# === РЕПОЗИТОРИЙ ИСХОДНИКОВ ===
+# Откуда скачиваются файлы менеджера. Можно переопределить:
+#   REPO_URL=https://raw.githubusercontent.com/USER/REPO/BRANCH bash <(curl ...)
+REPO_URL="${REPO_URL:-https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main}"
 
 # === ЦВЕТА ===
 RED='\033[0;31m'
@@ -18,11 +23,21 @@ info()  { echo -e "${CYAN}[INFO]${NC} $1"; }
 ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
+die()   { error "$1"; exit 1; }
 
 # === ПРОВЕРКА ROOT ===
 if [ "$EUID" -ne 0 ]; then
-    error "Запустите скрипт от root: sudo bash install.sh"
-    exit 1
+    die "Запустите скрипт от root: sudo bash <(curl -fsSL ...)"
+fi
+
+# === ПРОВЕРКА: интерактивный TTY (нужен для read) ===
+# Если запущено через `curl|bash`, stdin занят пайпом — read не сработает.
+if [ ! -t 0 ]; then
+    if [ -e /dev/tty ]; then
+        exec </dev/tty
+    else
+        die "Нет интерактивного терминала. Используйте: bash <(curl -fsSL ...) вместо curl|bash"
+    fi
 fi
 
 echo ""
@@ -35,8 +50,9 @@ echo ""
 # 1. СИСТЕМНЫЕ ПАКЕТЫ
 # ================================================================
 info "Обновление системы и установка пакетов..."
-apt update -qq && apt upgrade -y -qq
-apt install -y -qq curl wget git unzip sudo ufw nftables openssl pwgen jq
+export DEBIAN_FRONTEND=noninteractive
+apt update -qq
+apt install -y -qq curl wget unzip sudo ufw openssl pwgen jq ca-certificates cron
 ok "Пакеты установлены"
 
 # ================================================================
@@ -46,7 +62,7 @@ if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
     info "Включаю BBR..."
     grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
     grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf || echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p >/dev/null 2>&1
+    sysctl -p >/dev/null 2>&1 || true
     ok "BBR включён"
 else
     ok "BBR уже активен"
@@ -63,22 +79,37 @@ echo ""
 DEFAULT_PORT=$(( RANDOM % 55000 + 10000 ))
 read -p "  Порт Hysteria 2 [$DEFAULT_PORT]: " HY_PORT
 HY_PORT=${HY_PORT:-$DEFAULT_PORT}
+if ! [[ "$HY_PORT" =~ ^[0-9]+$ ]] || [ "$HY_PORT" -lt 1 ] || [ "$HY_PORT" -gt 65535 ]; then
+    die "Порт должен быть целым числом 1-65535"
+fi
 
 # SNI / маскировка
 read -p "  Домен для маскировки [www.microsoft.com]: " HY_SNI
 HY_SNI=${HY_SNI:-www.microsoft.com}
 
-# OBFS пароль
+# OBFS пароль (генерируется только из [A-Za-z0-9] для URL-safe)
 DEFAULT_OBFS=$(pwgen -s 32 1)
 read -p "  OBFS-пароль (Salamander) [$DEFAULT_OBFS]: " HY_OBFS
 HY_OBFS=${HY_OBFS:-$DEFAULT_OBFS}
+# защита от спецсимволов в YAML/URL — разрешаем только [A-Za-z0-9_-]
+if [[ ! "$HY_OBFS" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    die "OBFS-пароль должен содержать только латиницу/цифры/_/-"
+fi
 
 # Первый пользователь
 read -p "  Имя первого пользователя [admin]: " FIRST_USER
 FIRST_USER=${FIRST_USER:-admin}
+if [[ ! "$FIRST_USER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    die "Имя пользователя должно быть из латиницы/цифр/_/-"
+fi
+case "$FIRST_USER" in
+    type|userpass|password|proxy|url|listen|tls|cert|key|auth|masquerade|obfs|salamander|quic|trafficStats|secret)
+        die "Имя '$FIRST_USER' зарезервировано (конфликт с YAML-ключами)"
+        ;;
+esac
 FIRST_PASS=$(pwgen -s 64 1)
 
-# trafficStats секрет
+# trafficStats секрет (alphanumeric → безопасен в YAML без кавычек)
 API_SECRET=$(pwgen -s 32 1)
 
 echo ""
@@ -96,65 +127,112 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 # ================================================================
-# 4. FIREWALL (nftables)
+# 4. FIREWALL
 # ================================================================
 info "Настройка firewall..."
-ufw disable 2>/dev/null || true
-systemctl stop ufw 2>/dev/null || true
 
-# Добавляем правило для порта Hysteria (UDP)
+# Если есть ufw и он включён — добавляем правило, не отключая.
+if command -v ufw &>/dev/null; then
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow "${HY_PORT}/udp" >/dev/null 2>&1 || true
+        ok "ufw: разрешён ${HY_PORT}/udp"
+    else
+        ok "ufw неактивен — пропускаю"
+    fi
+fi
+
+# nftables: добавляем правило корректно (создаём таблицу/цепочку при необходимости)
 if command -v nft &>/dev/null; then
-    nft add rule ip filter INPUT udp dport "$HY_PORT" accept 2>/dev/null || true
-    nft list ruleset > /etc/nftables.conf 2>/dev/null || true
-    ok "nftables: порт $HY_PORT/udp открыт"
-else
-    warn "nftables не найден, убедитесь что порт $HY_PORT/udp открыт"
+    # Проверяем наличие таблицы inet filter
+    if ! nft list table inet filter &>/dev/null; then
+        nft add table inet filter 2>/dev/null || true
+    fi
+    # Проверяем наличие цепочки input
+    if ! nft list chain inet filter input &>/dev/null; then
+        nft 'add chain inet filter input { type filter hook input priority 0 ; policy accept; }' 2>/dev/null || true
+    fi
+    # Добавляем правило (idempotent: проверяем, нет ли его уже)
+    if ! nft list chain inet filter input 2>/dev/null | grep -q "udp dport ${HY_PORT} accept"; then
+        nft add rule inet filter input udp dport "$HY_PORT" accept 2>/dev/null || true
+    fi
+    ok "nftables: ${HY_PORT}/udp разрешён"
 fi
 
 # ================================================================
 # 5. УСТАНОВКА HYSTERIA 2
 # ================================================================
+install_hysteria() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    info "Скачиваю официальный установщик Hysteria 2..."
+    if ! curl -fsSL --max-time 60 "https://get.hy2.sh/" -o "$tmpfile"; then
+        rm -f "$tmpfile"
+        die "Не удалось скачать https://get.hy2.sh/ (проверьте сеть)"
+    fi
+    if [ ! -s "$tmpfile" ]; then
+        rm -f "$tmpfile"
+        die "Скачанный установщик Hysteria 2 пустой"
+    fi
+    bash "$tmpfile"
+    rm -f "$tmpfile"
+}
+
 if command -v hysteria &>/dev/null; then
     ok "Hysteria 2 уже установлен: $(hysteria version 2>/dev/null | head -1)"
     read -p "  Переустановить? [y/N]: " REINSTALL
-    if [[ "$REINSTALL" =~ ^[Yy]$ ]]; then
-        info "Переустанавливаю Hysteria 2..."
-        bash <(curl -fsSL https://get.hy2.sh/)
+    if [[ "${REINSTALL:-}" =~ ^[Yy]$ ]]; then
+        install_hysteria
     fi
 else
-    info "Устанавливаю Hysteria 2..."
-    bash <(curl -fsSL https://get.hy2.sh/)
+    install_hysteria
 fi
-ok "Hysteria 2 установлен"
+
+# Проверяем что бинарник реально появился
+if ! command -v hysteria &>/dev/null; then
+    die "Hysteria 2 не установился. Проверьте логи выше."
+fi
+ok "Hysteria 2 установлен: $(hysteria version 2>/dev/null | head -1)"
+
+# Проверяем что пользователь hysteria создан официальным установщиком.
+# Если нет — создаём вручную (иначе chown ниже не сработает и сервис не прочитает private.key).
+if ! id -u hysteria &>/dev/null; then
+    warn "Пользователь hysteria не создан официальным установщиком, создаю..."
+    useradd --system --no-create-home --shell /usr/sbin/nologin hysteria || \
+        die "Не удалось создать пользователя hysteria"
+fi
 
 # ================================================================
 # 6. СЕРТИФИКАТЫ (самоподписанные, 10 лет)
 # ================================================================
 CERT_DIR="/etc/hysteria/certs"
+mkdir -p "$CERT_DIR"
+
+GENERATE_CERT=true
 if [ -f "$CERT_DIR/cert.crt" ] && [ -f "$CERT_DIR/private.key" ]; then
     ok "Сертификаты уже существуют: $CERT_DIR"
     read -p "  Перегенерировать? [y/N]: " REGEN_CERT
-    if [[ "$REGEN_CERT" =~ ^[Yy]$ ]]; then
-        GENERATE_CERT=true
-    else
-        GENERATE_CERT=false
-    fi
-else
-    GENERATE_CERT=true
+    [[ ! "${REGEN_CERT:-}" =~ ^[Yy]$ ]] && GENERATE_CERT=false
 fi
 
 if $GENERATE_CERT; then
     info "Генерирую самоподписанный сертификат (10 лет)..."
-    mkdir -p "$CERT_DIR"
     openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
         -keyout "$CERT_DIR/private.key" \
         -out "$CERT_DIR/cert.crt" \
         -subj "/CN=$HY_SNI" -days 3650 2>/dev/null
-    chown -R hysteria:hysteria "$CERT_DIR" 2>/dev/null || true
-    chmod 600 "$CERT_DIR/private.key"
-    chmod 644 "$CERT_DIR/cert.crt"
     ok "Сертификат создан: $CERT_DIR"
 fi
+
+# Права: hysteria должна читать оба файла. Проверяем явно.
+chown -R hysteria:hysteria "$CERT_DIR" || die "chown на $CERT_DIR не удался"
+chmod 600 "$CERT_DIR/private.key"
+chmod 644 "$CERT_DIR/cert.crt"
+
+# Sanity-check: hysteria может прочитать private.key?
+if ! sudo -u hysteria test -r "$CERT_DIR/private.key"; then
+    die "Пользователь hysteria не может прочитать $CERT_DIR/private.key — проверьте права"
+fi
+ok "Права на сертификаты выставлены корректно"
 
 # ================================================================
 # 7. КОНФИГ HYSTERIA 2
@@ -163,12 +241,17 @@ CONFIG="/etc/hysteria/config.yaml"
 
 info "Создаю конфиг: $CONFIG"
 
+# Бэкап старого конфига если есть
+if [ -f "$CONFIG" ]; then
+    cp -a "$CONFIG" "${CONFIG}.bak.$(date +%s)"
+fi
+
 cat > "$CONFIG" << EOF
 listen: :${HY_PORT}
 
 tls:
-  cert: /etc/hysteria/certs/cert.crt
-  key: /etc/hysteria/certs/private.key
+  cert: ${CERT_DIR}/cert.crt
+  key: ${CERT_DIR}/private.key
 
 auth:
   type: userpass
@@ -189,7 +272,8 @@ obfs:
 quic:
   initStreamReceiveWindow: 16777216
   maxStreamReceiveWindow: 1073741824
-  maxConnectionReceiveWindow: 1073741824
+  initConnReceiveWindow: 33554432
+  maxConnReceiveWindow: 1073741824
   maxIdleTimeout: 30s
   keepAlivePeriod: 10s
 
@@ -198,6 +282,9 @@ trafficStats:
   secret: ${API_SECRET}
 EOF
 
+# Конфиг содержит секреты — закрываем от чужих, но даём прочитать hysteria
+chown root:hysteria "$CONFIG"
+chmod 640 "$CONFIG"
 ok "Конфиг создан"
 
 # ================================================================
@@ -213,39 +300,60 @@ done
 ok "Директория менеджера: $DATA_DIR"
 
 # ================================================================
-# 9. УСТАНОВКА МЕНЕДЖЕРА
+# 9. УСТАНОВКА МЕНЕДЖЕРА (скачиваем из REPO_URL)
 # ================================================================
 INSTALL_DIR="/opt/hy2-manager"
-info "Устанавливаю менеджер в $INSTALL_DIR..."
-
+info "Устанавливаю менеджер в $INSTALL_DIR (источник: $REPO_URL)..."
 mkdir -p "$INSTALL_DIR/lib"
 
-# Определяем откуда копировать (из текущей директории)
-SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+download_file() {
+    local src="$1" dst="$2"
+    if ! curl -fsSL --max-time 30 "$src" -o "$dst.tmp"; then
+        die "Не удалось скачать $src"
+    fi
+    if [ ! -s "$dst.tmp" ]; then
+        rm -f "$dst.tmp"
+        die "Скачанный $src пустой"
+    fi
+    mv "$dst.tmp" "$dst"
+}
 
-cp "$SCRIPT_SRC/hy2-manager.sh" "$INSTALL_DIR/hy2-manager.sh"
-cp "$SCRIPT_SRC"/lib/*.sh "$INSTALL_DIR/lib/"
+download_file "$REPO_URL/hy2-manager.sh" "$INSTALL_DIR/hy2-manager.sh"
+for f in config.sh deps.sh api.sh traffic.sh ip_tracking.sh online.sh expiry.sh users.sh cron.sh migration.sh ui.sh; do
+    download_file "$REPO_URL/lib/$f" "$INSTALL_DIR/lib/$f"
+done
+
 chmod +x "$INSTALL_DIR/hy2-manager.sh"
 
 # Симлинк для удобного запуска
 ln -sf "$INSTALL_DIR/hy2-manager.sh" /usr/local/bin/hy2-manager
 
 ok "Менеджер установлен"
-ok "Запуск: hy2-manager"
 
 # ================================================================
 # 10. ЗАПУСК СЕРВИСА
 # ================================================================
 info "Запускаю Hysteria 2..."
+systemctl daemon-reload 2>/dev/null || true
 systemctl enable hysteria-server.service 2>/dev/null || true
 systemctl restart hysteria-server.service
-sleep 2
+sleep 3
 
 if systemctl is-active --quiet hysteria-server.service; then
     ok "Сервис запущен и работает"
 else
-    error "Сервис НЕ запустился! Проверьте:"
-    echo "  journalctl -u hysteria-server.service -e"
+    error "Сервис НЕ запустился! Последние строки лога:"
+    journalctl -u hysteria-server.service -n 30 --no-pager 2>/dev/null || true
+    die "Установка прервана: hysteria-server не запущен"
+fi
+
+# Проверяем, что порт реально слушается
+if command -v ss &>/dev/null; then
+    if ss -unlp 2>/dev/null | grep -q ":${HY_PORT} "; then
+        ok "UDP-порт ${HY_PORT} прослушивается"
+    else
+        warn "UDP-порт ${HY_PORT} не виден в ss (возможно, всё ок, но проверьте вручную)"
+    fi
 fi
 
 # ================================================================
