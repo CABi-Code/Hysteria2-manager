@@ -32,7 +32,7 @@ get_obfs_pass() {
 get_sni() {
     local result
     result=$(grep -oP '(?<=url: https://)[^/]+' "$CONFIG" 2>/dev/null | head -1)
-    echo "${result:-www.microsoft.com}"
+    echo "${result:-www.twitch.tv}"
 }
 
 get_user_password() {
