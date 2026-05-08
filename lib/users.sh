@@ -3,6 +3,17 @@
 # Управление пользователями: CRUD-операции
 # ================================================
 
+# Имена, которые конфликтуют с YAML-ключами Hysteria 2 — нельзя использовать как username,
+# иначе sed-операции порушат другие секции конфига.
+is_reserved_username() {
+    case "$1" in
+        type|userpass|password|proxy|url|listen|tls|cert|key|auth|masquerade|obfs|salamander|quic|trafficStats|secret|rewriteHost)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
+}
+
 is_user_disabled() {
     grep -q "^${1}|" "$DISABLED_FILE" 2>/dev/null
 }
