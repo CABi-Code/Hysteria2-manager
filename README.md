@@ -1,4 +1,4 @@
-# Hysteria 2 Manager v2.0
+# Hysteria 2 Manager v2.1
 
 Интерактивный менеджер пользователей для [Hysteria 2](https://hysteria.network/) VPN-сервера.
 
@@ -30,7 +30,7 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-man
 
 Скрипт интерактивно спросит:
 - **Порт** — UDP-порт для Hysteria (по умолчанию случайный 10000-65000)
-- **Домен для маскировки** — SNI для TLS (по умолчанию `www.microsoft.com`)
+- **Домен для маскировки** — SNI для TLS (по умолчанию `www.twitch.tv`)
 - **OBFS-пароль** — пароль обфускации Salamander (генерируется автоматически)
 - **Имя первого пользователя** — будет создан с 64-символьным паролем
 
@@ -104,7 +104,7 @@ sudo hy2-manager
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║              Hysteria 2 Manager v2.0                       ║
+║              Hysteria 2 Manager v2.1                       ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ IP сервера      : 203.0.113.1
 ║ Порт            : 11478
@@ -142,6 +142,15 @@ Cron-задачи настраиваются автоматически при �
 | `expiry.dat` | Сроки действия (user\|YYYY-MM-DD) |
 | `disabled.dat` | Отключённые пользователи (user\|password) |
 | `api_secret` | Секрет trafficStats API |
+
+## Логи
+
+Ошибки самого менеджера пишутся в `/var/log/hy2-manager/error.log`. Подключения пользователей сюда не логируются — для них используйте журнал systemd:
+
+```bash
+sudo journalctl -u hysteria-server -f
+sudo tail -f /var/log/hy2-manager/error.log
+```
 
 ## Дополнительно
 

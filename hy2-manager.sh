@@ -1,24 +1,45 @@
 #!/bin/bash
 # ================================================
-# Hysteria 2 Manager v2.0
+# Hysteria 2 Manager v2.1
 # Управление пользователями, статистика, IP-трекинг
 # Сроки действия, защита от утечек
 # ================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Разрешаем симлинк, чтобы при запуске через /usr/local/bin/hy2-manager
+# мы корректно нашли каталог с lib/. Без readlink -f скрипт пытался
+# подгружать модули из /usr/local/bin/lib и все функции терялись.
+_self="${BASH_SOURCE[0]}"
+_resolved="$(readlink -f "$_self" 2>/dev/null || echo "$_self")"
+SCRIPT_DIR="$(cd "$(dirname "$_resolved")" && pwd)"
+unset _self _resolved
+
+# === ЛОГИ ===
+LOG_DIR="/var/log/hy2-manager"
+LOG_FILE="$LOG_DIR/error.log"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+# Дублируем stderr в лог-файл (ошибки видны на экране и записываются на диск).
+# Подключения сюда не пишутся — они идут в journalctl.
+if [ -w "$LOG_DIR" ] || mkdir -p "$LOG_DIR" 2>/dev/null; then
+    exec 2> >(while IFS= read -r _line; do
+        printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$_line" >> "$LOG_FILE"
+        printf '%s\n' "$_line" >&2
+    done)
+fi
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-source "$SCRIPT_DIR/lib/config.sh"
-source "$SCRIPT_DIR/lib/deps.sh"
-source "$SCRIPT_DIR/lib/api.sh"
-source "$SCRIPT_DIR/lib/traffic.sh"
-source "$SCRIPT_DIR/lib/ip_tracking.sh"
-source "$SCRIPT_DIR/lib/online.sh"
-source "$SCRIPT_DIR/lib/expiry.sh"
-source "$SCRIPT_DIR/lib/users.sh"
-source "$SCRIPT_DIR/lib/cron.sh"
-source "$SCRIPT_DIR/lib/migration.sh"
-source "$SCRIPT_DIR/lib/ui.sh"
+_required_libs=(config deps api traffic ip_tracking online expiry users cron migration ui)
+for _lib in "${_required_libs[@]}"; do
+    _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
+    if [ ! -f "$_libpath" ]; then
+        echo "❌ Модуль не найден: $_libpath" >&2
+        echo "   Переустановите менеджер:" >&2
+        echo "   sudo bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh)" >&2
+        exit 1
+    fi
+    # shellcheck disable=SC1090
+    source "$_libpath"
+done
+unset _required_libs _lib _libpath
 
 # === ПРОВЕРКА ЗАВИСИМОСТЕЙ ===
 check_deps
@@ -66,7 +87,7 @@ while true; do
     online_count=$(echo "${CACHED_ONLINE:-{}}" | jq 'to_entries | map(select(.value > 0)) | length' 2>/dev/null | tr -dc '0-9' || echo "?")
 
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║              Hysteria 2 Manager v2.0                       ║"
+    echo "║              Hysteria 2 Manager v2.1                       ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
     echo "║ IP сервера      : $CACHED_IP"
     echo "║ Порт            : $CACHED_PORT"
