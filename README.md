@@ -20,7 +20,7 @@
 
 ## Установка с нуля (рекомендуется)
 
-Полная установка одной командой — без `git clone`:
+Полная установка командой:
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh)
