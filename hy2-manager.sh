@@ -93,6 +93,12 @@ while true; do
                 continue
             fi
 
+            if is_reserved_username "$USERNAME"; then
+                echo "  ❌ Имя '$USERNAME' зарезервировано (конфликт с YAML-ключами)"
+                sleep 2
+                continue
+            fi
+
             if grep -q "^[[:space:]]*${USERNAME}:[[:space:]]" "$CONFIG"; then
                 echo "  ❌ $USERNAME уже существует!"
                 sleep 2
