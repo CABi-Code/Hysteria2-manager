@@ -5,10 +5,10 @@
 
 collect_ips() {
     local since_ts=""
-    if [ -f "$LAST_LOG_TS" ]; then
+    if [ -f "$LAST_LOG_TS" ] && [ -s "$LAST_LOG_TS" ]; then
         since_ts=$(cat "$LAST_LOG_TS")
     else
-        since_ts="30 days ago"
+        since_ts=$(date -d '30 days ago' '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "30 days ago")
     fi
     date '+%Y-%m-%d %H:%M:%S' > "$LAST_LOG_TS"
 
@@ -18,7 +18,9 @@ collect_ips() {
         local ip user
         ip=$(echo "$line" | grep -oP '"(?:addr|remote|client)"\s*:\s*"\K[\d.]+' | head -1)
         user=$(echo "$line" | grep -oP '"username"\s*:\s*"\K[^"]+' | head -1)
-        [ -z "$ip" ] || [ -z "$user" ] || [ "$ip" = "127.0.0.1" ] && continue
+        if [ -z "$ip" ] || [ -z "$user" ] || [ "$ip" = "127.0.0.1" ]; then
+            continue
+        fi
 
         local now
         now=$(date +%s)
@@ -36,7 +38,10 @@ collect_ips() {
 }
 
 get_user_ip_count() {
-    grep -c "^${1}|" "$IPS_FILE" 2>/dev/null || echo "0"
+    local count
+    count=$(grep -c "^${1}|" "$IPS_FILE" 2>/dev/null || true)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    echo "$count"
 }
 
 get_user_ips() {

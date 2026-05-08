@@ -20,13 +20,13 @@
 
 ## Установка с нуля (рекомендуется)
 
-Полная установка: Hysteria 2 + сертификаты + конфиг + менеджер + firewall + BBR.
+Полная установка одной командой — без `git clone`:
 
 ```bash
-git clone https://github.com/CABi-Code/Hysteria2-manager.git
-cd Hysteria2-manager
-sudo bash install.sh
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh)
 ```
+
+> ⚠️ Используйте именно `bash <(curl ...)`, а не `curl ... | bash` — установщику нужен интерактивный TTY для запроса параметров (порт, SNI, имя пользователя). Скрипт сам определит подмену stdin и попытается переключиться на `/dev/tty`, но `bash <(...)` гарантированно работает.
 
 Скрипт интерактивно спросит:
 - **Порт** — UDP-порт для Hysteria (по умолчанию случайный 10000-65000)
@@ -36,27 +36,41 @@ sudo bash install.sh
 
 После установки менеджер доступен командой `hy2-manager`.
 
-### Что делает install.sh
+### Альтернативные источники
 
-1. Обновляет систему, ставит зависимости (`curl`, `jq`, `pwgen`, `nftables`, `openssl`)
-2. Включает BBR (ускорение TCP)
-3. Открывает UDP-порт в nftables
-4. Скачивает и устанавливает Hysteria 2
-5. Генерирует самоподписанный сертификат (10 лет)
-6. Создаёт `config.yaml` с обфускацией Salamander, QUIC-тюнингом и trafficStats API
-7. Копирует менеджер в `/opt/hy2-manager`, создаёт симлинк `/usr/local/bin/hy2-manager`
-8. Запускает и включает автозагрузку `hysteria-server.service`
-9. Выводит готовую `hysteria2://` ссылку для клиента
-
-## Установка только менеджера
-
-Если Hysteria 2 уже установлен и настроен:
+Если форкнули репозиторий, можно указать свой URL через переменную окружения:
 
 ```bash
-git clone https://github.com/CABi-Code/Hysteria2-manager.git
-cd Hysteria2-manager
-chmod +x hy2-manager.sh
-sudo ./hy2-manager.sh
+sudo REPO_URL="https://raw.githubusercontent.com/USERNAME/REPO/BRANCH" \
+    bash <(curl -fsSL https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/install.sh)
+```
+
+### Что делает install.sh
+
+1. Обновляет систему, ставит зависимости (`curl`, `jq`, `pwgen`, `openssl`, `cron`)
+2. Включает BBR (ускорение TCP)
+3. Открывает UDP-порт (`ufw allow` если активен, либо корректное правило nftables)
+4. Скачивает и устанавливает Hysteria 2 (с проверкой успешности загрузки)
+5. Гарантирует наличие пользователя `hysteria` и проверяет, что приватный ключ читается
+6. Генерирует самоподписанный сертификат (10 лет)
+7. Создаёт `config.yaml` с обфускацией Salamander, QUIC-тюнингом и trafficStats API (mode 640)
+8. Скачивает менеджер из репозитория в `/opt/hy2-manager`, создаёт симлинк `/usr/local/bin/hy2-manager`
+9. Запускает `hysteria-server.service`, проверяет что он `active` и слушает UDP-порт
+10. Выводит готовую `hysteria2://` ссылку для клиента
+
+## Установка только менеджера (Hysteria 2 уже стоит)
+
+```bash
+sudo mkdir -p /opt/hy2-manager/lib
+BASE="https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main"
+sudo curl -fsSL "$BASE/hy2-manager.sh" -o /opt/hy2-manager/hy2-manager.sh
+for f in config.sh deps.sh api.sh traffic.sh ip_tracking.sh online.sh \
+         expiry.sh users.sh cron.sh migration.sh ui.sh; do
+    sudo curl -fsSL "$BASE/lib/$f" -o "/opt/hy2-manager/lib/$f"
+done
+sudo chmod +x /opt/hy2-manager/hy2-manager.sh
+sudo ln -sf /opt/hy2-manager/hy2-manager.sh /usr/local/bin/hy2-manager
+sudo hy2-manager
 ```
 
 ## Структура проекта
@@ -83,7 +97,7 @@ lib/
 ### Интерактивный режим
 
 ```bash
-sudo ./hy2-manager.sh
+sudo hy2-manager
 ```
 
 Откроется главное меню:
@@ -109,10 +123,10 @@ sudo ./hy2-manager.sh
 
 ```bash
 # Сбор трафика и IP-адресов
-sudo ./hy2-manager.sh --collect
+sudo hy2-manager --collect
 
 # Проверка и отключение просроченных пользователей
-sudo ./hy2-manager.sh --check-expiry
+sudo hy2-manager --check-expiry
 ```
 
 Cron-задачи настраиваются автоматически при первом запуске.
