@@ -46,6 +46,157 @@ echo "║         Установка Hysteria 2 + Manager v2.1                �
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
+# === ОБЩИЕ КОНСТАНТЫ ===
+INSTALL_DIR="/opt/hy2-manager"
+DATA_DIR="/etc/hysteria/manager"
+CONFIG="/etc/hysteria/config.yaml"
+CERT_DIR="/etc/hysteria/certs"
+LOG_DIR="/var/log/hy2-manager"
+SERVICE="hysteria-server.service"
+MANAGER_LIBS=(config deps api traffic ip_tracking online expiry users cron migration ui)
+
+# === УТИЛИТА: скачивание файлов менеджера ===
+download_file() {
+    local src="$1" dst="$2"
+    if ! curl -fsSL --max-time 30 "$src" -o "$dst.tmp"; then
+        die "Не удалось скачать $src"
+    fi
+    if [ ! -s "$dst.tmp" ]; then
+        rm -f "$dst.tmp"
+        die "Скачанный $src пустой"
+    fi
+    mv "$dst.tmp" "$dst"
+}
+
+install_manager_files() {
+    info "Скачиваю менеджер из $REPO_URL ..."
+    mkdir -p "$INSTALL_DIR/lib"
+    download_file "$REPO_URL/hy2-manager.sh" "$INSTALL_DIR/hy2-manager.sh"
+    for f in "${MANAGER_LIBS[@]}"; do
+        download_file "$REPO_URL/lib/${f}.sh" "$INSTALL_DIR/lib/${f}.sh"
+    done
+    chmod +x "$INSTALL_DIR/hy2-manager.sh"
+    ln -sf "$INSTALL_DIR/hy2-manager.sh" /usr/local/bin/hy2-manager
+}
+
+setup_log_dir() {
+    mkdir -p "$LOG_DIR"
+    touch "$LOG_DIR/error.log"
+    chmod 750 "$LOG_DIR"
+    chmod 640 "$LOG_DIR/error.log"
+}
+
+# === ОПРЕДЕЛЕНИЕ ТЕКУЩЕГО СОСТОЯНИЯ ===
+HYSTERIA_PRESENT=0
+if command -v hysteria &>/dev/null || \
+   [ -f "$CONFIG" ] || \
+   systemctl list-unit-files 2>/dev/null | grep -q '^hysteria-server\.service'; then
+    HYSTERIA_PRESENT=1
+fi
+
+# === ВЫБОР РЕЖИМА (если уже установлено) ===
+MODE="fresh"
+if [ "$HYSTERIA_PRESENT" = 1 ]; then
+    echo "🔍 Обнаружена существующая установка Hysteria 2."
+    echo ""
+    echo "  1) 🔄 Обновить ТОЛЬКО менеджер"
+    echo "     (Hysteria, конфиг, сертификаты, пользователи — остаются нетронутыми)"
+    echo ""
+    echo "  2) 💣 ПОЛНАЯ переустановка с нуля"
+    echo "     (удаляются: Hysteria, конфиг, сертификаты, ВСЕ пользователи, статистика)"
+    echo ""
+    echo "  3) ❌ Отмена"
+    echo ""
+    read -p "  Выберите [1/2/3]: " choice
+    case "${choice:-}" in
+        1) MODE="manager_only" ;;
+        2) MODE="full_reinstall" ;;
+        3|"") echo "Отменено."; exit 0 ;;
+        *) die "Неверный выбор" ;;
+    esac
+fi
+
+# ================================================================
+# РЕЖИМ: ОБНОВЛЕНИЕ ТОЛЬКО МЕНЕДЖЕРА
+# ================================================================
+if [ "$MODE" = "manager_only" ]; then
+    info "Режим: обновление менеджера (без переустановки Hysteria)"
+
+    # Минимальные зависимости для работы менеджера
+    export DEBIAN_FRONTEND=noninteractive
+    apt update -qq >/dev/null 2>&1 || true
+    apt install -y -qq curl jq pwgen >/dev/null 2>&1 || true
+
+    # Каталоги
+    setup_log_dir
+    mkdir -p "$DATA_DIR"
+    for f in stats.dat ips.dat expiry.dat disabled.dat; do
+        [ -f "$DATA_DIR/$f" ] || touch "$DATA_DIR/$f"
+    done
+
+    install_manager_files
+
+    ok "Менеджер обновлён."
+    if systemctl is-active --quiet "$SERVICE"; then
+        ok "Hysteria 2 продолжает работать"
+    else
+        warn "Сервис $SERVICE не активен — проверьте: systemctl status $SERVICE"
+    fi
+    echo ""
+    echo "📌 Запуск: hy2-manager"
+    echo "📋 Логи менеджера: $LOG_DIR/error.log"
+    exit 0
+fi
+
+# ================================================================
+# РЕЖИМ: ПОЛНАЯ ПЕРЕУСТАНОВКА — ОЧИСТКА ПЕРЕД СВЕЖЕЙ УСТАНОВКОЙ
+# ================================================================
+if [ "$MODE" = "full_reinstall" ]; then
+    echo ""
+    warn "ВНИМАНИЕ: будут БЕЗВОЗВРАТНО удалены:"
+    echo "    - бинарник Hysteria 2 и systemd-юнит"
+    echo "    - $CONFIG (все пользователи и пароли)"
+    echo "    - $CERT_DIR (сертификаты)"
+    echo "    - $DATA_DIR (статистика, IP, сроки)"
+    echo "    - $INSTALL_DIR (менеджер)"
+    echo "    - $LOG_DIR (логи)"
+    echo ""
+    read -p "  Введите 'yes' для подтверждения: " confirm
+    [ "${confirm:-}" != "yes" ] && { echo "Отменено."; exit 0; }
+
+    info "Останавливаю и удаляю Hysteria 2..."
+    systemctl stop "$SERVICE" 2>/dev/null || true
+    systemctl disable "$SERVICE" 2>/dev/null || true
+
+    # Официальный установщик умеет удалять через --remove
+    local_uninstall=$(mktemp)
+    if curl -fsSL --max-time 30 "https://get.hy2.sh/" -o "$local_uninstall"; then
+        bash "$local_uninstall" --remove 2>/dev/null || true
+    fi
+    rm -f "$local_uninstall"
+
+    # На случай, если официальный uninstaller что-то оставил
+    rm -f /usr/local/bin/hysteria /usr/bin/hysteria
+    rm -f /etc/systemd/system/hysteria-server.service
+    rm -f /etc/systemd/system/multi-user.target.wants/hysteria-server.service
+    systemctl daemon-reload 2>/dev/null || true
+
+    info "Удаляю конфиги, сертификаты и данные менеджера..."
+    rm -rf /etc/hysteria
+    rm -rf "$INSTALL_DIR"
+    rm -rf "$LOG_DIR"
+    rm -f /usr/local/bin/hy2-manager
+
+    # Чистим cron-задачи менеджера
+    if command -v crontab &>/dev/null; then
+        (crontab -l 2>/dev/null | grep -v "hy2-manager" || true) | crontab - 2>/dev/null || true
+    fi
+
+    ok "Старая установка удалена. Продолжаю свежей установкой..."
+    echo ""
+    HYSTERIA_PRESENT=0
+fi
+
 # ================================================================
 # 1. СИСТЕМНЫЕ ПАКЕТЫ
 # ================================================================
@@ -177,14 +328,10 @@ install_hysteria() {
     rm -f "$tmpfile"
 }
 
-if command -v hysteria &>/dev/null; then
-    ok "Hysteria 2 уже установлен: $(hysteria version 2>/dev/null | head -1)"
-    read -p "  Переустановить? [y/N]: " REINSTALL
-    if [[ "${REINSTALL:-}" =~ ^[Yy]$ ]]; then
-        install_hysteria
-    fi
-else
+if ! command -v hysteria &>/dev/null; then
     install_hysteria
+else
+    ok "Hysteria 2 уже установлен: $(hysteria version 2>/dev/null | head -1)"
 fi
 
 # Проверяем что бинарник реально появился
@@ -204,7 +351,6 @@ fi
 # ================================================================
 # 6. СЕРТИФИКАТЫ (самоподписанные, 10 лет)
 # ================================================================
-CERT_DIR="/etc/hysteria/certs"
 mkdir -p "$CERT_DIR"
 
 GENERATE_CERT=true
@@ -237,8 +383,6 @@ ok "Права на сертификаты выставлены корректн
 # ================================================================
 # 7. КОНФИГ HYSTERIA 2
 # ================================================================
-CONFIG="/etc/hysteria/config.yaml"
-
 info "Создаю конфиг: $CONFIG"
 
 # Бэкап старого конфига если есть
@@ -288,9 +432,8 @@ chmod 640 "$CONFIG"
 ok "Конфиг создан"
 
 # ================================================================
-# 8. ДАННЫЕ МЕНЕДЖЕРА
+# 8. ДАННЫЕ МЕНЕДЖЕРА И ЛОГИ
 # ================================================================
-DATA_DIR="/etc/hysteria/manager"
 mkdir -p "$DATA_DIR"
 echo "$API_SECRET" > "$DATA_DIR/api_secret"
 chmod 600 "$DATA_DIR/api_secret"
@@ -299,44 +442,14 @@ for f in stats.dat ips.dat expiry.dat disabled.dat; do
 done
 ok "Директория менеджера: $DATA_DIR"
 
-# Каталог логов менеджера
-LOG_DIR="/var/log/hy2-manager"
-mkdir -p "$LOG_DIR"
-touch "$LOG_DIR/error.log"
-chmod 750 "$LOG_DIR"
-chmod 640 "$LOG_DIR/error.log"
+setup_log_dir
 ok "Лог-каталог: $LOG_DIR/error.log"
 
 # ================================================================
 # 9. УСТАНОВКА МЕНЕДЖЕРА (скачиваем из REPO_URL)
 # ================================================================
-INSTALL_DIR="/opt/hy2-manager"
-info "Устанавливаю менеджер в $INSTALL_DIR (источник: $REPO_URL)..."
-mkdir -p "$INSTALL_DIR/lib"
-
-download_file() {
-    local src="$1" dst="$2"
-    if ! curl -fsSL --max-time 30 "$src" -o "$dst.tmp"; then
-        die "Не удалось скачать $src"
-    fi
-    if [ ! -s "$dst.tmp" ]; then
-        rm -f "$dst.tmp"
-        die "Скачанный $src пустой"
-    fi
-    mv "$dst.tmp" "$dst"
-}
-
-download_file "$REPO_URL/hy2-manager.sh" "$INSTALL_DIR/hy2-manager.sh"
-for f in config.sh deps.sh api.sh traffic.sh ip_tracking.sh online.sh expiry.sh users.sh cron.sh migration.sh ui.sh; do
-    download_file "$REPO_URL/lib/$f" "$INSTALL_DIR/lib/$f"
-done
-
-chmod +x "$INSTALL_DIR/hy2-manager.sh"
-
-# Симлинк для удобного запуска
-ln -sf "$INSTALL_DIR/hy2-manager.sh" /usr/local/bin/hy2-manager
-
-ok "Менеджер установлен"
+install_manager_files
+ok "Менеджер установлен в $INSTALL_DIR"
 
 # ================================================================
 # 10. ЗАПУСК СЕРВИСА
