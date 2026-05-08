@@ -18,17 +18,26 @@
 - root-доступ
 - Все зависимости устанавливаются автоматически
 
-## Установка с нуля (рекомендуется)
+## Установка / переустановка
 
-Полная установка командой:
+Та же команда работает и для первой установки, и для обновления — скрипт сам определит состояние сервера:
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh)
 ```
 
-> ⚠️ Используйте именно `bash <(curl ...)`, а не `curl ... | bash` — установщику нужен интерактивный TTY для запроса параметров (порт, SNI, имя пользователя). Скрипт сам определит подмену stdin и попытается переключиться на `/dev/tty`, но `bash <(...)` гарантированно работает.
+> ⚠️ Используйте именно `bash <(curl ...)`, а не `curl ... | bash` — установщику нужен интерактивный TTY для запроса параметров. Скрипт также сам пробует переключиться на `/dev/tty`, но `bash <(...)` гарантированно работает.
 
-Скрипт интерактивно спросит:
+Если Hysteria 2 уже установлена, скрипт спросит:
+
+| Режим | Что делает |
+|-------|-----------|
+| **1) Обновить только менеджер** | Скачивает свежие `hy2-manager.sh` и `lib/*.sh`, обновляет симлинк, ставит лог-каталог. **Hysteria, конфиг, сертификаты и пользователи не трогаются.** |
+| **2) Полная переустановка** | Останавливает сервис, удаляет Hysteria, `/etc/hysteria/`, `/opt/hy2-manager`, `/var/log/hy2-manager`, чистит crontab — затем устанавливает всё с нуля. **Все пользователи и статистика теряются.** |
+| **3) Отмена** | Выйти, ничего не меняя. |
+
+При свежей установке скрипт интерактивно спросит:
+
 - **Порт** — UDP-порт для Hysteria (по умолчанию случайный 10000-65000)
 - **Домен для маскировки** — SNI для TLS (по умолчанию `www.twitch.tv`)
 - **OBFS-пароль** — пароль обфускации Salamander (генерируется автоматически)
@@ -57,21 +66,6 @@ sudo REPO_URL="https://raw.githubusercontent.com/USERNAME/REPO/BRANCH" \
 8. Скачивает менеджер из репозитория в `/opt/hy2-manager`, создаёт симлинк `/usr/local/bin/hy2-manager`
 9. Запускает `hysteria-server.service`, проверяет что он `active` и слушает UDP-порт
 10. Выводит готовую `hysteria2://` ссылку для клиента
-
-## Установка только менеджера (Hysteria 2 уже стоит)
-
-```bash
-sudo mkdir -p /opt/hy2-manager/lib
-BASE="https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main"
-sudo curl -fsSL "$BASE/hy2-manager.sh" -o /opt/hy2-manager/hy2-manager.sh
-for f in config.sh deps.sh api.sh traffic.sh ip_tracking.sh online.sh \
-         expiry.sh users.sh cron.sh migration.sh ui.sh; do
-    sudo curl -fsSL "$BASE/lib/$f" -o "/opt/hy2-manager/lib/$f"
-done
-sudo chmod +x /opt/hy2-manager/hy2-manager.sh
-sudo ln -sf /opt/hy2-manager/hy2-manager.sh /usr/local/bin/hy2-manager
-sudo hy2-manager
-```
 
 ## Структура проекта
 
