@@ -42,7 +42,7 @@ fi
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║         Установка Hysteria 2 + Manager v2.0                ║"
+echo "║         Установка Hysteria 2 + Manager v2.1                ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -84,8 +84,8 @@ if ! [[ "$HY_PORT" =~ ^[0-9]+$ ]] || [ "$HY_PORT" -lt 1 ] || [ "$HY_PORT" -gt 65
 fi
 
 # SNI / маскировка
-read -p "  Домен для маскировки [www.microsoft.com]: " HY_SNI
-HY_SNI=${HY_SNI:-www.microsoft.com}
+read -p "  Домен для маскировки [www.twitch.tv]: " HY_SNI
+HY_SNI=${HY_SNI:-www.twitch.tv}
 
 # OBFS пароль (генерируется только из [A-Za-z0-9] для URL-safe)
 DEFAULT_OBFS=$(pwgen -s 32 1)
@@ -298,6 +298,14 @@ for f in stats.dat ips.dat expiry.dat disabled.dat; do
     [ -f "$DATA_DIR/$f" ] || touch "$DATA_DIR/$f"
 done
 ok "Директория менеджера: $DATA_DIR"
+
+# Каталог логов менеджера
+LOG_DIR="/var/log/hy2-manager"
+mkdir -p "$LOG_DIR"
+touch "$LOG_DIR/error.log"
+chmod 750 "$LOG_DIR"
+chmod 640 "$LOG_DIR/error.log"
+ok "Лог-каталог: $LOG_DIR/error.log"
 
 # ================================================================
 # 9. УСТАНОВКА МЕНЕДЖЕРА (скачиваем из REPO_URL)
