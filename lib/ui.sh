@@ -126,7 +126,7 @@ user_action_menu() {
         echo "  5. ⏰ Установить срок действия"
         echo "  6. 🌐 Просмотр IP-адресов"
         echo "  7. 🔗 Получить ссылку"
-        echo "  8. ↩  Назад"
+        echo "  0. ↩  Назад"
         echo ""
         read -p "  Действие: " act
 
@@ -245,7 +245,7 @@ user_action_menu() {
                 fi
                 read -p "  Enter для продолжения..."
                 ;;
-            8) return ;;
+            0) return ;;
         esac
     done
 }
@@ -281,6 +281,56 @@ user_list_menu() {
                 if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "$USER_LIST_TOTAL" ] 2>/dev/null; then
                     user_action_menu "${USER_LIST_ARRAY[$((input - 1))]}"
                 fi
+                ;;
+        esac
+    done
+}
+
+# ====================== НАСТРОЙКИ ======================
+
+settings_menu() {
+    while true; do
+        clear
+        local autostart_status autostart_label
+        if systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
+            autostart_status="✅ включён"
+            autostart_label="Отключить автозапуск Hysteria"
+        else
+            autostart_status="❌ отключён"
+            autostart_label="Включить автозапуск Hysteria"
+        fi
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  ⚙  Настройки менеджера"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Автозапуск Hysteria: $autostart_status"
+        echo ""
+        echo "  1. 🔁 $autostart_label"
+        echo "  0. ↩  Назад"
+        echo ""
+        read -p "  Выберите: " choice
+
+        case "$choice" in
+            1)
+                if systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
+                    if systemctl disable "$SERVICE" 2>/dev/null; then
+                        echo "  ✅ Автозапуск Hysteria отключён"
+                    else
+                        echo "  ❌ Не удалось отключить автозапуск"
+                    fi
+                else
+                    if systemctl enable "$SERVICE" 2>/dev/null; then
+                        echo "  ✅ Автозапуск Hysteria включён"
+                    else
+                        echo "  ❌ Не удалось включить автозапуск"
+                    fi
+                fi
+                sleep 1.5
+                ;;
+            0) return ;;
+            *)
+                echo "  ❌ Неверный выбор!"
+                sleep 1
                 ;;
         esac
     done

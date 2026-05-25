@@ -86,9 +86,21 @@ while true; do
     total_count=$((active_count + disabled_count))
     online_count=$(echo "${CACHED_ONLINE:-{}}" | jq 'to_entries | map(select(.value > 0)) | length' 2>/dev/null | tr -dc '0-9' || echo "?")
 
+    if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+        hy_status="🟢 Работает"
+    else
+        hy_status="🔴 Остановлен"
+    fi
+    if systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
+        hy_autostart="✅ включён"
+    else
+        hy_autostart="❌ отключён"
+    fi
+
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║              Hysteria 2 Manager v2.1                       ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
+    echo "║ Статус Hysteria : $hy_status (автозапуск: $hy_autostart)"
     echo "║ IP сервера      : $CACHED_IP"
     echo "║ Порт            : $CACHED_PORT"
     echo "║ SNI / Маскировка: $CACHED_SNI"
@@ -99,9 +111,10 @@ while true; do
     echo "  1. ➕ Добавить нового пользователя"
     echo "  2. 👥 Пользователи (статистика, IP, действия)"
     echo "  3. 🔗 Получить ссылку"
-    echo "  4. 🚪 Выход"
+    echo "  4. ⚙  Настройки"
+    echo "  0. 🚪 Выход"
     echo ""
-    read -p "  Выберите (1-4): " choice
+    read -p "  Выберите: " choice
 
     case $choice in
         1)
@@ -189,6 +202,10 @@ while true; do
             ;;
 
         4)
+            settings_menu
+            ;;
+
+        0)
             echo "  👋 Выход..."
             exit 0
             ;;
