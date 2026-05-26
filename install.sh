@@ -105,13 +105,13 @@ if [ "$HYSTERIA_PRESENT" = 1 ]; then
     echo "  2) 💣 ПОЛНАЯ переустановка с нуля"
     echo "     (удаляются: Hysteria, конфиг, сертификаты, ВСЕ пользователи, статистика)"
     echo ""
-    echo "  3) ❌ Отмена"
+    echo "  0) ❌ Отмена"
     echo ""
-    read -p "  Выберите [1/2/3]: " choice
+    read -p "  Выберите [1/2/0]: " choice
     case "${choice:-}" in
         1) MODE="manager_only" ;;
         2) MODE="full_reinstall" ;;
-        3|"") echo "Отменено."; exit 0 ;;
+        0|"") echo "Отменено."; exit 0 ;;
         *) die "Неверный выбор" ;;
     esac
 fi
@@ -263,12 +263,26 @@ FIRST_PASS=$(pwgen -s 64 1)
 # trafficStats секрет (alphanumeric → безопасен в YAML без кавычек)
 API_SECRET=$(pwgen -s 32 1)
 
+# Автозапуск Hysteria при загрузке системы
+read -p "  Запускать Hysteria автоматически при загрузке системы? [Y/n]: " HY_AUTOSTART
+HY_AUTOSTART=${HY_AUTOSTART:-Y}
+if [[ "$HY_AUTOSTART" =~ ^[Yy]$ ]]; then
+    HY_AUTOSTART_ENABLED=1
+else
+    HY_AUTOSTART_ENABLED=0
+fi
+
 echo ""
 info "Конфигурация:"
 echo "  Порт:       $HY_PORT"
 echo "  SNI:        $HY_SNI"
 echo "  OBFS:       ${HY_OBFS:0:20}..."
 echo "  Пользователь: $FIRST_USER"
+if [ "$HY_AUTOSTART_ENABLED" = 1 ]; then
+    echo "  Автозапуск:  ✅ включён"
+else
+    echo "  Автозапуск:  ❌ отключён"
+fi
 echo ""
 read -p "  Продолжить установку? [Y/n]: " CONFIRM
 CONFIRM=${CONFIRM:-Y}
@@ -456,7 +470,13 @@ ok "Менеджер установлен в $INSTALL_DIR"
 # ================================================================
 info "Запускаю Hysteria 2..."
 systemctl daemon-reload 2>/dev/null || true
-systemctl enable hysteria-server.service 2>/dev/null || true
+if [ "$HY_AUTOSTART_ENABLED" = 1 ]; then
+    systemctl enable hysteria-server.service 2>/dev/null || true
+    ok "Автозапуск Hysteria включён"
+else
+    systemctl disable hysteria-server.service 2>/dev/null || true
+    warn "Автозапуск Hysteria отключён (можно включить в Настройках менеджера)"
+fi
 systemctl restart hysteria-server.service
 sleep 3
 
