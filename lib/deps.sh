@@ -14,7 +14,7 @@ check_deps() {
 
 init_data_dir() {
     mkdir -p "$DATA_DIR"
-    for f in "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$DISABLED_FILE"; do
+    for f in "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$DISABLED_FILE" "$SPEED_FILE"; do
         [ -f "$f" ] || touch "$f"
     done
 }
