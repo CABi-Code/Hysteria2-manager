@@ -130,7 +130,7 @@ if [ "$MODE" = "manager_only" ]; then
     # Каталоги
     setup_log_dir
     mkdir -p "$DATA_DIR"
-    for f in stats.dat ips.dat expiry.dat disabled.dat; do
+    for f in stats.dat ips.dat expiry.dat disabled.dat speed.dat; do
         [ -f "$DATA_DIR/$f" ] || touch "$DATA_DIR/$f"
     done
 
@@ -451,7 +451,7 @@ ok "Конфиг создан"
 mkdir -p "$DATA_DIR"
 echo "$API_SECRET" > "$DATA_DIR/api_secret"
 chmod 600 "$DATA_DIR/api_secret"
-for f in stats.dat ips.dat expiry.dat disabled.dat; do
+for f in stats.dat ips.dat expiry.dat disabled.dat speed.dat; do
     [ -f "$DATA_DIR/$f" ] || touch "$DATA_DIR/$f"
 done
 ok "Директория менеджера: $DATA_DIR"

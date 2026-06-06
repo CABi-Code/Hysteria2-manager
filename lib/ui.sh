@@ -80,6 +80,9 @@ show_user_table() {
 user_action_menu() {
     local user="$1"
     while true; do
+        # Живые данные: онлайн-статус, трафик и текущая скорость
+        refresh_online
+        collect_traffic
         clear
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  Пользователь: $user"
@@ -102,6 +105,12 @@ user_action_menu() {
         tx=$(echo "$tl" | cut -d'|' -f2)
         rx=$(echo "$tl" | cut -d'|' -f3)
         echo "  Трафик:       ↑$(format_bytes "$tx") / ↓$(format_bytes "$rx")"
+
+        local sp sp_tx sp_rx
+        sp=$(get_user_speed "$user")
+        sp_tx=$(echo "$sp" | cut -d'|' -f2)
+        sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        echo "  Скорость:     ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
 
         local ipc
         ipc=$(get_user_ip_count "$user")
@@ -128,7 +137,11 @@ user_action_menu() {
         echo "  7. 🔗 Получить ссылку"
         echo "  0. ↩  Назад"
         echo ""
-        read -p "  Действие: " act
+        local act
+        # Автообновление: нет ввода за REFRESH_INTERVAL сек — перерисовываем
+        if ! ask act "  Действие (обновление каждые ${REFRESH_INTERVAL}с): " "$REFRESH_INTERVAL"; then
+            continue
+        fi
 
         case "$act" in
             1)
@@ -140,7 +153,7 @@ user_action_menu() {
                 systemctl restart "$SERVICE" 2>/dev/null
                 sleep 2
                 refresh_online
-                read -p "  Enter для продолжения..."
+                pause
                 ;;
             2)
                 change_user_password "$user"
@@ -149,11 +162,12 @@ user_action_menu() {
                     sleep 2
                 fi
                 echo "  ⚠️  Пользователю нужна новая ссылка!"
-                read -p "  Enter для продолжения..."
+                pause
                 ;;
             3)
-                read -p "  ⚠️  Удалить $user ПОЛНОСТЬЮ? (да/нет): " confirm
-                if [ "$confirm" = "да" ]; then
+                local confirm
+                ask confirm "  ⚠️  Удалить $user ПОЛНОСТЬЮ? (да/нет): "
+                if is_yes "$confirm"; then
                     local was_active=false
                     grep -q "^[[:space:]]*${user}:[[:space:]]" "$CONFIG" && was_active=true
                     delete_user "$user"
@@ -161,21 +175,22 @@ user_action_menu() {
                         systemctl restart "$SERVICE" 2>/dev/null
                         sleep 2
                     fi
-                    read -p "  Enter для продолжения..."
+                    pause
                     return
                 fi
                 ;;
             4)
-                read -p "  Сбросить статистику $user? (да/нет): " confirm
-                [ "$confirm" = "да" ] && reset_user_stats "$user"
-                read -p "  Enter для продолжения..."
+                local confirm
+                ask confirm "  Сбросить статистику $user? (да/нет): "
+                is_yes "$confirm" && reset_user_stats "$user"
+                pause
                 ;;
             5)
                 echo ""
-                local cur_exp
+                local cur_exp new_exp
                 cur_exp=$(get_user_expiry "$user")
                 [ -n "$cur_exp" ] && echo "  Текущий срок: $cur_exp"
-                read -p "  Новая дата (ГГГГ-ММ-ДД, или 'нет' для снятия): " new_exp
+                ask new_exp "  Новая дата (ГГГГ-ММ-ДД, или 'нет' для снятия): "
                 if [ "$new_exp" = "нет" ]; then
                     remove_user_expiry "$user"
                     echo "  ✅ Срок действия снят"
@@ -185,9 +200,10 @@ user_action_menu() {
                 else
                     echo "  ❌ Неверный формат даты"
                 fi
-                read -p "  Enter для продолжения..."
+                pause
                 ;;
             6)
+                collect_ips
                 echo ""
                 echo "  🌐 IP-адреса пользователя $user:"
                 echo "  ────────────────────────────────────────────────────────"
@@ -223,7 +239,7 @@ user_action_menu() {
                     fi
                 fi
                 echo ""
-                read -p "  Enter для продолжения..."
+                pause
                 ;;
             7)
                 local pass
@@ -243,7 +259,7 @@ user_action_menu() {
                 else
                     echo "  ❌ Не удалось получить пароль"
                 fi
-                read -p "  Enter для продолжения..."
+                pause
                 ;;
             0) return ;;
         esac
@@ -255,12 +271,14 @@ user_action_menu() {
 user_list_menu() {
     local page=1
     while true; do
+        # Живые данные таблицы: онлайн-статус и трафик
         refresh_online
+        collect_traffic
         show_user_table "$page" "Пользователи — статистика и действия"
         local ret=$?
         if [ $ret -ne 0 ]; then
             echo ""
-            read -p "  Enter для возврата..."
+            pause "  Enter для возврата..."
             return
         fi
 
@@ -271,7 +289,11 @@ user_list_menu() {
             echo "  [1-${USER_LIST_TOTAL}] действия  |  [0] назад"
         fi
         echo ""
-        read -p "  Ввод: " input
+        local input
+        # Автообновление: нет ввода за REFRESH_INTERVAL сек — перерисовываем
+        if ! ask input "  Ввод (обновление каждые ${REFRESH_INTERVAL}с): " "$REFRESH_INTERVAL"; then
+            continue
+        fi
 
         case "$input" in
             0) return ;;
@@ -308,7 +330,8 @@ settings_menu() {
         echo "  1. 🔁 $autostart_label"
         echo "  0. ↩  Назад"
         echo ""
-        read -p "  Выберите: " choice
+        local choice
+        ask choice "  Выберите: "
 
         case "$choice" in
             1)
@@ -345,7 +368,7 @@ get_link_menu() {
         local ret=$?
         if [ $ret -ne 0 ]; then
             echo ""
-            read -p "  Enter для возврата..."
+            pause "  Enter для возврата..."
             return
         fi
 
@@ -356,7 +379,8 @@ get_link_menu() {
             echo "  [1-${USER_LIST_TOTAL}] ссылка  |  [0] назад"
         fi
         echo ""
-        read -p "  Номер: " input
+        local input
+        ask input "  Номер: "
 
         case "$input" in
             0) return ;;
@@ -383,7 +407,7 @@ get_link_menu() {
                     else
                         echo "  ❌ Ошибка получения пароля"
                     fi
-                    read -p "  Enter для продолжения..."
+                    pause
                 fi
                 ;;
         esac
