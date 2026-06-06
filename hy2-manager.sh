@@ -17,14 +17,15 @@ unset _self _resolved
 LOG_DIR="/var/log/hy2-manager"
 LOG_FILE="$LOG_DIR/error.log"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
-# Дублируем stderr в лог-файл (ошибки видны на экране и записываются на диск).
-# Подключения сюда не пишутся — они идут в journalctl.
-if [ -w "$LOG_DIR" ] || mkdir -p "$LOG_DIR" 2>/dev/null; then
-    exec 2> >(while IFS= read -r _line; do
-        printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$_line" >> "$LOG_FILE"
-        printf '%s\n' "$_line" >&2
-    done)
-fi
+# stderr перенаправляем в лог-файл НИЖЕ — после загрузки модулей и проверки
+# зависимостей (чтобы критичные ошибки старта были видны на экране).
+#
+# ВАЖНО: ранее stderr дублировался на экран через `exec 2> >(...)`
+# (process substitution). Это ломало интерактив: промпт `read -p` пишется
+# в stderr без перевода строки и застревал в построчном буфере подстановки —
+# пользователь не видел ни «Enter для продолжения…», ни запроса
+# подтверждения удаления и вводил вслепую. Теперь промпты печатаются в
+# stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
 _required_libs=(config deps api traffic ip_tracking online expiry users cron migration ui)
@@ -44,6 +45,13 @@ unset _required_libs _lib _libpath
 # === ПРОВЕРКА ЗАВИСИМОСТЕЙ ===
 check_deps
 init_data_dir
+
+# === ЛОГ stderr ===
+# С этого момента ошибки (sed/systemctl/curl и т.п.) пишем в лог-файл, чтобы
+# они не затирали интерактивный интерфейс. Промпты идут в stdout (ask/pause).
+if [ -w "$LOG_DIR" ] || mkdir -p "$LOG_DIR" 2>/dev/null; then
+    exec 2>>"$LOG_FILE"
+fi
 
 # === CLI АРГУМЕНТЫ ===
 
@@ -114,11 +122,15 @@ while true; do
     echo "  4. ⚙  Настройки"
     echo "  0. 🚪 Выход"
     echo ""
-    read -p "  Выберите: " choice
+    # Автообновление: если за REFRESH_INTERVAL сек ввода нет — перерисовываем меню
+    if ! ask choice "  Выберите (обновление каждые ${REFRESH_INTERVAL}с): " "$REFRESH_INTERVAL"; then
+        continue
+    fi
 
     case $choice in
         1)
-            read -p "  Имя пользователя (латиница, цифры, _): " USERNAME
+            clear
+            ask USERNAME "  Имя пользователя (латиница, цифры, _): "
             [ -z "$USERNAME" ] && echo "  ❌ Имя не может быть пустым!" && sleep 2 && continue
 
             if [[ ! "$USERNAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
@@ -166,7 +178,7 @@ while true; do
 
             echo "  ✅ Пользователь $USERNAME добавлен"
 
-            read -p "  Установить срок действия? (ГГГГ-ММ-ДД или Enter): " EXP
+            ask EXP "  Установить срок действия? (ГГГГ-ММ-ДД или Enter): "
             if [[ "$EXP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
                 set_user_expiry "$USERNAME" "$EXP"
                 echo "  ⏰ Срок действия: $EXP"
@@ -188,7 +200,7 @@ while true; do
             echo "  $LINK"
             echo ""
             echo "  💡 Hiddify, Nekobox, Streisand и т.д."
-            read -p "  Enter для возврата..."
+            pause "  Enter для возврата..."
             ;;
 
         2)
@@ -208,6 +220,10 @@ while true; do
         0)
             echo "  👋 Выход..."
             exit 0
+            ;;
+
+        "")
+            # Пустой ввод (Enter) — просто обновляем экран
             ;;
 
         *)

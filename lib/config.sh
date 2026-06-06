@@ -12,8 +12,47 @@ EXPIRY_FILE="$DATA_DIR/expiry.dat"
 DISABLED_FILE="$DATA_DIR/disabled.dat"
 LAST_LOG_TS="$DATA_DIR/last_log_ts"
 API_SECRET_FILE="$DATA_DIR/api_secret"
+# Текущая скорость (B/s) за последний интервал сбора и метка времени этого интервала
+SPEED_FILE="$DATA_DIR/speed.dat"
+SPEED_TS_FILE="$DATA_DIR/speed_ts"
 API_PORT=25580
 PAGE_SIZE=10
+# Интервал автообновления интерактивных меню (секунды)
+REFRESH_INTERVAL=2
+
+# ====================== ВВОД / ПРОМПТЫ ======================
+# ВАЖНО: stderr перенаправлен в лог-файл (см. hy2-manager.sh), поэтому
+# обычный `read -p` не годится — его промпт пишется в stderr и ушёл бы
+# в лог, оставаясь невидимым для пользователя. Эти хелперы печатают
+# промпт в stdout, поэтому он всегда виден.
+
+# ask <имя_переменной> "<промпт>" [таймаут_сек]
+# Возвращает код read (важно: при таймауте read -t код != 0 — это
+# используется циклами меню как сигнал «обнови экран»).
+ask() {
+    local __ask_var="$1" __ask_msg="$2" __ask_to="${3:-}"
+    printf '%s' "$__ask_msg"
+    if [ -n "$__ask_to" ]; then
+        read -r -t "$__ask_to" "$__ask_var"
+    else
+        read -r "$__ask_var"
+    fi
+}
+
+# pause ["<сообщение>"] — «нажмите Enter», промпт виден в stdout
+pause() {
+    local __pause_msg="${1:-  Enter для продолжения...}"
+    printf '%s' "$__pause_msg"
+    read -r _
+}
+
+# is_yes <ответ> — подтверждение (принимаем да/yes/y в разных регистрах)
+is_yes() {
+    case "$1" in
+        да|Да|ДА|д|Д|yes|Yes|YES|y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 get_ip() {
     curl -4s --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
