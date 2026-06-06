@@ -23,7 +23,7 @@
 Та же команда работает и для первой установки, и для обновления — скрипт сам определит состояние сервера:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh)
 ```
 
 > ⚠️ Используйте именно `bash <(curl ...)`, а не `curl ... | bash` — установщику нужен интерактивный TTY для запроса параметров. Скрипт также сам пробует переключиться на `/dev/tty`, но `bash <(...)` гарантированно работает.
