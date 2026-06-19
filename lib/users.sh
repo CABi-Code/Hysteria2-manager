@@ -103,7 +103,11 @@ generate_user_config() {
     # Формат рассчитан на sing-box >= 1.12:
     #  - DNS-серверы в новом виде ({type,server}), без legacy "address";
     #  - перехват DNS через route-экшен "hijack-dns" (старый dns-outbound удалён);
-    #  - sniff через route-экшен "sniff", а не устаревшее поле инбаунда.
+    #  - sniff через route-экшен "sniff", а не устаревшее поле инбаунда;
+    #  - route.default_domain_resolver (обязателен в 1.12, т.к. у DNS-серверов
+    #    есть detour) — указывает на прямой dns_local;
+    #  - у dns_local НЕТ detour: detour на пустой direct outbound в 1.12 даёт
+    #    FATAL ("detour to an empty direct outbound makes no sense").
     jq -n \
         --arg server "$CACHED_IP" \
         --argjson port "${CACHED_PORT:-443}" \
@@ -115,7 +119,7 @@ generate_user_config() {
             dns: {
                 servers: [
                     { type: "https", tag: "dns_remote", server: "8.8.8.8", detour: "proxy_out" },
-                    { type: "udp", tag: "dns_local", server: "1.1.1.1", detour: "direct_out" }
+                    { type: "udp", tag: "dns_local", server: "1.1.1.1" }
                 ],
                 final: "dns_remote",
                 strategy: "ipv4_only"
@@ -144,6 +148,7 @@ generate_user_config() {
             ],
             route: {
                 auto_detect_interface: true,
+                default_domain_resolver: { server: "dns_local" },
                 final: "proxy_out",
                 rules: [
                     { action: "sniff" },
