@@ -135,6 +135,7 @@ user_action_menu() {
         echo "  5. ⏰ Установить срок действия"
         echo "  6. 🌐 Просмотр IP-адресов"
         echo "  7. 🔗 Получить ссылку"
+        echo "  8. 📄 Получить конфиг-файл"
         echo "  0. ↩  Назад"
         echo ""
         local act
@@ -258,6 +259,23 @@ user_action_menu() {
                     echo "  💡 Hiddify, Nekobox, Streisand и т.д."
                 else
                     echo "  ❌ Не удалось получить пароль"
+                fi
+                pause
+                ;;
+            8)
+                is_user_disabled "$user" && echo "  ⚠️  Пользователь отключён! Конфиг не будет работать."
+                local cfg
+                cfg=$(generate_user_config "$user")
+                if [ -n "$cfg" ]; then
+                    echo ""
+                    echo "  📄 КОНФИГ-ФАЙЛ создан (временный путь):"
+                    echo "  $cfg"
+                    echo ""
+                    echo "  💡 Скачать на свой компьютер:"
+                    echo "     scp root@${CACHED_IP}:$cfg ."
+                    echo "  💡 Запуск клиента: hysteria client -c $(basename "$cfg")"
+                else
+                    echo "  ❌ Не удалось создать конфиг"
                 fi
                 pause
                 ;;

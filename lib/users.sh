@@ -75,6 +75,43 @@ reset_user_stats() {
     echo "  ✅ Статистика $user сброшена"
 }
 
+# Генерирует клиентский конфиг (YAML) для пользователя и сохраняет его во
+# временный файл. Путь к файлу печатается в stdout (пустой вывод = ошибка).
+# Файл создаётся через mktemp с правами 0600 — пароль виден только владельцу.
+# Подходит для официального клиента Hysteria 2 (hysteria client -c file.yaml).
+generate_user_config() {
+    local user="$1"
+    local pass
+    if is_user_disabled "$user"; then
+        pass=$(get_disabled_password "$user")
+    else
+        pass=$(get_user_password "$user")
+    fi
+    [ -z "$pass" ] && return 1
+
+    local tmpfile
+    tmpfile=$(mktemp "/tmp/hy2-${user}.XXXXXX.yaml") || return 1
+
+    cat > "$tmpfile" <<EOF
+# Hysteria 2 client config — пользователь: ${user}
+server: ${CACHED_IP}:${CACHED_PORT}
+auth: ${user}:${pass}
+tls:
+  sni: ${CACHED_SNI}
+  insecure: true
+obfs:
+  type: salamander
+  salamander:
+    password: ${CACHED_OBFS}
+socks5:
+  listen: 127.0.0.1:1080
+http:
+  listen: 127.0.0.1:8080
+EOF
+
+    echo "$tmpfile"
+}
+
 change_user_password() {
     local user="$1"
     local new_pass
