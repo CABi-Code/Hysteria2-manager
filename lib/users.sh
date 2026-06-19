@@ -75,10 +75,12 @@ reset_user_stats() {
     echo "  ✅ Статистика $user сброшена"
 }
 
-# Генерирует клиентский конфиг (YAML) для пользователя и сохраняет его во
+# Генерирует клиентский конфиг (JSON) для пользователя и сохраняет его во
 # временный файл. Путь к файлу печатается в stdout (пустой вывод = ошибка).
 # Файл создаётся через mktemp с правами 0600 — пароль виден только владельцу.
-# Подходит для официального клиента Hysteria 2 (hysteria client -c file.yaml).
+# JSON собирается через jq, поэтому спецсимволы в пароле/обфускации корректно
+# экранируются. Подходит для официального клиента Hysteria 2
+# (hysteria client -c file.json).
 generate_user_config() {
     local user="$1"
     local pass
@@ -90,24 +92,21 @@ generate_user_config() {
     [ -z "$pass" ] && return 1
 
     local tmpfile
-    tmpfile=$(mktemp "/tmp/hy2-${user}.XXXXXX.yaml") || return 1
+    tmpfile=$(mktemp "/tmp/hy2-${user}.XXXXXX.json") || return 1
 
-    cat > "$tmpfile" <<EOF
-# Hysteria 2 client config — пользователь: ${user}
-server: ${CACHED_IP}:${CACHED_PORT}
-auth: ${user}:${pass}
-tls:
-  sni: ${CACHED_SNI}
-  insecure: true
-obfs:
-  type: salamander
-  salamander:
-    password: ${CACHED_OBFS}
-socks5:
-  listen: 127.0.0.1:1080
-http:
-  listen: 127.0.0.1:8080
-EOF
+    jq -n \
+        --arg server "${CACHED_IP}:${CACHED_PORT}" \
+        --arg auth "${user}:${pass}" \
+        --arg sni "$CACHED_SNI" \
+        --arg obfs "$CACHED_OBFS" \
+        '{
+            server: $server,
+            auth: $auth,
+            tls: { sni: $sni, insecure: true },
+            obfs: { type: "salamander", salamander: { password: $obfs } },
+            socks5: { listen: "127.0.0.1:1080" },
+            http: { listen: "127.0.0.1:8080" }
+        }' > "$tmpfile" || { rm -f "$tmpfile"; return 1; }
 
     echo "$tmpfile"
 }
