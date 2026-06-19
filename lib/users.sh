@@ -79,8 +79,8 @@ reset_user_stats() {
 # временный файл. Путь к файлу печатается в stdout (пустой вывод = ошибка).
 # Файл создаётся через mktemp с правами 0600 — пароль виден только владельцу.
 # JSON собирается через jq, поэтому спецсимволы в пароле/обфускации корректно
-# экранируются. Структура — inbounds (mixed) + outbound type "hysteria2";
-# подходит для sing-box (sing-box -C config.json check/run).
+# экранируются. Структура — TUN-инбаунд (полный туннель) + DNS + outbound
+# type "hysteria2"; подходит для sing-box (sing-box -C config.json check/run).
 generate_user_config() {
     local user="$1"
     local pass
@@ -96,7 +96,9 @@ generate_user_config() {
 
     # Аутентификация Hysteria 2 в режиме userpass — строка "user:pass".
     # В sing-box она передаётся в поле password у outbound hysteria2.
-    # Блок obfs добавляется только если задан salamander-пароль.
+    # Блок obfs (salamander) обязателен для нашего сервера — добавляется,
+    # если задан obfs-пароль; иначе sing-box не пройдёт обфускацию и сервер
+    # отбросит пакеты.
     jq -n \
         --arg server "$CACHED_IP" \
         --argjson port "${CACHED_PORT:-443}" \
@@ -105,21 +107,47 @@ generate_user_config() {
         --arg obfs "$CACHED_OBFS" \
         '{
             log: { level: "info", timestamp: true },
+            dns: {
+                servers: [
+                    { tag: "dns_remote", address: "https://8.8.8.8/dns-query", detour: "proxy_out" },
+                    { tag: "dns_local", address: "1.1.1.1", detour: "direct_out" }
+                ],
+                rules: [
+                    { outbound: "any", server: "dns_local" }
+                ],
+                strategy: "ipv4_only"
+            },
             inbounds: [
-                { type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 1080 }
+                {
+                    type: "tun",
+                    tag: "tun-in",
+                    interface_name: "singtun0",
+                    address: [ "172.19.0.1/30" ],
+                    auto_route: true,
+                    strict_route: true,
+                    stack: "system",
+                    sniff: true
+                }
             ],
             outbounds: [
                 ({
                     type: "hysteria2",
-                    tag: "hy2-out",
+                    tag: "proxy_out",
                     server: $server,
                     server_port: $port,
                     password: $auth,
                     tls: { enabled: true, server_name: $sni, insecure: true }
                 } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)),
-                { type: "direct", tag: "direct" }
+                { type: "direct", tag: "direct_out" }
             ],
-            route: { final: "hy2-out" }
+            route: {
+                auto_detect_interface: true,
+                rules: [
+                    { port: 22, outbound: "direct_out" },
+                    { protocol: "dns", outbound: "dns_remote" },
+                    { ip_is_private: true, outbound: "direct_out" }
+                ]
+            }
         }' > "$tmpfile" || { rm -f "$tmpfile"; return 1; }
 
     echo "$tmpfile"
