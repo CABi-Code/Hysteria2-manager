@@ -79,10 +79,28 @@ reset_user_stats() {
 # временный файл. Путь к файлу печатается в stdout (пустой вывод = ошибка).
 # Файл создаётся через mktemp с правами 0600 — пароль виден только владельцу.
 # JSON собирается через jq, поэтому спецсимволы в пароле/обфускации корректно
-# экранируются. Структура — TUN-инбаунд (полный туннель) + DNS + outbound
-# type "hysteria2"; подходит для sing-box (sing-box -C config.json check/run).
+# экранируются.
+#
+# Второй аргумент — режим:
+#   tun   (по умолчанию) — TUN-инбаунд, полный системный туннель (ПК/телефон);
+#   socks                — mixed-инбаунд (SOCKS+HTTP) на 127.0.0.1:1080, лёгкий
+#                          локальный прокси без захвата всего трафика; удобно
+#                          для проверки и для серверов (нет петли auto_route).
+#
+# Формат рассчитан на sing-box >= 1.12:
+#  - DNS-серверы в новом виде ({type,server}), без legacy "address";
+#  - перехват DNS (только tun) через route-экшен "hijack-dns";
+#  - sniff (только tun) через route-экшен "sniff", а не поле инбаунда;
+#  - route.default_domain_resolver обязателен в 1.12 — указывает на dns_local;
+#  - у dns_local НЕТ detour: detour на пустой direct outbound в 1.12 даёт FATAL
+#    ("detour to an empty direct outbound makes no sense").
+#
+# Аутентификация Hysteria 2 (userpass) — строка "user:pass" в поле password.
+# Блок obfs (salamander) добавляется, только если задан obfs-пароль; для нашего
+# сервера он обязателен, иначе сервер отбросит пакеты.
 generate_user_config() {
     local user="$1"
+    local mode="${2:-tun}"
     local pass
     if is_user_disabled "$user"; then
         pass=$(get_disabled_password "$user")
@@ -94,27 +112,34 @@ generate_user_config() {
     local tmpfile
     tmpfile=$(mktemp "/tmp/sb-${user}.XXXXXX.json") || return 1
 
-    # Аутентификация Hysteria 2 в режиме userpass — строка "user:pass".
-    # В sing-box она передаётся в поле password у outbound hysteria2.
-    # Блок obfs (salamander) обязателен для нашего сервера — добавляется,
-    # если задан obfs-пароль; иначе sing-box не пройдёт обфускацию и сервер
-    # отбросит пакеты.
-    #
-    # Формат рассчитан на sing-box >= 1.12:
-    #  - DNS-серверы в новом виде ({type,server}), без legacy "address";
-    #  - перехват DNS через route-экшен "hijack-dns" (старый dns-outbound удалён);
-    #  - sniff через route-экшен "sniff", а не устаревшее поле инбаунда;
-    #  - route.default_domain_resolver (обязателен в 1.12, т.к. у DNS-серверов
-    #    есть detour) — указывает на прямой dns_local;
-    #  - у dns_local НЕТ detour: detour на пустой direct outbound в 1.12 даёт
-    #    FATAL ("detour to an empty direct outbound makes no sense").
-    jq -n \
-        --arg server "$CACHED_IP" \
-        --argjson port "${CACHED_PORT:-443}" \
-        --arg auth "${user}:${pass}" \
-        --arg sni "$CACHED_SNI" \
-        --arg obfs "$CACHED_OBFS" \
-        '{
+    local jq_filter
+    if [ "$mode" = "socks" ]; then
+        jq_filter='{
+            log: { level: "info", timestamp: true },
+            dns: {
+                servers: [ { type: "udp", tag: "dns_local", server: "1.1.1.1" } ]
+            },
+            inbounds: [
+                { type: "mixed", tag: "socks-in", listen: "127.0.0.1", listen_port: 1080 }
+            ],
+            outbounds: [
+                ({
+                    type: "hysteria2",
+                    tag: "proxy_out",
+                    server: $server,
+                    server_port: $port,
+                    password: $auth,
+                    tls: { enabled: true, server_name: $sni, insecure: true }
+                } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)),
+                { type: "direct", tag: "direct_out" }
+            ],
+            route: {
+                default_domain_resolver: { server: "dns_local" },
+                final: "proxy_out"
+            }
+        }'
+    else
+        jq_filter='{
             log: { level: "info", timestamp: true },
             dns: {
                 servers: [
@@ -157,7 +182,16 @@ generate_user_config() {
                     { ip_is_private: true, outbound: "direct_out" }
                 ]
             }
-        }' > "$tmpfile" || { rm -f "$tmpfile"; return 1; }
+        }'
+    fi
+
+    jq -n \
+        --arg server "$CACHED_IP" \
+        --argjson port "${CACHED_PORT:-443}" \
+        --arg auth "${user}:${pass}" \
+        --arg sni "$CACHED_SNI" \
+        --arg obfs "$CACHED_OBFS" \
+        "$jq_filter" > "$tmpfile" || { rm -f "$tmpfile"; return 1; }
 
     echo "$tmpfile"
 }

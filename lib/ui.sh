@@ -264,11 +264,18 @@ user_action_menu() {
                 ;;
             8)
                 is_user_disabled "$user" && echo "  ⚠️  Пользователь отключён! Конфиг не будет работать."
+                echo ""
+                echo "  Тип конфига sing-box:"
+                echo "    1. TUN — полный туннель, весь трафик (ПК/телефон)"
+                echo "    2. SOCKS/mixed — локальный прокси 127.0.0.1:1080 (тест, сервер)"
+                local cfgtype mode
+                ask cfgtype "  Выберите (1/2, по умолчанию 1): "
+                if [ "$cfgtype" = "2" ]; then mode="socks"; else mode="tun"; fi
                 local cfg
-                cfg=$(generate_user_config "$user")
+                cfg=$(generate_user_config "$user" "$mode")
                 if [ -n "$cfg" ]; then
                     echo ""
-                    echo "  📄 sing-box JSON-КОНФИГ для $user:"
+                    echo "  📄 sing-box JSON-КОНФИГ (${mode}) для $user:"
                     echo "  ────────────────────────────────────────────────────────"
                     cat "$cfg"
                     echo "  ────────────────────────────────────────────────────────"
@@ -276,6 +283,10 @@ user_action_menu() {
                     echo "  💡 Установить как конфиг sing-box:"
                     echo "     cp $cfg /etc/sing-box/config.json && systemctl restart sing-box"
                     echo "  💡 Проверить: sing-box -C /etc/sing-box check"
+                    if [ "$mode" = "socks" ]; then
+                        echo "  💡 Проверка прокси (хост не в туннеле):"
+                        echo "     curl --socks5-hostname 127.0.0.1:1080 ifconfig.me"
+                    fi
                 else
                     echo "  ❌ Не удалось создать конфиг"
                 fi
