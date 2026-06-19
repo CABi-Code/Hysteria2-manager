@@ -75,12 +75,12 @@ reset_user_stats() {
     echo "  ✅ Статистика $user сброшена"
 }
 
-# Генерирует клиентский конфиг (JSON) для пользователя и сохраняет его во
+# Генерирует клиентский конфиг (JSON) для sing-box и сохраняет его во
 # временный файл. Путь к файлу печатается в stdout (пустой вывод = ошибка).
 # Файл создаётся через mktemp с правами 0600 — пароль виден только владельцу.
 # JSON собирается через jq, поэтому спецсимволы в пароле/обфускации корректно
-# экранируются. Подходит для официального клиента Hysteria 2
-# (hysteria client -c file.json).
+# экранируются. Структура — inbounds (mixed) + outbound type "hysteria2";
+# подходит для sing-box (sing-box -C config.json check/run).
 generate_user_config() {
     local user="$1"
     local pass
@@ -92,20 +92,34 @@ generate_user_config() {
     [ -z "$pass" ] && return 1
 
     local tmpfile
-    tmpfile=$(mktemp "/tmp/hy2-${user}.XXXXXX.json") || return 1
+    tmpfile=$(mktemp "/tmp/sb-${user}.XXXXXX.json") || return 1
 
+    # Аутентификация Hysteria 2 в режиме userpass — строка "user:pass".
+    # В sing-box она передаётся в поле password у outbound hysteria2.
+    # Блок obfs добавляется только если задан salamander-пароль.
     jq -n \
-        --arg server "${CACHED_IP}:${CACHED_PORT}" \
+        --arg server "$CACHED_IP" \
+        --argjson port "${CACHED_PORT:-443}" \
         --arg auth "${user}:${pass}" \
         --arg sni "$CACHED_SNI" \
         --arg obfs "$CACHED_OBFS" \
         '{
-            server: $server,
-            auth: $auth,
-            tls: { sni: $sni, insecure: true },
-            obfs: { type: "salamander", salamander: { password: $obfs } },
-            socks5: { listen: "127.0.0.1:1080" },
-            http: { listen: "127.0.0.1:8080" }
+            log: { level: "info", timestamp: true },
+            inbounds: [
+                { type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 1080 }
+            ],
+            outbounds: [
+                ({
+                    type: "hysteria2",
+                    tag: "hy2-out",
+                    server: $server,
+                    server_port: $port,
+                    password: $auth,
+                    tls: { enabled: true, server_name: $sni, insecure: true }
+                } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)),
+                { type: "direct", tag: "direct" }
+            ],
+            route: { final: "hy2-out" }
         }' > "$tmpfile" || { rm -f "$tmpfile"; return 1; }
 
     echo "$tmpfile"

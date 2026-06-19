@@ -135,7 +135,7 @@ user_action_menu() {
         echo "  5. ⏰ Установить срок действия"
         echo "  6. 🌐 Просмотр IP-адресов"
         echo "  7. 🔗 Получить ссылку"
-        echo "  8. 📄 Получить конфиг-файл"
+        echo "  8. 📄 Конфиг для sing-box"
         echo "  0. ↩  Назад"
         echo ""
         local act
@@ -268,12 +268,14 @@ user_action_menu() {
                 cfg=$(generate_user_config "$user")
                 if [ -n "$cfg" ]; then
                     echo ""
-                    echo "  📄 JSON-КОНФИГ для $user:"
+                    echo "  📄 sing-box JSON-КОНФИГ для $user:"
                     echo "  ────────────────────────────────────────────────────────"
                     cat "$cfg"
                     echo "  ────────────────────────────────────────────────────────"
                     echo "  Временный путь: $cfg"
-                    echo "  💡 Запуск клиента: hysteria client -c $(basename "$cfg")"
+                    echo "  💡 Установить как конфиг sing-box:"
+                    echo "     cp $cfg /etc/sing-box/config.json && systemctl restart sing-box"
+                    echo "  💡 Проверить: sing-box -C /etc/sing-box check"
                 else
                     echo "  ❌ Не удалось создать конфиг"
                 fi
