@@ -268,11 +268,11 @@ user_action_menu() {
                 cfg=$(generate_user_config "$user")
                 if [ -n "$cfg" ]; then
                     echo ""
-                    echo "  📄 КОНФИГ-ФАЙЛ создан (временный путь):"
-                    echo "  $cfg"
-                    echo ""
-                    echo "  💡 Скачать на свой компьютер:"
-                    echo "     scp root@${CACHED_IP}:$cfg ."
+                    echo "  📄 JSON-КОНФИГ для $user:"
+                    echo "  ────────────────────────────────────────────────────────"
+                    cat "$cfg"
+                    echo "  ────────────────────────────────────────────────────────"
+                    echo "  Временный путь: $cfg"
                     echo "  💡 Запуск клиента: hysteria client -c $(basename "$cfg")"
                 else
                     echo "  ❌ Не удалось создать конфиг"
