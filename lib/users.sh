@@ -99,6 +99,11 @@ generate_user_config() {
     # Блок obfs (salamander) обязателен для нашего сервера — добавляется,
     # если задан obfs-пароль; иначе sing-box не пройдёт обфускацию и сервер
     # отбросит пакеты.
+    #
+    # Формат рассчитан на sing-box >= 1.12:
+    #  - DNS-серверы в новом виде ({type,server}), без legacy "address";
+    #  - перехват DNS через route-экшен "hijack-dns" (старый dns-outbound удалён);
+    #  - sniff через route-экшен "sniff", а не устаревшее поле инбаунда.
     jq -n \
         --arg server "$CACHED_IP" \
         --argjson port "${CACHED_PORT:-443}" \
@@ -109,12 +114,10 @@ generate_user_config() {
             log: { level: "info", timestamp: true },
             dns: {
                 servers: [
-                    { tag: "dns_remote", address: "https://8.8.8.8/dns-query", detour: "proxy_out" },
-                    { tag: "dns_local", address: "1.1.1.1", detour: "direct_out" }
+                    { type: "https", tag: "dns_remote", server: "8.8.8.8", detour: "proxy_out" },
+                    { type: "udp", tag: "dns_local", server: "1.1.1.1", detour: "direct_out" }
                 ],
-                rules: [
-                    { outbound: "any", server: "dns_local" }
-                ],
+                final: "dns_remote",
                 strategy: "ipv4_only"
             },
             inbounds: [
@@ -125,8 +128,7 @@ generate_user_config() {
                     address: [ "172.19.0.1/30" ],
                     auto_route: true,
                     strict_route: true,
-                    stack: "system",
-                    sniff: true
+                    stack: "system"
                 }
             ],
             outbounds: [
@@ -142,9 +144,11 @@ generate_user_config() {
             ],
             route: {
                 auto_detect_interface: true,
+                final: "proxy_out",
                 rules: [
+                    { action: "sniff" },
+                    { protocol: "dns", action: "hijack-dns" },
                     { port: 22, outbound: "direct_out" },
-                    { protocol: "dns", outbound: "dns_remote" },
                     { ip_is_private: true, outbound: "direct_out" }
                 ]
             }
