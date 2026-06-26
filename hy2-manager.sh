@@ -85,9 +85,9 @@ refresh_online
 
 # === ГЛАВНОЕ МЕНЮ ===
 
+main_need_clear=1
 while true; do
     refresh_online
-    clear
 
     active_count=$(get_active_users | grep -c '^' 2>/dev/null | tr -dc '0-9' || echo 0)
     disabled_count=$(grep -c '^' "$DISABLED_FILE" 2>/dev/null | tr -dc '0-9' || echo 0)
@@ -105,23 +105,31 @@ while true; do
         hy_autostart="❌ отключён"
     fi
 
-    echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║              Hysteria 2 Manager v2.1                       ║"
-    echo "╠══════════════════════════════════════════════════════════════╣"
-    echo "║ Статус Hysteria : $hy_status (автозапуск: $hy_autostart)"
-    echo "║ IP сервера      : $CACHED_IP"
-    echo "║ Порт            : $CACHED_PORT"
-    echo "║ SNI / Маскировка: $CACHED_SNI"
-    echo "║ OBFS-пароль     : $(echo "$CACHED_OBFS" | cut -c1-10)..."
-    echo "║ Пользователей   : $total_count (активных: $active_count, онлайн: $online_count)"
-    echo "╚══════════════════════════════════════════════════════════════╝"
-    echo ""
-    echo "  1. ➕ Добавить нового пользователя"
-    echo "  2. 👥 Пользователи (статистика, IP, действия)"
-    echo "  3. 🔗 Получить ссылку"
-    echo "  4. ⚙  Настройки"
-    echo "  0. 🚪 Выход"
-    echo ""
+    main_frame=$(
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        echo "║              Hysteria 2 Manager v2.1                       ║"
+        echo "╠══════════════════════════════════════════════════════════════╣"
+        echo "║ Статус Hysteria : $hy_status (автозапуск: $hy_autostart)"
+        echo "║ IP сервера      : $CACHED_IP"
+        echo "║ Порт            : $CACHED_PORT"
+        echo "║ SNI / Маскировка: $CACHED_SNI"
+        echo "║ OBFS-пароль     : $(echo "$CACHED_OBFS" | cut -c1-10)..."
+        echo "║ Пользователей   : $total_count (активных: $active_count, онлайн: $online_count)"
+        echo "╚══════════════════════════════════════════════════════════════╝"
+        if is_restart_pending; then
+            echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria (Настройки → 2)"
+        fi
+        echo ""
+        echo "  1. ➕ Добавить нового пользователя"
+        echo "  2. 👥 Пользователи (статистика, IP, действия)"
+        echo "  3. 🔗 Получить ссылку"
+        echo "  4. ⚙  Настройки"
+        echo "  0. 🚪 Выход"
+        echo ""
+    )
+    [ "$main_need_clear" = 1 ] && { clear; main_need_clear=0; }
+    render_frame "$main_frame"
+
     # Автообновление: если за REFRESH_INTERVAL сек ввода нет — перерисовываем меню
     if ! ask choice "  Выберите (обновление каждые ${REFRESH_INTERVAL}с): " "$REFRESH_INTERVAL"; then
         continue
@@ -129,6 +137,7 @@ while true; do
 
     case $choice in
         1)
+            main_need_clear=1
             clear
             ask USERNAME "  Имя пользователя (латиница, цифры, _): "
             [ -z "$USERNAME" ] && echo "  ❌ Имя не может быть пустым!" && sleep 2 && continue
@@ -178,20 +187,13 @@ while true; do
 
             echo "  ✅ Пользователь $USERNAME добавлен"
 
-            ask EXP "  Установить срок действия? (ГГГГ-ММ-ДД или Enter): "
-            if [[ "$EXP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-                set_user_expiry "$USERNAME" "$EXP"
-                echo "  ⏰ Срок действия: $EXP"
-            fi
-
-            echo "  🔄 Перезапуск Hysteria 2..."
-            systemctl restart "$SERVICE"
-            sleep 2
-
-            if systemctl is-active --quiet "$SERVICE"; then
-                echo "  ✅ Сервис запущен"
-            else
-                echo "  ⚠️  Сервис НЕ запустился! journalctl -u $SERVICE -e"
+            ask EXP_DAYS "  Срок действия в днях от сегодня (Enter — без срока): "
+            if [[ "$EXP_DAYS" =~ ^[0-9]+$ ]] && [ "$EXP_DAYS" -gt 0 ]; then
+                EXP_DATE=$(days_to_date "$EXP_DAYS")
+                if [ -n "$EXP_DATE" ]; then
+                    set_user_expiry "$USERNAME" "$EXP_DATE"
+                    echo "  ⏰ Срок действия: $EXP_DATE (через $EXP_DAYS дн.)"
+                fi
             fi
 
             LINK="hysteria2://${USERNAME}:${PASSWORD}@${CACHED_IP}:${CACHED_PORT}/?obfs=salamander&obfs-password=${CACHED_OBFS}&sni=${CACHED_SNI}&insecure=1#${USERNAME}"
@@ -200,20 +202,26 @@ while true; do
             echo "  $LINK"
             echo ""
             echo "  💡 Hiddify, Nekobox, Streisand и т.д."
+            # Перезапуск нужен, чтобы новый пользователь смог подключиться.
+            # Делаем его осознанно (с предупреждением), а не молча.
+            prompt_apply_restart
             pause "  Enter для возврата..."
             ;;
 
         2)
+            main_need_clear=1
             collect_traffic
             collect_ips
             user_list_menu
             ;;
 
         3)
+            main_need_clear=1
             get_link_menu
             ;;
 
         4)
+            main_need_clear=1
             settings_menu
             ;;
 
