@@ -90,6 +90,19 @@ format_bytes() {
     fi
 }
 
+# Компактная скорость для таблицы: 1.2M, 340K, 12 (B/s), без суффикса «/s»
+format_speed_short() {
+    local bps=${1:-0}
+    [[ "$bps" =~ ^[0-9]+$ ]] || bps=0
+    if [ "$bps" -ge 1048576 ]; then
+        awk "BEGIN {printf \"%.1fM\", $bps / 1048576}"
+    elif [ "$bps" -ge 1024 ]; then
+        awk "BEGIN {printf \"%.0fK\", $bps / 1024}"
+    else
+        echo "${bps}"
+    fi
+}
+
 # Скорость в человекочитаемом виде: B/s, KiB/s, MiB/s (двоичные единицы)
 format_speed() {
     local bps=${1:-0}
