@@ -3,6 +3,16 @@
 # Конфигурация и чтение данных из config.yaml
 # ================================================
 
+# UTF-8 локаль нужна, чтобы ${#str} считал символы (а не байты) — иначе
+# выравнивание таблицы «плывёт» на эмодзи и кириллице. Выбираем доступную.
+if [ -z "${LC_ALL:-}" ] || ! printf '%s' "$LC_ALL" | grep -qi 'utf-\?8'; then
+    if locale -a 2>/dev/null | grep -qiE '^C\.utf-?8$'; then
+        export LC_ALL=C.UTF-8
+    elif locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
+        export LC_ALL=en_US.UTF-8
+    fi
+fi
+
 CONFIG="/etc/hysteria/config.yaml"
 SERVICE="hysteria-server.service"
 DATA_DIR="/etc/hysteria/manager"
@@ -15,6 +25,11 @@ API_SECRET_FILE="$DATA_DIR/api_secret"
 # Текущая скорость (B/s) за последний интервал сбора и метка времени этого интервала
 SPEED_FILE="$DATA_DIR/speed.dat"
 SPEED_TS_FILE="$DATA_DIR/speed_ts"
+# Маркер «есть изменения конфига, ожидающие перезапуска Hysteria».
+# Раньше add/delete/disable молча делали systemctl restart, и у ВСЕХ
+# клиентов на пару секунд отваливался VPN. Теперь правки конфига копятся,
+# а перезапуск пользователь делает осознанно (сразу или через Настройки).
+RESTART_PENDING_FILE="$DATA_DIR/restart_pending"
 API_PORT=25580
 PAGE_SIZE=10
 # Интервал автообновления интерактивных меню (секунды)
@@ -52,6 +67,42 @@ is_yes() {
         да|Да|ДА|д|Д|yes|Yes|YES|y|Y) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# ====================== ПЕРЕЗАПУСК HYSTERIA ======================
+# Перезапуск ненадолго отключает ВСЕХ клиентов, поэтому делаем его явно,
+# а не как побочный эффект каждой правки конфига.
+
+mark_restart_pending()  { touch "$RESTART_PENDING_FILE" 2>/dev/null; }
+clear_restart_pending() { rm -f "$RESTART_PENDING_FILE" 2>/dev/null; }
+is_restart_pending()    { [ -f "$RESTART_PENDING_FILE" ]; }
+
+# Перезапускает сервис Hysteria и снимает маркер ожидающих изменений.
+restart_hysteria() {
+    echo "  🔄 Перезапуск Hysteria 2 (всех клиентов кратковременно отключит)..."
+    systemctl restart "$SERVICE" 2>/dev/null
+    sleep 2
+    clear_restart_pending
+    if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+        echo "  ✅ Hysteria перезапущена, изменения применены"
+    else
+        echo "  ⚠️  Hysteria НЕ запустилась! journalctl -u $SERVICE -e"
+    fi
+}
+
+# Помечает изменения как ожидающие и предлагает перезапустить сейчас.
+# Вызывается после правок конфига (add/delete/disable/enable/смена пароля).
+prompt_apply_restart() {
+    mark_restart_pending
+    echo ""
+    echo "  ⚠️  Изменения вступят в силу только после перезапуска Hysteria."
+    local __ans
+    ask __ans "  Перезапустить сейчас? (отключит всех на пару секунд) (да/нет): "
+    if is_yes "$__ans"; then
+        restart_hysteria
+    else
+        echo "  ⏸  Перезапуск отложен. Применить позже: Настройки → Перезапустить Hysteria."
+    fi
 }
 
 get_ip() {
