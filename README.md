@@ -55,7 +55,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/
 Если форкнули репозиторий, можно указать свой URL через переменную окружения:
 
 ```bash
-sudo REPO_URL="https://raw.githubusercontent.com/USERNAME/REPO/BRANCH" \
+REPO_URL="https://raw.githubusercontent.com/USERNAME/REPO/BRANCH" \
     bash <(curl -fsSL https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/install.sh)
 ```
 
