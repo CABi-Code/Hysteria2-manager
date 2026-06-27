@@ -3,16 +3,43 @@
 # Управление пользователями: CRUD-операции
 # ================================================
 
-# Имена, которые конфликтуют с YAML-ключами Hysteria 2 — нельзя использовать как username,
-# иначе sed-операции порушат другие секции конфига.
+# С внешней аутентификацией (auth.type: command) имена пользователей живут в
+# users.db и больше НЕ конфликтуют с YAML-ключами конфига. Запрещаем лишь то,
+# что ломает формат базы (двоеточие/пробел/пустое) — это и так отсекает
+# валидация ввода [a-zA-Z0-9_-]. Оставлено для обратной совместимости вызовов.
 is_reserved_username() {
     case "$1" in
-        type|userpass|password|proxy|url|listen|tls|cert|key|auth|masquerade|obfs|salamander|quic|trafficStats|secret|rewriteHost)
-            return 0 ;;
-        *)
-            return 1 ;;
+        ""|*[:\|[:space:]]*) return 0 ;;
+        *) return 1 ;;
     esac
 }
+
+# Закрываем базу и скрипт от чужих, но даём прочитать/выполнить процессу hysteria.
+# Владельца/группу берём с рабочего config.yaml — его hysteria заведомо читает,
+# поэтому те же права гарантируют доступ к users.db и скрипту независимо от того,
+# под каким пользователем запущен сервис.
+secure_auth_files() {
+    local owner group
+    owner=$(stat -c '%U' "$CONFIG" 2>/dev/null); [ -z "$owner" ] && owner=root
+    group=$(stat -c '%G' "$CONFIG" 2>/dev/null); [ -z "$group" ] && group=root
+    chown "${owner}:${group}" "$DATA_DIR" "$USERS_DB" 2>/dev/null || true
+    chmod 750 "$DATA_DIR" 2>/dev/null || true
+    chmod 640 "$USERS_DB" 2>/dev/null || true
+    if [ -f "$AUTH_SCRIPT" ]; then
+        chown "${owner}:${group}" "$AUTH_SCRIPT" 2>/dev/null || true
+        chmod 750 "$AUTH_SCRIPT" 2>/dev/null || true
+    fi
+}
+
+# ---- Низкоуровневые операции с базой пользователей ----
+db_user_exists() { grep -q "^${1}:" "$USERS_DB" 2>/dev/null; }
+
+db_add_user() {   # user pass
+    grep -q "^${1}:" "$USERS_DB" 2>/dev/null || printf '%s:%s\n' "$1" "$2" >> "$USERS_DB"
+    secure_auth_files
+}
+
+db_remove_user() { sed -i "/^${1}:/d" "$USERS_DB" 2>/dev/null; }
 
 is_user_disabled() {
     grep -q "^${1}|" "$DISABLED_FILE" 2>/dev/null
@@ -22,20 +49,23 @@ get_disabled_password() {
     grep "^${1}|" "$DISABLED_FILE" 2>/dev/null | head -1 | cut -d'|' -f2
 }
 
+# Отключение пользователя: убираем из базы + кикаем активные сессии.
+# Применяется СРАЗУ — рестарт Hysteria не нужен.
 disable_user() {
     local user="$1" silent="$2"
     local password
     password=$(get_user_password "$user")
     if [ -z "$password" ]; then
-        [ "$silent" != "silent" ] && echo "  ❌ Пользователь $user не найден в конфиге"
+        [ "$silent" != "silent" ] && echo "  ❌ Пользователь $user не найден в базе"
         return 1
     fi
     grep -q "^${user}|" "$DISABLED_FILE" || echo "${user}|${password}" >> "$DISABLED_FILE"
-    sed -i "/^[[:space:]]*${user}:[[:space:]]/d" "$CONFIG"
+    db_remove_user "$user"
     api_post "/kick" "[\"$user\"]" &>/dev/null
-    [ "$silent" != "silent" ] && echo "  ✅ Пользователь $user отключён"
+    [ "$silent" != "silent" ] && echo "  ✅ Пользователь $user отключён (применено сразу)"
 }
 
+# Включение: возвращаем пару в базу. Применяется сразу, без рестарта.
 enable_user() {
     local user="$1"
     if ! is_user_disabled "$user"; then
@@ -44,29 +74,22 @@ enable_user() {
     fi
     local password
     password=$(get_disabled_password "$user")
-
-    if ! grep -q '^[[:space:]]*userpass:' "$CONFIG"; then
-        echo "  ❌ Секция userpass не найдена в конфиге!"
+    db_add_user "$user" "$password"
+    if ! db_user_exists "$user"; then
+        echo "  ❌ Ошибка записи в базу! Пользователь не восстановлен."
         return 1
     fi
-
-    sed -i "/^[[:space:]]*userpass:/a\\    ${user}: \"${password}\"" "$CONFIG"
-
-    if ! grep -q "^    ${user}: " "$CONFIG"; then
-        echo "  ❌ Ошибка записи в конфиг! Пользователь не восстановлен."
-        return 1
-    fi
-
     sed -i "/^${user}|/d" "$DISABLED_FILE"
-    echo "  ✅ Пользователь $user включён"
+    echo "  ✅ Пользователь $user включён (применено сразу)"
 }
 
+# Полное удаление: чистим базу и все файлы статистики. Без рестарта.
 delete_user() {
     local user="$1"
-    sed -i "/^[[:space:]]*${user}:[[:space:]]/d" "$CONFIG"
-    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE"
+    db_remove_user "$user"
+    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" 2>/dev/null
     api_post "/kick" "[\"$user\"]" &>/dev/null
-    echo "  ✅ Пользователь $user полностью удалён"
+    echo "  ✅ Пользователь $user полностью удалён (применено сразу)"
 }
 
 reset_user_stats() {
@@ -203,17 +226,19 @@ change_user_password() {
     if is_user_disabled "$user"; then
         sed -i "s#^${user}|.*#${user}|${new_pass}#" "$DISABLED_FILE"
     else
-        if ! grep -q "^[[:space:]]*${user}:[[:space:]]" "$CONFIG"; then
+        if ! db_user_exists "$user"; then
             echo "  ❌ Пользователь не найден"
             return 1
         fi
-        sed -i "/^[[:space:]]*${user}:[[:space:]]/d" "$CONFIG"
-        sed -i "/^[[:space:]]*userpass:/a\\    ${user}: \"${new_pass}\"" "$CONFIG"
-        if ! grep -q "^    ${user}: " "$CONFIG"; then
-            echo "  ❌ Ошибка записи нового пароля в конфиг!"
+        db_remove_user "$user"
+        db_add_user "$user" "$new_pass"
+        if ! db_user_exists "$user"; then
+            echo "  ❌ Ошибка записи нового пароля в базу!"
             return 1
         fi
+        # Кикаем — со старым паролем доступ сразу пропадёт, переподключится по новой ссылке.
+        api_post "/kick" "[\"$user\"]" &>/dev/null
     fi
-    echo "  ✅ Пароль $user обновлён"
+    echo "  ✅ Пароль $user обновлён (применено сразу)"
     echo "  🔑 Новый: ${new_pass}"
 }

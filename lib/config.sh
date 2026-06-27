@@ -26,10 +26,15 @@ API_SECRET_FILE="$DATA_DIR/api_secret"
 SPEED_FILE="$DATA_DIR/speed.dat"
 SPEED_TS_FILE="$DATA_DIR/speed_ts"
 # Маркер «есть изменения конфига, ожидающие перезапуска Hysteria».
-# Раньше add/delete/disable молча делали systemctl restart, и у ВСЕХ
-# клиентов на пару секунд отваливался VPN. Теперь правки конфига копятся,
-# а перезапуск пользователь делает осознанно (сразу или через Настройки).
+# Используется только для правок, которые реально требуют рестарта (порт,
+# SNI и т.п.). Управление пользователями работает БЕЗ перезапуска — см. ниже.
 RESTART_PENDING_FILE="$DATA_DIR/restart_pending"
+# База пользователей для внешней аутентификации (auth.type: command).
+# Формат строки: «username:password». Hysteria дергает AUTH_SCRIPT на каждое
+# подключение и проверяет пару по этому файлу — поэтому добавление/удаление
+# пользователя применяется МГНОВЕННО, без рестарта сервера.
+USERS_DB="$DATA_DIR/users.db"
+AUTH_SCRIPT="$DATA_DIR/hysteria-auth.sh"
 API_PORT=25580
 PAGE_SIZE=10
 # Интервал автообновления интерактивных меню (секунды)
@@ -125,18 +130,25 @@ get_sni() {
     echo "${result:-www.twitch.tv}"
 }
 
+# Пароль активного пользователя берём из базы users.db (а не из config.yaml).
 get_user_password() {
-    grep -oP "^\s+${1}:\s*\"\K[^\"]*" "$CONFIG" 2>/dev/null
+    awk -F: -v u="$1" '$1==u { print substr($0, length($1)+2); exit }' "$USERS_DB" 2>/dev/null
 }
 
+# Активные пользователи = строки users.db (отключённые тут не значатся).
 get_active_users() {
+    cut -d: -f1 "$USERS_DB" 2>/dev/null | grep -v '^$'
+}
+
+# Пары «user|pass» из секции userpass конфига — нужно ТОЛЬКО при разовой
+# миграции со старого формата (auth.type: userpass) на users.db.
+config_userpass_pairs() {
     awk '
         /^[[:space:]]*userpass:/ { in_block=1; next }
         in_block && /^[[:space:]]+[a-zA-Z0-9_-]+:/ {
-            name=$0
-            sub(/^[[:space:]]+/, "", name)
-            sub(/:.*/, "", name)
-            print name
+            name=$0; sub(/^[[:space:]]+/, "", name); sub(/:.*/, "", name)
+            pass=$0; sub(/^[^:]*:[[:space:]]*/, "", pass); gsub(/"/, "", pass); sub(/[[:space:]]+$/, "", pass)
+            print name "|" pass
             next
         }
         in_block && /^[[:space:]]*[a-zA-Z]/ && !/^[[:space:]]+[a-zA-Z0-9_-]+:/ { in_block=0 }
