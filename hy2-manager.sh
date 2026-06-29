@@ -214,6 +214,20 @@ while true; do
 
             echo "  ✅ Пользователь $USERNAME добавлен (применено сразу, без перезапуска)"
 
+            # Локально или на весь кластер? (только если подписка/кластер настроены)
+            if sub_enabled; then
+                echo ""
+                echo "  Где завести пользователя?"
+                echo "    1. Только на этой ноде (по умолчанию)"
+                echo "    2. На всех нодах кластера (появится на остальных автоматически)"
+                ask SCOPE "  Выбор (1/2): "
+                if [ "$SCOPE" = "2" ]; then
+                    cluster_share_user "$USERNAME"
+                    echo "  🌐 Помечен как кластерный. На других нодах появится в течение ~5 мин"
+                    echo "     (с собственным паролем там; в подписке соберутся ключи со всех нод)."
+                fi
+            fi
+
             ask EXP_DAYS "  Срок действия в днях от сегодня (Enter — без срока): "
             if [[ "$EXP_DAYS" =~ ^[0-9]+$ ]] && [ "$EXP_DAYS" -gt 0 ]; then
                 EXP_DATE=$(days_to_date "$EXP_DAYS")
@@ -223,7 +237,7 @@ while true; do
                 fi
             fi
 
-            LINK=$(build_user_link "$USERNAME" "$PASSWORD" "$CACHED_IP" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
+            LINK=$(build_user_link "$USERNAME" "$PASSWORD" "$(link_host)" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
             echo ""
             echo "  🔗 ГОТОВАЯ ССЫЛКА:"
             echo "  $LINK"
