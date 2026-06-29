@@ -15,19 +15,51 @@ is_reserved_username() {
 }
 
 # Закрываем базу и скрипт от чужих, но даём прочитать/выполнить процессу hysteria.
-# Владельца/группу берём с рабочего config.yaml — его hysteria заведомо читает,
-# поэтому те же права гарантируют доступ к users.db и скрипту независимо от того,
-# под каким пользователем запущен сервис.
+# Под каким пользователем/группой РЕАЛЬНО работает сервис Hysteria. Печатает
+# "user group". Hysteria читает config.yaml не как его владелец, а потому что
+# файл world-readable (644). Поэтому брать владельца с config.yaml и снимать
+# права у остальных (750/640) нельзя — процесс hysteria, запущенный под отдельным
+# пользователем (по умолчанию «hysteria»), теряет доступ к users.db и скрипту, и
+# аутентификация-командой падает у ВСЕХ клиентов. Права выдаём именно сервису.
+service_identity() {
+    local u g
+    u=$(systemctl show -p User --value "$SERVICE" 2>/dev/null)
+    g=$(systemctl show -p Group --value "$SERVICE" 2>/dev/null)
+    [ -z "$u" ] && u=root
+    id "$u" >/dev/null 2>&1 || u=root          # пользователь из юнита не заведён — откат
+    if [ -z "$g" ]; then
+        g=$(id -gn "$u" 2>/dev/null); [ -z "$g" ] && g=root
+    fi
+    printf '%s %s\n' "$u" "$g"
+}
+
+# Закрываем базу и скрипт от чужих, но гарантируем доступ процессу hysteria —
+# выдаём владение пользователю/группе сервиса (а не владельцу config.yaml).
 secure_auth_files() {
     local owner group
-    owner=$(stat -c '%U' "$CONFIG" 2>/dev/null); [ -z "$owner" ] && owner=root
-    group=$(stat -c '%G' "$CONFIG" 2>/dev/null); [ -z "$group" ] && group=root
+    read -r owner group < <(service_identity)
+    [ -z "$owner" ] && owner=root
+    [ -z "$group" ] && group=root
     chown "${owner}:${group}" "$DATA_DIR" "$USERS_DB" 2>/dev/null || true
     chmod 750 "$DATA_DIR" 2>/dev/null || true
     chmod 640 "$USERS_DB" 2>/dev/null || true
     if [ -f "$AUTH_SCRIPT" ]; then
         chown "${owner}:${group}" "$AUTH_SCRIPT" 2>/dev/null || true
         chmod 750 "$AUTH_SCRIPT" 2>/dev/null || true
+    fi
+}
+
+# Прогоняет скрипт аутентификации так, как это сделает Hysteria: из-под
+# пользователя сервиса. Так самопроверка ловит проблемы с правами доступа,
+# которых не видно при запуске из-под root.
+auth_check_as_service() {   # user pass
+    local u="$1" p="$2" svc
+    [ -z "$u" ] && return 1
+    svc=$(service_identity | awk '{print $1}')
+    if [ -n "$svc" ] && [ "$svc" != "root" ] && command -v runuser >/dev/null 2>&1; then
+        runuser -u "$svc" -- "$AUTH_SCRIPT" "127.0.0.1:0" "${u}:${p}" "0" >/dev/null 2>&1
+    else
+        "$AUTH_SCRIPT" "127.0.0.1:0" "${u}:${p}" "0" >/dev/null 2>&1
     fi
 }
 
