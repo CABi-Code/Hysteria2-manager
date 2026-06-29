@@ -31,5 +31,10 @@ setup_cron() {
     # Синхронизация ключей с пирами кластера + пересборка подписок.
     if ! echo "$current_cron" | grep -q "hy2-manager.*--cluster-sync"; then
         (echo "$current_cron"; echo "*/5 * * * * /bin/bash \"$script_path\" --cluster-sync >/dev/null 2>&1") | crontab -
+        current_cron=$(crontab -l 2>/dev/null || true)
+    fi
+    # Частый обмен онлайном + лимит устройств по кластеру (раз в минуту).
+    if ! echo "$current_cron" | grep -q "hy2-manager.*--online-sync"; then
+        (echo "$current_cron"; echo "* * * * * /bin/bash \"$script_path\" --online-sync >/dev/null 2>&1") | crontab -
     fi
 }

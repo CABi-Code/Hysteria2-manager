@@ -166,10 +166,146 @@ ${domain} {
         file_server
     }
     handle {
-        respond 200
+        respond "Hysteria2 subscription endpoint. Open your personal /sub/<token> URL inside a VPN client (Hiddify, Nekobox, sing-box) as a subscription - not in a browser." 200
     }
 }
 EOF
     secure_web_files
+    # Caddy сам выпускает и БЕССРОЧНО продлевает сертификаты, пока сервис включён
+    # и запущен. Поэтому гарантируем автозапуск + активность.
+    systemctl enable caddy &>/dev/null || true
+    if command -v caddy >/dev/null 2>&1; then
+        caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null || true
+    fi
     systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null
+    systemctl is-active --quiet caddy 2>/dev/null || systemctl start caddy 2>/dev/null
+}
+
+# ---- Проверка домена и сертификата ----
+
+# Базовая валидация FQDN (чтобы не записать «белиберду»).
+valid_domain() {
+    local d="$1"
+    [ -n "$d" ] && [ ${#d} -le 253 ] || return 1
+    [[ "$d" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]
+}
+
+# Все A/AAAA-адреса домена (getent/dig/host — что найдётся).
+resolve_domain() {
+    local d="$1"
+    if command -v getent >/dev/null 2>&1; then
+        getent ahosts "$d" 2>/dev/null | awk '{print $1}' | sort -u
+    elif command -v dig >/dev/null 2>&1; then
+        dig +short "$d" A 2>/dev/null; dig +short "$d" AAAA 2>/dev/null
+    elif command -v host >/dev/null 2>&1; then
+        host "$d" 2>/dev/null | awk '/has( IPv6)? address/{print $NF}'
+    fi
+}
+
+# Указывает ли домен на этот сервер? 0 — да; 1 — резолвится, но не сюда; 2 — не резолвится.
+domain_points_here() {
+    local d="$1" myip ips
+    myip=$(get_ip)
+    ips=$(resolve_domain "$d")
+    [ -n "$ips" ] || return 2
+    printf '%s\n' "$ips" | grep -qxF "$myip" && return 0
+    return 1
+}
+
+# Уже выпущен публично-доверенный сертификат для домена? Бьёмся в локальный Caddy
+# (--resolve на 127.0.0.1) и проверяем цепочку СИСТЕМНЫМ доверием: внутренний
+# self-signed Caddy не пройдёт, настоящий Let's Encrypt/ZeroSSL — пройдёт. Это и
+# отличает реально привязанный домен от «белиберды».
+cert_ready() {
+    local d="$1"
+    [ -n "$d" ] || return 1
+    curl -sS --max-time 8 --resolve "${d}:443:127.0.0.1" "https://${d}/" -o /dev/null 2>/dev/null
+}
+
+# Дата окончания текущего сертификата (для показа), пусто если нет.
+cert_expiry() {
+    local d="$1"
+    command -v openssl >/dev/null 2>&1 || return 0
+    echo | timeout 8 openssl s_client -connect 127.0.0.1:443 -servername "$d" 2>/dev/null \
+        | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2
+}
+
+# Ждёт выпуск валидного сертификата (Caddy запрашивает его при загрузке конфига).
+wait_cert() {
+    local d="$1" tries="${2:-15}" i=0
+    while [ "$i" -lt "$tries" ]; do
+        cert_ready "$d" && return 0
+        i=$((i + 1)); sleep 3
+    done
+    return 1
+}
+
+# ---- Подключения по подписке в МАСШТАБЕ КЛАСТЕРА ----
+# Подписка = один юзер на всех нодах. Хотим считать его подключения суммарно по
+# кластеру и не давать раздать одну подписку на кучу устройств через разные ноды.
+
+# Лимит устройств на подписку (0 = выкл).
+get_device_limit() {
+    local n; n=$(cat "$SUB_LIMIT_FILE" 2>/dev/null)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    echo "$n"
+}
+set_device_limit() {
+    local n="${1:-0}"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    echo "$n" > "$SUB_LIMIT_FILE"
+}
+
+# Публикует онлайн ЭТОЙ ноды («user<TAB>count») для других нод (за X-Cluster-Auth).
+publish_online() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    local online tmp="$WEBROOT/cluster/online.tmp"
+    online=$(api_get "/online")
+    echo "$online" | jq empty 2>/dev/null || online='{}'
+    echo "$online" | jq -r 'to_entries[] | select(.value>0) | "\(.key)\t\(.value)"' 2>/dev/null > "$tmp"
+    mv "$tmp" "$WEBROOT/cluster/online"
+    secure_web_files
+}
+
+# Суммарные подключения юзера по всему кластеру: локально + кэш онлайна пиров.
+# Локальный онлайн берём из CACHED_ONLINE (refresh_online), чтобы не дёргать API
+# на каждый вызов.
+cluster_user_connections() {
+    local user="$1" total n f
+    total=$(get_user_online_count "$user")
+    if [ -d "$PEERS_DIR" ]; then
+        for f in "$PEERS_DIR"/*.online; do
+            [ -f "$f" ] || continue
+            n=$(awk -F'\t' -v u="$user" '$1==u{print $2; exit}' "$f" 2>/dev/null)
+            [[ "$n" =~ ^[0-9]+$ ]] || n=0
+            total=$((total + n))
+        done
+    fi
+    echo "$total"
+}
+
+# Применяет лимит устройств: если суммарно по кластеру у юзера больше лимита —
+# отключаем его сессии на ЭТОЙ ноде (api /kick). Так делает КАЖДАЯ нода
+# независимо по одним и тем же данным, поэтому «лишние» устройства, размазанные
+# по нодам, постоянно отваливаются — раздать одну подписку на 10 устройств не
+# выходит. Пока подключений ≤ лимита — никого не трогаем.
+enforce_device_limits() {
+    local limit; limit=$(get_device_limit)
+    [ "$limit" -gt 0 ] 2>/dev/null || return 0
+    sub_enabled || return 0
+    refresh_online          # заполнит CACHED_ONLINE для get_user_online_count
+    local online_json="$CACHED_ONLINE"
+    [ -z "$online_json" ] && online_json='{}'
+    local user localn total
+    while IFS= read -r user; do
+        [ -n "$user" ] || continue
+        localn=$(get_user_online_count "$user")
+        [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
+        total=$(cluster_user_connections "$user")
+        if [ "$total" -gt "$limit" ] 2>/dev/null; then
+            api_post "/kick" "[\"$user\"]" &>/dev/null
+            echo "$(date '+%F %T') $user: кластер=$total > лимит=$limit — кик на $(node_name)" \
+                >> "$DATA_DIR/limit.log" 2>/dev/null
+        fi
+    done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
 }

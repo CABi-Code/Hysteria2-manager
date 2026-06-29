@@ -417,9 +417,22 @@ _render_user_action() {
         local oc
         oc=$(get_user_online_count "$user")
         if [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
-            echo "  Статус:        🟢 ОНЛАЙН ($oc подключений)"
+            echo "  Статус:        🟢 ОНЛАЙН ($oc на этой ноде)"
         else
-            echo "  Статус:        ⚫ ОФФЛАЙН"
+            echo "  Статус:        ⚫ ОФФЛАЙН (на этой ноде)"
+        fi
+    fi
+
+    # Подключения по подписке СУММАРНО по кластеру (а не только на этой ноде).
+    if sub_enabled; then
+        local cc lim warn=""
+        cc=$(cluster_user_connections "$user")
+        lim=$(get_device_limit)
+        if [ "$lim" -gt 0 ] 2>/dev/null; then
+            [ "$cc" -gt "$lim" ] 2>/dev/null && warn="  ⚠️ превышение!"
+            echo "  Подписка:      🌐 $cc подключений по кластеру / лимит $lim$warn"
+        else
+            echo "  Подписка:      🌐 $cc подключений по кластеру (лимит выкл)"
         fi
     fi
 
@@ -682,20 +695,40 @@ settings_menu() {
 subscription_menu() {
     while true; do
         clear
-        local host caddy_st
+        local host caddy_st cert_st
         host=$(node_host)
-        if command -v caddy &>/dev/null; then caddy_st="установлен"; else caddy_st="не установлен"; fi
+        if ! command -v caddy &>/dev/null; then
+            caddy_st="не установлен"
+        elif systemctl is-active --quiet caddy 2>/dev/null; then
+            caddy_st="🟢 работает$(systemctl is-enabled --quiet caddy 2>/dev/null && echo ', автозапуск вкл')"
+        else
+            caddy_st="🔴 остановлен"
+        fi
 
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  🌐 Подписка / Кластер"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         if sub_enabled; then
-            echo "  Состояние : 🟢 включена (домен: $host)"
+            echo "  Состояние : 🟢 включена"
+            echo "  Нода      : $(node_name)  ($host)"
+            # Живой статус сертификата — подтверждает, что домен реально привязан.
+            if cert_ready "$host"; then
+                cert_st="🟢 валиден до $(cert_expiry "$host") (автопродление)"
+            else
+                cert_st="🔴 не подтверждён (HTTPS не работает — см. пункт 1)"
+            fi
+            echo "  Сертификат: $cert_st"
         else
             echo "  Состояние : ⚪ не настроена"
         fi
         echo "  Caddy     : $caddy_st"
         echo "  Нод в кластере: $(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9' || echo 0)"
+        local dlim; dlim=$(get_device_limit)
+        if [ "$dlim" -gt 0 ] 2>/dev/null; then
+            echo "  Лимит устройств на подписку: $dlim (по всему кластеру)"
+        else
+            echo "  Лимит устройств на подписку: ∞ (выкл)"
+        fi
         echo ""
         echo "  1. 🌐 Настроить домен и включить подписку"
         echo "  2. 🔗 Создать кластер (получить join-токен)"
@@ -703,6 +736,7 @@ subscription_menu() {
         echo "  4. ➕ Добавить пир вручную (домен ноды)"
         echo "  5. 📋 Список нод кластера"
         echo "  6. 🔄 Синхронизировать сейчас"
+        echo "  7. 🔢 Лимит устройств на подписку"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -711,9 +745,33 @@ subscription_menu() {
         case "$choice" in
             1)
                 echo ""
-                local domain name
+                local domain name dph rc
                 ask domain "  Домен этой ноды (A-запись на её IP, напр. vpn1.example.com): "
-                if [ -z "$domain" ]; then echo "  ❌ Домен не задан"; sleep 1.5; continue; fi
+                domain=$(printf '%s' "$domain" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+                if ! valid_domain "$domain"; then
+                    echo "  ❌ «$domain» не похоже на домен. Нужен FQDN, напр. vpn1.example.com"
+                    echo "     Сертификат на произвольную строку выдать невозможно."
+                    pause; continue
+                fi
+                # Проверяем, что домен реально указывает на этот сервер — иначе
+                # Let's Encrypt не подтвердит владение и сертификата не будет.
+                echo "  ⏳ Проверяю DNS для $domain ..."
+                domain_points_here "$domain"; rc=$?
+                if [ "$rc" -eq 0 ]; then
+                    echo "  ✅ DNS: $domain → $(get_ip) (этот сервер)"
+                elif [ "$rc" -eq 2 ]; then
+                    echo "  ❌ Домен $domain не резолвится."
+                    echo "     Создайте A-запись $domain → $(get_ip) и дайте DNS распространиться."
+                    local c; ask c "  Всё равно продолжить (сертификат пока не выпустится)? (да/нет): "
+                    is_yes "$c" || { echo "  Отменено."; pause; continue; }
+                else
+                    echo "  ⚠️  $domain резолвится НЕ на этот сервер."
+                    echo "     Адрес(а) домена: $(resolve_domain "$domain" | tr '\n' ' ')"
+                    echo "     Этот сервер:     $(get_ip)"
+                    echo "     Let's Encrypt не выдаст сертификат, пока A-запись не указывает сюда."
+                    local c; ask c "  Всё равно продолжить? (да/нет): "
+                    is_yes "$c" || { echo "  Отменено."; pause; continue; }
+                fi
                 ask name "  Имя ноды (метка в клиенте, Enter — $(hostname -s 2>/dev/null || echo node)): "
                 [ -z "$name" ] && name=$(hostname -s 2>/dev/null || echo node)
                 echo "  ⏳ Проверяю/устанавливаю Caddy..."
@@ -726,8 +784,22 @@ subscription_menu() {
                 setup_caddy "$domain"
                 sub_refresh
                 publish_peers_list
-                echo "  ✅ Подписка включена. Caddy получит сертификат для $domain автоматически."
-                echo "     Откройте 80/tcp и 443/tcp в firewall, если ещё не открыты."
+                # Подтверждаем РЕАЛЬНЫЙ выпуск доверенного сертификата, а не просто
+                # «записали домен». Без этого подписка по HTTPS не работает.
+                echo "  ⏳ Запрашиваю TLS-сертификат (Let's Encrypt), до ~45 сек..."
+                if wait_cert "$domain" 15; then
+                    echo "  ✅ Сертификат выдан и доверенный — подписка активна."
+                    echo "     Домен      : $domain"
+                    echo "     Действителен до: $(cert_expiry "$domain")"
+                    echo "     🔄 Caddy продлевает сертификат автоматически (бессрочно),"
+                    echo "        пока сервис caddy включён и открыт порт 80/tcp."
+                else
+                    echo "  ⚠️  Сертификат пока НЕ подтверждён — HTTPS-подписка ещё не работает."
+                    echo "     Частые причины: A-запись не на этот сервер; закрыт 80/tcp;"
+                    echo "     DNS не распространился. Диагностика:"
+                    echo "        journalctl -u caddy -e | tail -n 40"
+                    echo "     Когда поправите — Caddy выпустит сертификат сам, либо повторите пункт 1."
+                fi
                 pause
                 ;;
             2)
@@ -777,6 +849,27 @@ subscription_menu() {
                 echo "  ⏳ Синхронизация с пирами..."
                 cluster_sync
                 echo "  ✅ Готово."
+                pause
+                ;;
+            7)
+                echo ""
+                echo "  Лимит — сколько устройств может одновременно подключаться по ОДНОЙ"
+                echo "  подписке СУММАРНО по всем нодам. Лишние сессии будут отключаться."
+                echo "  Текущий: $(get_device_limit)  (0 = без лимита)"
+                local nlim
+                ask nlim "  Новый лимит (число, 0 — выключить): "
+                if [[ "$nlim" =~ ^[0-9]+$ ]]; then
+                    set_device_limit "$nlim"
+                    if [ "$nlim" -gt 0 ]; then
+                        echo "  ✅ Лимит: $nlim устройств на подписку (по кластеру)."
+                        echo "     Применяется в течение ~1 мин (cron --online-sync) на каждой ноде."
+                        echo "     ⚠️ Лимит должен быть одинаковым на ВСЕХ нодах — задайте его на каждой."
+                    else
+                        echo "  ✅ Лимит снят (без ограничений)."
+                    fi
+                else
+                    echo "  ❌ Нужно число."
+                fi
                 pause
                 ;;
             0) return ;;

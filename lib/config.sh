@@ -48,8 +48,11 @@ SUBTOKENS_DB="$DATA_DIR/subtokens.db"      # «user:token» — секрет п�
 CLUSTER_USERS_FILE="$DATA_DIR/cluster_users"    # имена «кластерных» юзеров
 WEBROOT="/var/www/hy2sub"                   # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
-PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов пиров
+PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
 CADDYFILE="/etc/caddy/Caddyfile"
+# Лимит одновременных подключений на ОДНУ подписку по ВСЕМУ кластеру (0 = без
+# лимита). Не даёт раздать одну подписку на десяток устройств через разные ноды.
+SUB_LIMIT_FILE="$DATA_DIR/device_limit"
 
 API_PORT=25580
 PAGE_SIZE=10
