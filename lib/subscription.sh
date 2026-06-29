@@ -187,18 +187,37 @@ sub_refresh() {
 # Пишет Caddyfile под домен ноды и перезагружает Caddy. Идемпотентно.
 # /sub/* — публично; /cluster/* — только при заголовке X-Cluster-Auth.
 setup_caddy() {
-    local domain="$1" secret
+    local domain="$1" secret bak
     [ -n "$domain" ] || domain=$(node_host)
     [ -n "$domain" ] || return 1
     secret=$(cluster_secret)
     mkdir -p "$(dirname "$CADDYFILE")" "$WEBROOT/sub" "$WEBROOT/cluster"
+
+    # Бэкап текущего конфига — чтобы при ошибке не уронить уже работающий Caddy.
+    bak=""
+    [ -f "$CADDYFILE" ] && { bak=$(mktemp); cp -f "$CADDYFILE" "$bak"; }
+
+    # ВАЖНО: каждый блок — на отдельных строках; «{» обязана быть последним
+    # токеном строки, иначе Caddy не парсит конфиг и не стартует. handle-блоки
+    # взаимоисключающие и проверяются в порядке записи.
     cat > "$CADDYFILE" <<EOF
 ${domain} {
     root * ${WEBROOT}
-    @authed header X-Cluster-Auth "${secret}"
-    handle /cluster/* {
-        handle @authed { file_server }
+
+    @cluster_noauth {
+        path /cluster/*
+        not header X-Cluster-Auth "${secret}"
+    }
+    @cluster_auth {
+        path /cluster/*
+        header X-Cluster-Auth "${secret}"
+    }
+
+    handle @cluster_noauth {
         respond 403
+    }
+    handle @cluster_auth {
+        file_server
     }
     handle /sub/* {
         file_server
@@ -209,14 +228,45 @@ ${domain} {
 }
 EOF
     secure_web_files
-    # Caddy сам выпускает и БЕССРОЧНО продлевает сертификаты, пока сервис включён
-    # и запущен. Поэтому гарантируем автозапуск + активность.
+
+    # Проверяем конфиг ДО применения. Если невалиден — откат, Caddy не трогаем.
     systemctl enable caddy &>/dev/null || true
     if command -v caddy >/dev/null 2>&1; then
-        caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null || true
+        if ! caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null; then
+            [ -n "$bak" ] && cp -f "$bak" "$CADDYFILE"
+            [ -n "$bak" ] && rm -f "$bak"
+            return 1
+        fi
     fi
+    [ -n "$bak" ] && rm -f "$bak"
+
+    # Caddy сам выпускает и БЕССРОЧНО продлевает сертификаты, пока сервис активен.
     systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null
     systemctl is-active --quiet caddy 2>/dev/null || systemctl start caddy 2>/dev/null
+    systemctl is-active --quiet caddy 2>/dev/null
+}
+
+# Открывает 80/443 tcp в активном firewall (ufw/firewalld/iptables). Идемпотентно.
+# 80 нужен для ACME-проверки Let's Encrypt, 443 — для самой подписки.
+ensure_ports_open() {
+    local p
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "Status: active"; then
+        for p in 80 443; do ufw allow "${p}/tcp" >/dev/null 2>&1 || true; done
+        return 0
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state &>/dev/null; then
+        for p in 80 443; do firewall-cmd --permanent --add-port="${p}/tcp" >/dev/null 2>&1 || true; done
+        firewall-cmd --reload >/dev/null 2>&1 || true
+        return 0
+    fi
+    # iptables — best-effort: добавляем ACCEPT, только если правило ещё не стоит.
+    if command -v iptables >/dev/null 2>&1; then
+        for p in 80 443; do
+            iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null && continue
+            iptables -I INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+        done
+    fi
+    return 0
 }
 
 # ---- Проверка домена и сертификата ----

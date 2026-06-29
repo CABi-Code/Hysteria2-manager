@@ -597,6 +597,21 @@ repair_data() {
     local total
     total=$(grep -c '^' "$USERS_DB" 2>/dev/null | tr -dc '0-9')
     echo "  ℹ️  Пользователей в базе: ${total:-0}"
+
+    # Чиним подписку/Caddy, если настроена.
+    if sub_enabled; then
+        echo "  🌐 Подписка: открываю порты, пересобираю Caddy, проверяю сертификат..."
+        ensure_ports_open
+        if setup_caddy >/dev/null 2>&1; then
+            if cert_ready "$(node_host)"; then
+                echo "  ✅ Caddy работает, сертификат валиден до $(cert_expiry "$(node_host)")"
+            else
+                echo "  ⚠️  Caddy работает, но сертификат ещё не выпущен (проверьте DNS/порт 80)."
+            fi
+        else
+            echo "  ❌ Caddy не запустился — journalctl -u caddy -e | tail -n 30"
+        fi
+    fi
     echo "  ✅ Готово."
 }
 
@@ -775,6 +790,8 @@ subscription_menu() {
                 fi
                 ask name "  Имя ноды (метка в клиенте, Enter — $(hostname -s 2>/dev/null || echo node)): "
                 [ -z "$name" ] && name=$(hostname -s 2>/dev/null || echo node)
+                echo "  ⏳ Открываю порты 80/443 в firewall (если активен)..."
+                ensure_ports_open
                 echo "  ⏳ Проверяю/устанавливаю Caddy..."
                 if ! ensure_caddy; then
                     echo "  ❌ Не удалось установить Caddy. Установите вручную и повторите."
@@ -782,7 +799,12 @@ subscription_menu() {
                 fi
                 node_configure "$domain" "$name"
                 cluster_add_peer "$name" "$domain"
-                setup_caddy "$domain"
+                echo "  ⏳ Настраиваю Caddy..."
+                if ! setup_caddy "$domain"; then
+                    echo "  ❌ Caddy не запустился с новым конфигом (откатил)."
+                    echo "     Диагностика: journalctl -u caddy -e | tail -n 30"
+                    pause; continue
+                fi
                 sub_refresh
                 publish_peers_list
                 # Подтверждаем РЕАЛЬНЫЙ выпуск доверенного сертификата, а не просто
