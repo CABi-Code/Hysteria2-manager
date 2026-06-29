@@ -737,6 +737,7 @@ subscription_menu() {
         echo "  5. 📋 Список нод кластера"
         echo "  6. 🔄 Синхронизировать сейчас"
         echo "  7. 🔢 Лимит устройств на подписку"
+        echo "  8. ➖ Удалить пир"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -835,10 +836,23 @@ subscription_menu() {
                 ;;
             5)
                 echo ""
-                echo "  Ноды кластера (name | host):"
-                echo "  ────────────────────────────────────"
+                echo "  Эта нода: «$(node_name)»  ($(node_host))"
+                echo "  ────────────────────────────────────────────"
+                echo "  Ноды в реестре кластера (имя | домен):"
                 if [ -s "$CLUSTER_CONF" ]; then
-                    sed 's/^/    /' "$CLUSTER_CONF"
+                    local i=0 ln st
+                    while IFS='|' read -r pn ph; do
+                        [ -n "$ph" ] || continue
+                        i=$((i+1))
+                        if [ "$ph" = "$(node_host)" ]; then
+                            st="(эта нода)"
+                        elif cluster_call "$ph" "/cluster/manifest" >/dev/null 2>&1; then
+                            st="🟢 на связи"
+                        else
+                            st="🔴 недоступна"
+                        fi
+                        printf "    %d. %-20s %-28s %s\n" "$i" "$pn" "$ph" "$st"
+                    done < "$CLUSTER_CONF"
                 else
                     echo "    (пусто — кластер не настроен)"
                 fi
@@ -869,6 +883,30 @@ subscription_menu() {
                     fi
                 else
                     echo "  ❌ Нужно число."
+                fi
+                pause
+                ;;
+            8)
+                echo ""
+                if [ ! -s "$CLUSTER_CONF" ]; then
+                    echo "  Реестр пуст."
+                    pause; continue
+                fi
+                echo "  Текущие ноды (имя | домен):"
+                sed 's/^/    /' "$CLUSTER_CONF"
+                echo ""
+                local rmhost
+                ask rmhost "  Домен пира для удаления (например node-a.ci...): "
+                if [ -z "$rmhost" ]; then
+                    echo "  Отменено."
+                elif [ "$rmhost" = "$(node_host)" ]; then
+                    echo "  ❌ Нельзя удалить саму эту ноду здесь."
+                elif ! grep -q "|${rmhost}\$" "$CLUSTER_CONF"; then
+                    echo "  ❌ Пир «$rmhost» не найден в реестре."
+                else
+                    cluster_remove_peer "$rmhost"
+                    echo "  ✅ Пир «$rmhost» удалён из реестра этой ноды."
+                    echo "  ⚠️ Если он есть в реестрах других нод — удалите и там (иначе вернётся через gossip)."
                 fi
                 pause
                 ;;

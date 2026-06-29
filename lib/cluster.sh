@@ -33,6 +33,23 @@ cluster_peers() {
     awk -F'|' -v s="$self" '$2!="" && $2!=s {print $2}' "$CLUSTER_CONF" 2>/dev/null | sort -u
 }
 
+# Удаляет пир из реестра + чистит его кэш. ВНИМАНИЕ: если пир «живой» и ещё есть
+# в реестрах других нод, gossip вернёт его обратно — удаляйте на всех нодах.
+# Недоступный/ошибочный пир после удаления просто перестаёт опрашиваться.
+cluster_remove_peer() {   # host
+    local host="$1" name tmp
+    [ -n "$host" ] || return 1
+    name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
+    tmp=$(mktemp) || return 1
+    awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
+    rm -f "$tmp"
+    if [ -n "$name" ]; then
+        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.online" "$PEERS_DIR/${name}.subtokens" 2>/dev/null
+    fi
+    publish_peers_list
+    regen_subscriptions
+}
+
 # Публикует реестр пиров статикой (для gossip между нодами).
 publish_peers_list() {
     sub_enabled || return 0
@@ -86,6 +103,7 @@ cluster_sync() {
     mkdir -p "$PEERS_DIR"
     publish_peers_list
     publish_manifest
+    publish_subtokens
 
     local host name data
     while IFS= read -r host; do
@@ -94,15 +112,19 @@ cluster_sync() {
         cluster_call "$host" "/cluster/peers.list" | while IFS='|' read -r pn ph; do
             [ -n "$ph" ] && cluster_add_peer "$pn" "$ph"
         done
-        # манифест пира -> локальный кэш
         name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
         [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        # манифест ключей пира -> локальный кэш
         data=$(cluster_call "$host" "/cluster/manifest")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.manifest"
+        # токены подписки пира -> кэш (для единого токена по кластеру)
+        data=$(cluster_call "$host" "/cluster/subtokens")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.subtokens"
     done < <(cluster_peers)
 
+    merge_subtokens          # единый токен подписки на всех нодах
     regen_subscriptions
-    cluster_online_sync     # заодно обновим онлайн и применим лимит устройств
+    cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
 }
 
 # Частая синхронизация ОНЛАЙНА (для лимита устройств по кластеру). Публикует свой
