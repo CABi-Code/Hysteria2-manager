@@ -19,14 +19,31 @@ node_host() { node_get NODE_HOST; }
 node_name() { local n; n=$(node_get NODE_NAME); echo "${n:-node}"; }
 
 # Записывает node.conf (домен + имя ноды).
+# Устанавливает/обновляет одно поле node.conf, не трогая остальные.
+node_set() {   # key value
+    local key="$1" val="$2"
+    mkdir -p "$DATA_DIR"; touch "$NODE_CONF"
+    if grep -q "^${key}=" "$NODE_CONF" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$NODE_CONF"
+    else
+        echo "${key}=${val}" >> "$NODE_CONF"
+    fi
+}
+
 node_configure() {   # domain name
-    local domain="$1" name="$2"
-    mkdir -p "$DATA_DIR"
-    {
-        echo "NODE_NAME=${name}"
-        echo "NODE_HOST=${domain}"
-        echo "WEBROOT=${WEBROOT}"
-    } > "$NODE_CONF"
+    node_set NODE_NAME "$2"
+    node_set NODE_HOST "$1"
+    node_set WEBROOT  "$WEBROOT"
+}
+
+# Адрес ноды для ССЫЛКИ подключения: домен подключения (CONN_HOST), если задан,
+# иначе публичный IP. Позволяет показывать в подписке домен вместо «голого» IP.
+# ВАЖНО: домен подключения должен быть DNS-only (A-запись прямо на IP ноды) —
+# Hysteria работает по UDP/QUIC, а проксирование Cloudflare (UDP) не пропускает.
+link_host() {
+    local h; h=$(node_get CONN_HOST)
+    [ -n "$h" ] && { printf '%s' "$h"; return; }
+    get_ip
 }
 
 # Права на секреты подписки (читает только менеджер от root).
@@ -55,7 +72,7 @@ secure_web_files() {
 # клиент видел, с какого сервера ключ.
 build_user_link() {
     local user="$1" pass="$2"
-    local ip="${3:-$(get_ip)}" port="${4:-$(get_port)}"
+    local ip="${3:-$(link_host)}" port="${4:-$(get_port)}"
     local obfs="${5:-$(get_obfs_pass)}" sni="${6:-$(get_sni)}"
     local tag="${7:-$user}"
     printf 'hysteria2://%s:%s@%s:%s/?obfs=salamander&obfs-password=%s&sni=%s&insecure=1#%s' \
@@ -92,7 +109,7 @@ publish_manifest() {
     local tmp="$WEBROOT/cluster/manifest.tmp" u p node ip port obfs sni
     node=$(node_name)
     # Параметры сервера считаем один раз (get_ip дёргает сеть) и переиспользуем.
-    ip=$(get_ip); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
+    ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
     : > "$tmp"
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
@@ -117,7 +134,7 @@ regen_subscriptions() {
 
     local user token lp node ip port obfs sni
     node=$(node_name)
-    ip=$(get_ip); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
+    ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
     while IFS= read -r user; do
         [ -n "$user" ] || continue
         token=$(sub_token_for "$user")

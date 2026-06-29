@@ -733,6 +733,12 @@ subscription_menu() {
                 cert_st="🔴 не подтверждён (HTTPS не работает — см. пункт 1)"
             fi
             echo "  Сертификат: $cert_st"
+            local conn; conn=$(node_get CONN_HOST)
+            if [ -n "$conn" ]; then
+                echo "  В ссылке  : домен подключения $conn (вместо IP)"
+            else
+                echo "  В ссылке  : IP сервера $(get_ip) (домен не задан — пункт 9)"
+            fi
         else
             echo "  Состояние : ⚪ не настроена"
         fi
@@ -753,6 +759,7 @@ subscription_menu() {
         echo "  6. 🔄 Синхронизировать сейчас"
         echo "  7. 🔢 Лимит устройств на подписку"
         echo "  8. 🩺 Диагностика подписки"
+        echo "  9. 🛡  Домен подключения в ссылке (скрыть голый IP)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -957,6 +964,45 @@ subscription_menu() {
                             echo "  ❌ Caddy всё ещё не запускается — journalctl -u caddy -e | tail -n 30"
                         fi
                     fi
+                fi
+                pause
+                ;;
+            9)
+                echo ""
+                local cur_conn; cur_conn=$(node_get CONN_HOST)
+                [ -z "$cur_conn" ] && cur_conn="нет, используется IP $(get_ip)"
+                echo "  Домен подключения подставляется в ссылку вместо голого IP"
+                echo "  (host у hysteria2://...@host:port). Текущий: $cur_conn"
+                echo ""
+                echo "  ⚠️ ВАЖНО: домен должен быть DNS-only (A-запись прямо на IP ноды),"
+                echo "     БЕЗ оранжевого облака Cloudflare — Hysteria работает по UDP,"
+                echo "     а CF-прокси UDP не пропускает, и подключение сломается."
+                echo ""
+                local nd
+                ask nd "  Домен подключения (Enter — оставить, '-' — убрать и вернуть IP): "
+                if [ "$nd" = "-" ]; then
+                    node_set CONN_HOST ""
+                    sed -i '/^CONN_HOST=$/d' "$NODE_CONF" 2>/dev/null
+                    echo "  ✅ Убрано — в ссылке снова IP $(get_ip)."
+                    sub_refresh
+                elif [ -z "$nd" ]; then
+                    echo "  Без изменений."
+                elif ! valid_domain "$nd"; then
+                    echo "  ❌ «$nd» не похоже на домен."
+                else
+                    local ph rc2
+                    ph=$(resolve_domain "$nd")
+                    if printf '%s\n' "$ph" | grep -qxF "$(get_ip)"; then
+                        echo "  ✅ DNS: $nd → $(get_ip) (этот сервер, DNS-only — то, что нужно)."
+                    elif [ -z "$ph" ]; then
+                        echo "  ⚠️ $nd пока не резолвится. Создайте A-запись $nd → $(get_ip) (DNS-only)."
+                    else
+                        echo "  ⚠️ $nd резолвится на $(printf '%s' "$ph" | tr '\n' ' ')— НЕ на этот сервер ($(get_ip))."
+                        echo "     Если это IP Cloudflare (оранжевое облако) — VPN не подключится. Нужен DNS-only."
+                    fi
+                    node_set CONN_HOST "$nd"
+                    sub_refresh
+                    echo "  ✅ В ссылках теперь домен $nd. Раздайте пользователям новую подписку/ссылку."
                 fi
                 pause
                 ;;
