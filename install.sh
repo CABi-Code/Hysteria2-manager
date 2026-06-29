@@ -53,7 +53,7 @@ CONFIG="/etc/hysteria/config.yaml"
 CERT_DIR="/etc/hysteria/certs"
 LOG_DIR="/var/log/hy2-manager"
 SERVICE="hysteria-server.service"
-MANAGER_LIBS=(config deps api traffic ip_tracking online expiry users cron migration ui)
+MANAGER_LIBS=(config deps api traffic ip_tracking online expiry users cron migration subscription cluster ui)
 
 # === УТИЛИТА: скачивание файлов менеджера ===
 download_file() {
@@ -301,6 +301,11 @@ if command -v ufw &>/dev/null; then
     if ufw status 2>/dev/null | grep -q "Status: active"; then
         ufw allow "${HY_PORT}/udp" >/dev/null 2>&1 || true
         ok "ufw: разрешён ${HY_PORT}/udp"
+        # 80/443 TCP — для HTTPS-подписки (Caddy + ACME). Откроем заранее,
+        # чтобы при включении подписки сертификат выпустился без правок firewall.
+        ufw allow 80/tcp  >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
+        ok "ufw: разрешены 80/tcp и 443/tcp (подписка)"
     else
         ok "ufw неактивен — пропускаю"
     fi

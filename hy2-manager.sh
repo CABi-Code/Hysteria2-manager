@@ -28,7 +28,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry users cron migration ui)
+_required_libs=(config deps api traffic ip_tracking online expiry users cron migration subscription cluster ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -67,6 +67,12 @@ if [ "$1" = "--collect" ]; then
     setup_stats_api
     collect_traffic
     collect_ips
+    exit 0
+fi
+
+if [ "$1" = "--cluster-sync" ]; then
+    # Периодический обмен ключами с пирами + пересборка подписок (cron).
+    cluster_sync
     exit 0
 fi
 
@@ -192,13 +198,24 @@ while true; do
                 fi
             fi
 
-            LINK="hysteria2://${USERNAME}:${PASSWORD}@${CACHED_IP}:${CACHED_PORT}/?obfs=salamander&obfs-password=${CACHED_OBFS}&sni=${CACHED_SNI}&insecure=1#${USERNAME}"
+            LINK=$(build_user_link "$USERNAME" "$PASSWORD" "$CACHED_IP" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
             echo ""
             echo "  🔗 ГОТОВАЯ ССЫЛКА:"
             echo "  $LINK"
             echo ""
             echo "  💡 Hiddify, Nekobox, Streisand и т.д."
             echo "  ✅ Клиент может подключаться прямо сейчас."
+
+            # Если настроена подписка — обновляем её и показываем единую ссылку,
+            # которая соберёт ключи этого юзера со всех серверов кластера.
+            if sub_enabled; then
+                sub_refresh
+                echo ""
+                echo "  🌐 ССЫЛКА-ПОДПИСКА (все серверы, автообновление):"
+                echo "  $(subscription_url "$USERNAME")"
+                echo "  ℹ️  Заведите этого юзера тем же именем на других нодах —"
+                echo "      их ключи появятся в этой подписке автоматически."
+            fi
             pause "  Enter для возврата..."
             ;;
 

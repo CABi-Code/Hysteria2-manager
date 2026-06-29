@@ -94,6 +94,7 @@ disable_user() {
     grep -q "^${user}|" "$DISABLED_FILE" || echo "${user}|${password}" >> "$DISABLED_FILE"
     db_remove_user "$user"
     api_post "/kick" "[\"$user\"]" &>/dev/null
+    sub_refresh
     [ "$silent" != "silent" ] && echo "  ✅ Пользователь $user отключён (применено сразу)"
 }
 
@@ -112,15 +113,24 @@ enable_user() {
         return 1
     fi
     sed -i "/^${user}|/d" "$DISABLED_FILE"
+    sub_refresh
     echo "  ✅ Пользователь $user включён (применено сразу)"
 }
 
 # Полное удаление: чистим базу и все файлы статистики. Без рестарта.
 delete_user() {
     local user="$1"
+    # Снимаем токен подписки и удаляем готовый файл подписки.
+    if [ -f "$SUBTOKENS_DB" ]; then
+        local _t
+        _t=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$SUBTOKENS_DB" 2>/dev/null)
+        [ -n "$_t" ] && rm -f "$WEBROOT/sub/$_t" 2>/dev/null
+        sub_token_remove "$user"
+    fi
     db_remove_user "$user"
-    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" 2>/dev/null
+    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$CLUSTER_USERS_FILE" 2>/dev/null
     api_post "/kick" "[\"$user\"]" &>/dev/null
+    sub_refresh
     echo "  ✅ Пользователь $user полностью удалён (применено сразу)"
 }
 
@@ -271,6 +281,7 @@ change_user_password() {
         # Кикаем — со старым паролем доступ сразу пропадёт, переподключится по новой ссылке.
         api_post "/kick" "[\"$user\"]" &>/dev/null
     fi
+    sub_refresh
     echo "  ✅ Пароль $user обновлён (применено сразу)"
     echo "  🔑 Новый: ${new_pass}"
 }

@@ -340,7 +340,8 @@ user_action_menu() {
                     pass=$(get_user_password "$user")
                 fi
                 if [ -n "$pass" ]; then
-                    local link="hysteria2://${user}:${pass}@${CACHED_IP}:${CACHED_PORT}/?obfs=salamander&obfs-password=${CACHED_OBFS}&sni=${CACHED_SNI}&insecure=1#${user}"
+                    local link
+                    link=$(build_user_link "$user" "$pass" "$CACHED_IP" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
                     echo ""
                     echo "  🔗 ССЫЛКА:"
                     echo "  $link"
@@ -379,6 +380,21 @@ user_action_menu() {
                     fi
                 else
                     echo "  ❌ Не удалось создать конфиг"
+                fi
+                pause
+                need_clear=1
+                ;;
+            9)
+                if ! sub_enabled; then
+                    echo "  ❌ Подписка не настроена (Настройки → Подписка / Кластер)"
+                else
+                    sub_refresh
+                    echo ""
+                    echo "  🌐 ССЫЛКА-ПОДПИСКА (ключи со всех серверов, автообновление):"
+                    echo "  $(subscription_url "$user")"
+                    echo ""
+                    echo "  💡 Одна ссылка на все ноды. Добавьте в Hiddify/Nekobox как подписку."
+                    echo "  ℹ️  Покрываются ноды, где этот юзер заведён тем же именем."
                 fi
                 pause
                 need_clear=1
@@ -454,6 +470,7 @@ _render_user_action() {
     echo "  6. 🌐 Просмотр IP-адресов"
     echo "  7. 🔗 Получить ссылку"
     echo "  8. 📄 Конфиг для sing-box"
+    sub_enabled && echo "  9. 🌐 Ссылка-подписка (все серверы кластера)"
     echo "  0. ↩  Назад"
     echo ""
 }
@@ -609,6 +626,7 @@ settings_menu() {
             echo "  2. 🔄 Перезапустить Hysteria"
         fi
         echo "  3. 🔧 Исправить / обновить данные (если статистика не сходится)"
+        echo "  4. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -644,6 +662,121 @@ settings_menu() {
                 ;;
             3)
                 repair_data
+                pause
+                ;;
+            4)
+                subscription_menu
+                ;;
+            0) return ;;
+            *)
+                echo "  ❌ Неверный выбор!"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ====================== ПОДПИСКА / КЛАСТЕР ======================
+# Единая подписка: клиент добавляет одну ссылку https://<домен>/sub/<token>, а
+# нода отдаёт ключи юзера со ВСЕХ серверов кластера (статику раздаёт Caddy).
+subscription_menu() {
+    while true; do
+        clear
+        local host caddy_st
+        host=$(node_host)
+        if command -v caddy &>/dev/null; then caddy_st="установлен"; else caddy_st="не установлен"; fi
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  🌐 Подписка / Кластер"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        if sub_enabled; then
+            echo "  Состояние : 🟢 включена (домен: $host)"
+        else
+            echo "  Состояние : ⚪ не настроена"
+        fi
+        echo "  Caddy     : $caddy_st"
+        echo "  Нод в кластере: $(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9' || echo 0)"
+        echo ""
+        echo "  1. 🌐 Настроить домен и включить подписку"
+        echo "  2. 🔗 Создать кластер (получить join-токен)"
+        echo "  3. 🔌 Подключиться к кластеру по токену"
+        echo "  4. ➕ Добавить пир вручную (домен ноды)"
+        echo "  5. 📋 Список нод кластера"
+        echo "  6. 🔄 Синхронизировать сейчас"
+        echo "  0. ↩  Назад"
+        echo ""
+        local choice
+        ask choice "  Выберите: "
+
+        case "$choice" in
+            1)
+                echo ""
+                local domain name
+                ask domain "  Домен этой ноды (A-запись на её IP, напр. vpn1.example.com): "
+                if [ -z "$domain" ]; then echo "  ❌ Домен не задан"; sleep 1.5; continue; fi
+                ask name "  Имя ноды (метка в клиенте, Enter — $(hostname -s 2>/dev/null || echo node)): "
+                [ -z "$name" ] && name=$(hostname -s 2>/dev/null || echo node)
+                echo "  ⏳ Проверяю/устанавливаю Caddy..."
+                if ! ensure_caddy; then
+                    echo "  ❌ Не удалось установить Caddy. Установите вручную и повторите."
+                    pause; continue
+                fi
+                node_configure "$domain" "$name"
+                cluster_add_peer "$name" "$domain"
+                setup_caddy "$domain"
+                sub_refresh
+                publish_peers_list
+                echo "  ✅ Подписка включена. Caddy получит сертификат для $domain автоматически."
+                echo "     Откройте 80/tcp и 443/tcp в firewall, если ещё не открыты."
+                pause
+                ;;
+            2)
+                if ! sub_enabled; then echo "  ❌ Сначала настройте домен (пункт 1)"; sleep 2; continue; fi
+                echo ""
+                echo "  🔗 JOIN-ТОКЕН (вставьте его на других нодах, пункт 3):"
+                echo ""
+                echo "  $(cluster_init)"
+                echo ""
+                echo "  ℹ️  После подключения новой ноды добавьте её домен здесь (пункт 4)."
+                pause
+                ;;
+            3)
+                if ! sub_enabled; then echo "  ❌ Сначала настройте домен (пункт 1)"; sleep 2; continue; fi
+                echo ""
+                local token
+                ask token "  Вставьте join-токен: "
+                [ -z "$token" ] && { echo "  Отменено."; sleep 1; continue; }
+                cluster_join "$token"
+                pause
+                ;;
+            4)
+                echo ""
+                local phost
+                ask phost "  Домен пира (напр. vpn2.example.com): "
+                if [ -n "$phost" ]; then
+                    cluster_add_peer "$phost" "$phost"
+                    publish_peers_list
+                    cluster_sync
+                    echo "  ✅ Пир $phost добавлен и синхронизирован."
+                fi
+                pause
+                ;;
+            5)
+                echo ""
+                echo "  Ноды кластера (name | host):"
+                echo "  ────────────────────────────────────"
+                if [ -s "$CLUSTER_CONF" ]; then
+                    sed 's/^/    /' "$CLUSTER_CONF"
+                else
+                    echo "    (пусто — кластер не настроен)"
+                fi
+                pause
+                ;;
+            6)
+                echo ""
+                echo "  ⏳ Синхронизация с пирами..."
+                cluster_sync
+                echo "  ✅ Готово."
                 pause
                 ;;
             0) return ;;
