@@ -56,6 +56,8 @@ fi
 # === CLI АРГУМЕНТЫ ===
 
 if [ "$1" = "--check-expiry" ]; then
+    migrate_auth
+    migrate_to_command_auth
     setup_stats_api
     check_expired_users
     exit 0
@@ -71,6 +73,7 @@ fi
 # === ИНИЦИАЛИЗАЦИЯ ===
 
 migrate_auth
+migrate_to_command_auth
 setup_stats_api
 collect_traffic
 collect_ips
@@ -154,7 +157,7 @@ while true; do
                 continue
             fi
 
-            if grep -q "^[[:space:]]*${USERNAME}:[[:space:]]" "$CONFIG"; then
+            if db_user_exists "$USERNAME"; then
                 echo "  ❌ $USERNAME уже существует!"
                 sleep 2
                 continue
@@ -169,23 +172,16 @@ while true; do
             PASSWORD=$(pwgen -s 64 1)
             echo "  🔑 Сгенерирован 64-символьный пароль"
 
-            if ! grep -q '^[[:space:]]*userpass:' "$CONFIG"; then
-                echo "  ❌ Секция userpass не найдена в конфиге!"
-                echo "  Проверьте $CONFIG"
+            db_add_user "$USERNAME" "$PASSWORD"
+
+            if ! db_user_exists "$USERNAME"; then
+                echo "  ❌ Ошибка! Пользователь не добавлен в базу."
+                echo "  Проверьте $USERS_DB"
                 sleep 3
                 continue
             fi
 
-            sed -i "/^[[:space:]]*userpass:/a\\    $USERNAME: \"$PASSWORD\"" "$CONFIG"
-
-            if ! grep -q "^    ${USERNAME}: " "$CONFIG"; then
-                echo "  ❌ Ошибка! Пользователь не добавлен в конфиг."
-                echo "  Проверьте формат $CONFIG"
-                sleep 3
-                continue
-            fi
-
-            echo "  ✅ Пользователь $USERNAME добавлен"
+            echo "  ✅ Пользователь $USERNAME добавлен (применено сразу, без перезапуска)"
 
             ask EXP_DAYS "  Срок действия в днях от сегодня (Enter — без срока): "
             if [[ "$EXP_DAYS" =~ ^[0-9]+$ ]] && [ "$EXP_DAYS" -gt 0 ]; then
@@ -202,9 +198,7 @@ while true; do
             echo "  $LINK"
             echo ""
             echo "  💡 Hiddify, Nekobox, Streisand и т.д."
-            # Перезапуск нужен, чтобы новый пользователь смог подключиться.
-            # Делаем его осознанно (с предупреждением), а не молча.
-            prompt_apply_restart
+            echo "  ✅ Клиент может подключаться прямо сейчас."
             pause "  Enter для возврата..."
             ;;
 

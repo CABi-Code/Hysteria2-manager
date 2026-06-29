@@ -55,8 +55,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/
 Если форкнули репозиторий, можно указать свой URL через переменную окружения:
 
 ```bash
-REPO_URL="https://raw.githubusercontent.com/USERNAME/REPO/BRANCH" \
-    bash <(curl -fsSL https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/install.sh)
+
+sudo REPO_URL="https://raw.githubusercontent.com/USERNAME/REPO/BRANCH" bash <(curl -fsSL https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/install.sh)
+
 ```
 
 ### Что делает install.sh
@@ -87,9 +88,22 @@ lib/
   expiry.sh              # Управление сроками действия
   users.sh               # CRUD-операции над пользователями
   cron.sh                # Настройка cron-задач
-  migration.sh           # Автомиграция auth: password -> userpass
-  ui.sh                  # Интерфейс: таблицы, подменю, меню ссылок
+  migration.sh           # Автомиграции auth: password -> userpass -> command
+  ui.sh                  # Интерфейс: таблицы, подменю, меню ссылок, ремонт
 ```
+
+### Аутентификация без перезапусков
+
+Менеджер использует внешнюю аутентификацию Hysteria 2 (`auth.type: command`):
+сервер на каждое подключение вызывает скрипт `hysteria-auth.sh`, который
+сверяет пару `логин:пароль` с базой `users.db`. Благодаря этому **добавление,
+удаление, отключение и смена пароля применяются мгновенно — без перезапуска
+Hysteria** (а значит, без обрыва VPN у остальных клиентов).
+
+При обновлении со старого формата (`auth.type: userpass`, пользователи прямо в
+конфиге) выполняется разовая автомиграция: пользователи переносятся в `users.db`,
+конфиг переключается на `command`, и сервер перезапускается **один раз**. Ссылки
+клиентов при этом не меняются — формат `hysteria2://логин:пароль@...` тот же.
 
 ## Использование
 
@@ -136,6 +150,8 @@ Cron-задачи настраиваются автоматически при �
 
 | Файл | Описание |
 |------|----------|
+| `users.db` | База активных пользователей для аутентификации (user:password) |
+| `hysteria-auth.sh` | Скрипт внешней аутентификации (вызывается Hysteria) |
 | `stats.dat` | Статистика трафика (user\|tx\|rx) |
 | `ips.dat` | IP-адреса (user\|ip\|first_seen\|last_seen\|count) |
 | `expiry.dat` | Сроки действия (user\|YYYY-MM-DD) |

@@ -30,25 +30,47 @@ expiry_days_left() {
     echo $(( (exp_ts - now_ts) / 86400 ))
 }
 
+# Остаток до конца дня истечения в виде «Nд Чч Мм».
+# Срок хранится как дата (без времени), поэтому считаем до 23:59:59 этого дня.
+# Возвращает «истёк», если дата в прошлом. Код 1 — если дата не задана.
+format_remaining() {
+    local exp="$1" exp_ts now_ts diff d h m
+    [ -z "$exp" ] && return 1
+    exp_ts=$(date -d "$exp 23:59:59" +%s 2>/dev/null) || return 1
+    now_ts=$(date +%s)
+    diff=$(( exp_ts - now_ts ))
+    if [ "$diff" -le 0 ]; then
+        echo "истёк"
+        return 0
+    fi
+    d=$(( diff / 86400 ))
+    h=$(( (diff % 86400) / 3600 ))
+    m=$(( (diff % 3600) / 60 ))
+    if [ "$d" -gt 0 ]; then
+        echo "${d}д ${h}ч ${m}м"
+    elif [ "$h" -gt 0 ]; then
+        echo "${h}ч ${m}м"
+    else
+        echo "${m}м"
+    fi
+}
+
 remove_user_expiry() {
     sed -i "/^${1}|/d" "$EXPIRY_FILE"
 }
 
 check_expired_users() {
-    local today changed=false
+    local today
     today=$(date +%Y-%m-%d)
     while IFS='|' read -r user exp_date; do
         [ -z "$user" ] || [ -z "$exp_date" ] && continue
         if [[ "$exp_date" < "$today" ]]; then
-            if ! is_user_disabled "$user" && grep -q "^[[:space:]]*${user}:[[:space:]]" "$CONFIG"; then
+            # Пользователь активен (есть в базе) и ещё не отключён — отключаем.
+            # Применяется сразу (база + kick), рестарт Hysteria не нужен.
+            if ! is_user_disabled "$user" && db_user_exists "$user"; then
                 disable_user "$user" silent
                 echo "⏰ Автоотключение: $user (срок: $exp_date)"
-                changed=true
             fi
         fi
     done < "$EXPIRY_FILE"
-    if $changed; then
-        systemctl restart "$SERVICE" 2>/dev/null
-        sleep 2
-    fi
 }
