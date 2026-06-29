@@ -141,10 +141,12 @@ render_user_table() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  ${title:-Пользователи} (стр. $page/$USER_LIST_PAGES, всего: $USER_LIST_TOTAL)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    local _sub=0; sub_enabled && _sub=1
     printf '  '
     print_cell "No"       3  0 r; printf ' '
     print_cell "Имя"      14 0;   printf ' '
     print_cell "Статус"   9  0;   printf ' '
+    [ "$_sub" = 1 ] && { print_cell "Кластер" 9 0; printf ' '; }
     print_cell "Скорость" 14 0;   printf ' '
     print_cell "Трафик"   16 0;   printf ' '
     print_cell "IP"       3  0 r; printf ' '
@@ -175,16 +177,26 @@ render_user_table() {
             fi
         fi
 
-        local tl tx rx traffic
-        tl=$(get_user_traffic "$user")
-        tx=$(echo "$tl" | cut -d'|' -f2)
-        rx=$(echo "$tl" | cut -d'|' -f3)
-        traffic="↑$(format_bytes "$tx") ↓$(format_bytes "$rx")"
+        # Кластерный статус + суммарные трафик/скорость (если подписка включена).
+        local cstatus cstatus_wide tx rx sp_tx sp_rx
+        if [ "$_sub" = 1 ]; then
+            local cc ct cs
+            cc=$(cluster_user_connections "$user")
+            if [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
+                cstatus="🟢 ${cc}"; cstatus_wide=1
+            else
+                cstatus="⚫ —"; cstatus_wide=1
+            fi
+            ct=$(cluster_user_traffic "$user"); tx=${ct%% *}; rx=${ct##* }
+            cs=$(cluster_user_speed "$user");   sp_tx=${cs%% *}; sp_rx=${cs##* }
+        else
+            local tl sp
+            tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+            sp=$(get_user_speed "$user");   sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        fi
 
-        local sp sp_tx sp_rx speed
-        sp=$(get_user_speed "$user")
-        sp_tx=$(echo "$sp" | cut -d'|' -f2)
-        sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        local traffic speed
+        traffic="↑$(format_bytes "$tx") ↓$(format_bytes "$rx")"
         if [ "${sp_tx:-0}" -eq 0 ] && [ "${sp_rx:-0}" -eq 0 ] 2>/dev/null; then
             speed="—"
         else
@@ -199,6 +211,7 @@ render_user_table() {
         print_cell "$num"     3  0 r;           printf ' '
         print_cell "$(trunc "$user" 14)" 14 0;  printf ' '
         print_cell "$status"  9  "$status_wide"; printf ' '
+        [ "$_sub" = 1 ] && { print_cell "$cstatus" 9 "$cstatus_wide"; printf ' '; }
         print_cell "$speed"   14 0;             printf ' '
         print_cell "$traffic" 16 0;             printf ' '
         print_cell "$ipc"     3  0 r;           printf ' '
@@ -411,10 +424,11 @@ _render_user_action() {
     echo "  Пользователь: $user"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+    local oc
     if is_user_disabled "$user"; then
         echo "  Статус:        🔴 ОТКЛЮЧЁН"
+        oc=0
     else
-        local oc
         oc=$(get_user_online_count "$user")
         if [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
             echo "  Статус:        🟢 ОНЛАЙН ($oc на этой ноде)"
@@ -423,30 +437,45 @@ _render_user_action() {
         fi
     fi
 
-    # Подключения по подписке СУММАРНО по кластеру (а не только на этой ноде).
+    # Статус и статистика в МАСШТАБЕ КЛАСТЕРА.
     if sub_enabled; then
-        local cc lim warn=""
+        local cc lim warn="" nodes_online
         cc=$(cluster_user_connections "$user")
+        nodes_online=$(cluster_user_breakdown "$user" | awk -F'\t' '$2>0' | wc -l | tr -dc '0-9')
+        if [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
+            echo "  Статус кластера: 🟢 ОНЛАЙН — $cc подключений на ${nodes_online:-0} нод(ах)"
+        else
+            echo "  Статус кластера: ⚫ оффлайн во всём кластере"
+        fi
         lim=$(get_device_limit)
         if [ "$lim" -gt 0 ] 2>/dev/null; then
-            [ "$cc" -gt "$lim" ] 2>/dev/null && warn="  ⚠️ превышение!"
-            echo "  Подписка:      🌐 $cc подключений по кластеру / лимит $lim$warn"
-        else
-            echo "  Подписка:      🌐 $cc подключений по кластеру (лимит выкл)"
+            [ "${cc:-0}" -gt "$lim" ] 2>/dev/null && warn="  ⚠️ превышение!"
+            echo "  Лимит устройств: $cc / $lim$warn"
         fi
+
+        # Трафик и скорость — суммарно по кластеру.
+        local ct cs ctx crx cstx csrx
+        ct=$(cluster_user_traffic "$user"); ctx=${ct%% *}; crx=${ct##* }
+        cs=$(cluster_user_speed "$user");   cstx=${cs%% *}; csrx=${cs##* }
+        echo "  Трафик (всего): ↑$(format_bytes "$ctx") / ↓$(format_bytes "$crx")"
+        echo "  Скорость(всего):↑$(format_speed "$cstx") / ↓$(format_speed "$csrx")"
+
+        # Разбивка по нодам, где юзер сейчас онлайн.
+        local any_online=0 bn bo btx brx bstx bsrx
+        while IFS=$'\t' read -r bn bo btx brx bstx bsrx; do
+            [ "${bo:-0}" -gt 0 ] 2>/dev/null || continue
+            [ "$any_online" -eq 0 ] && echo "  Онлайн по нодам:"
+            any_online=1
+            echo "    • $bn: ${bo} подкл · ↑$(format_bytes "$btx")/↓$(format_bytes "$brx") · ↑$(format_speed_short "$bstx")/↓$(format_speed_short "$bsrx")"
+        done < <(cluster_user_breakdown "$user")
+    else
+        local tl tx rx
+        tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+        echo "  Трафик:        ↑$(format_bytes "$tx") / ↓$(format_bytes "$rx")"
+        local sp sp_tx sp_rx
+        sp=$(get_user_speed "$user"); sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        echo "  Скорость:      ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
     fi
-
-    local tl tx rx
-    tl=$(get_user_traffic "$user")
-    tx=$(echo "$tl" | cut -d'|' -f2)
-    rx=$(echo "$tl" | cut -d'|' -f3)
-    echo "  Трафик:        ↑$(format_bytes "$tx") / ↓$(format_bytes "$rx")"
-
-    local sp sp_tx sp_rx
-    sp=$(get_user_speed "$user")
-    sp_tx=$(echo "$sp" | cut -d'|' -f2)
-    sp_rx=$(echo "$sp" | cut -d'|' -f3)
-    echo "  Скорость:      ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
 
     local ipc
     ipc=$(get_user_ip_count "$user")
