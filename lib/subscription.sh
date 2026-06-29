@@ -198,6 +198,7 @@ sub_refresh() {
     sub_enabled || return 0
     publish_manifest
     publish_subtokens
+    publish_stats
     regen_subscriptions
 }
 
@@ -542,33 +543,80 @@ set_device_limit() {
     echo "$n" > "$SUB_LIMIT_FILE"
 }
 
-# Публикует онлайн ЭТОЙ ноды («user<TAB>count») для других нод (за X-Cluster-Auth).
-publish_online() {
+# Публикует статистику ЭТОЙ ноды для других нод (за X-Cluster-Auth). По строке
+# на юзера: «user<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx». Эти данные пиры
+# подмешивают в общекластерные онлайн/трафик/скорость и в разбивку по нодам.
+publish_stats() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local online tmp="$WEBROOT/cluster/online.tmp"
+    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx
     online=$(api_get "/online")
     echo "$online" | jq empty 2>/dev/null || online='{}'
-    echo "$online" | jq -r 'to_entries[] | select(.value>0) | "\(.key)\t\(.value)"' 2>/dev/null > "$tmp"
-    mv "$tmp" "$WEBROOT/cluster/online"
+    : > "$tmp"
+    while IFS=: read -r u _; do
+        [ -n "$u" ] || continue
+        oc=$(echo "$online" | jq -r --arg x "$u" '.[$x]//0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
+        tl=$(get_user_traffic "$u"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+        sp=$(get_user_speed "$u");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" >> "$tmp"
+    done < "$USERS_DB"
+    mv "$tmp" "$WEBROOT/cluster/stats"
     secure_web_files
 }
 
-# Суммарные подключения юзера по всему кластеру: локально + кэш онлайна пиров.
-# Локальный онлайн берём из CACHED_ONLINE (refresh_online), чтобы не дёргать API
-# на каждый вызов.
-cluster_user_connections() {
-    local user="$1" total n f
-    total=$(get_user_online_count "$user")
-    if [ -d "$PEERS_DIR" ]; then
-        for f in "$PEERS_DIR"/*.online; do
-            [ -f "$f" ] || continue
-            n=$(awk -F'\t' -v u="$user" '$1==u{print $2; exit}' "$f" 2>/dev/null)
-            [[ "$n" =~ ^[0-9]+$ ]] || n=0
-            total=$((total + n))
-        done
-    fi
+# Внутренний хелпер: сумма колонки $col из stats-кэшей пиров для юзера.
+_peer_stat_sum() {   # user col
+    local user="$1" col="$2" total=0 n f
+    [ -d "$PEERS_DIR" ] || { echo 0; return; }
+    for f in "$PEERS_DIR"/*.stats; do
+        [ -f "$f" ] || continue
+        n=$(awk -F'\t' -v u="$user" -v c="$col" '$1==u{print $c; exit}' "$f" 2>/dev/null)
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        total=$((total + n))
+    done
     echo "$total"
+}
+
+# Суммарные подключения юзера по всему кластеру: локально (CACHED_ONLINE) + пиры.
+cluster_user_connections() {
+    local user="$1"
+    echo $(( $(get_user_online_count "$user") + $(_peer_stat_sum "$user" 2) ))
+}
+
+# Суммарный трафик по кластеру: печатает «tx rx».
+cluster_user_traffic() {
+    local user="$1" l ltx lrx
+    l=$(get_user_traffic "$user"); ltx=$(echo "$l" | cut -d'|' -f2); lrx=$(echo "$l" | cut -d'|' -f3)
+    echo "$(( ${ltx:-0} + $(_peer_stat_sum "$user" 3) )) $(( ${lrx:-0} + $(_peer_stat_sum "$user" 4) ))"
+}
+
+# Суммарная скорость по кластеру: печатает «tx rx» (B/s).
+cluster_user_speed() {
+    local user="$1" l ltx lrx
+    l=$(get_user_speed "$user"); ltx=$(echo "$l" | cut -d'|' -f2); lrx=$(echo "$l" | cut -d'|' -f3)
+    echo "$(( ${ltx:-0} + $(_peer_stat_sum "$user" 5) )) $(( ${lrx:-0} + $(_peer_stat_sum "$user" 6) ))"
+}
+
+# Онлайн ли юзер ХОТЬ ГДЕ-ТО в кластере (0/1) — для статуса в списке.
+cluster_user_online_any() {
+    [ "$(cluster_user_connections "$1")" -gt 0 ] 2>/dev/null
+}
+
+# Разбивка по нодам: по строке «node<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx».
+# Сначала эта нода (живые данные), затем пиры из кэша. Только где юзер присутствует.
+cluster_user_breakdown() {
+    local user="$1" oc tl tx rx sp sptx sprx f name
+    oc=$(get_user_online_count "$user")
+    tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+    sp=$(get_user_speed "$user");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(node_name)" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}"
+    [ -d "$PEERS_DIR" ] || return 0
+    for f in "$PEERS_DIR"/*.stats; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .stats)
+        awk -F'\t' -v u="$user" -v n="$name" \
+            '$1==u{printf "%s\t%s\t%s\t%s\t%s\t%s\n", n,$2,$3,$4,$5,$6}' "$f"
+    done
 }
 
 # Применяет лимит устройств: если суммарно по кластеру у юзера больше лимита —
