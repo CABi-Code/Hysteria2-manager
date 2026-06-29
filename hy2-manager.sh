@@ -93,6 +93,16 @@ collect_ips
 check_expired_users
 setup_cron
 
+# Самовосстановление подписки: если она настроена, но Caddy лежит или его конфиг
+# битый — открываем порты и пересобираем конфиг автоматически (без действий юзера).
+if sub_enabled; then
+    ensure_ports_open
+    if ! systemctl is-active --quiet caddy 2>/dev/null \
+       || ! caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null; then
+        setup_caddy >/dev/null 2>&1
+    fi
+fi
+
 CACHED_IP=$(get_ip)
 CACHED_PORT=$(get_port)
 CACHED_OBFS=$(get_obfs_pass)
