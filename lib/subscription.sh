@@ -269,6 +269,107 @@ ensure_ports_open() {
     return 0
 }
 
+# Слушается ли TCP-порт локально (Caddy на 80/443).
+port_listening() {
+    local p="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | grep -qE ":${p}[[:space:]]"
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -ltn 2>/dev/null | grep -qE ":${p}[[:space:]]"
+    else
+        return 0
+    fi
+}
+
+# Полная диагностика подписки: DNS→сервер, порты, Caddy, сертификат, пиры и
+# содержимое подписки. Печатает отчёт с ✅/❌ и подсказками.
+subscription_diagnose() {
+    local host myip ips
+    echo "  ══ Диагностика подписки ══════════════════════════════"
+    if ! sub_enabled; then
+        echo "  ⚪ Подписка не настроена (Настройки → Подписка → 1)."
+        return 0
+    fi
+    host=$(node_host); myip=$(get_ip)
+    echo "  Нода «$(node_name)» · домен $host · IP сервера $myip"
+    echo ""
+
+    # 1. DNS
+    ips=$(resolve_domain "$host")
+    if [ -z "$ips" ]; then
+        echo "  ❌ DNS: $host не резолвится. Нужна A-запись $host → $myip."
+    elif printf '%s\n' "$ips" | grep -qxF "$myip"; then
+        echo "  ✅ DNS: $host → $myip (этот сервер)"
+    else
+        echo "  ❌ DNS: $host → $(printf '%s' "$ips" | tr '\n' ' ')(НЕ этот сервер $myip)"
+        echo "        Похоже на CDN/прокси (Akamai/Cloudflare). Нужна ПРЯМАЯ A-запись на $myip,"
+        echo "        без проксирования — иначе Let's Encrypt не подтвердит домен."
+    fi
+
+    # 2. Порты
+    local p
+    for p in 80 443; do
+        if port_listening "$p"; then echo "  ✅ Порт $p/tcp слушается"
+        else echo "  ⚠️  Порт $p/tcp не слушается (Caddy не запущен или порт занят)"; fi
+    done
+
+    # 3. Caddy
+    if ! command -v caddy >/dev/null 2>&1; then
+        echo "  ❌ Caddy не установлен"
+    else
+        systemctl is-active  --quiet caddy 2>/dev/null && echo "  ✅ Caddy запущен" \
+            || echo "  ❌ Caddy не запущен — journalctl -u caddy -e | tail -n 30"
+        systemctl is-enabled --quiet caddy 2>/dev/null && echo "  ✅ Caddy в автозапуске" \
+            || echo "  ⚠️  Caddy не в автозапуске"
+        caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null \
+            && echo "  ✅ Caddyfile валиден" || echo "  ❌ Caddyfile невалиден"
+    fi
+
+    # 4. Сертификат
+    if cert_ready "$host"; then
+        echo "  ✅ Сертификат валиден (до $(cert_expiry "$host")) — Caddy продлевает сам"
+    else
+        echo "  ❌ Сертификат не подтверждён — HTTPS-подписка не работает."
+        echo "        Причины: DNS не на этот сервер; закрыт 80/tcp; Caddy лёг; DNS не распространился."
+    fi
+
+    # 5. Пиры
+    echo "  ── Пиры кластера ──"
+    local total=0 okp=0 ph pn
+    while IFS='|' read -r pn ph; do
+        [ -n "$ph" ] || continue
+        [ "$ph" = "$host" ] && continue
+        total=$((total + 1))
+        if cluster_call "$ph" "/cluster/manifest" >/dev/null 2>&1; then
+            echo "  ✅ $pn ($ph) — на связи"; okp=$((okp + 1))
+        else
+            echo "  ❌ $pn ($ph) — недоступен (DNS/сертификат/секрет/файрвол пира)"
+        fi
+    done < "$CLUSTER_CONF"
+    [ "$total" -eq 0 ] && echo "  ℹ️  Пиров нет (одиночная нода)." \
+        || echo "  Итого пиров: $okp из $total на связи"
+
+    # 6. Содержимое подписки (на примере первого юзера)
+    local u tok keys
+    u=$(head -1 "$USERS_DB" 2>/dev/null | cut -d: -f1)
+    if [ -n "$u" ]; then
+        tok=$(sub_token_for "$u")
+        echo "  ── Подписка юзера «$u» ──"
+        if [ -f "$WEBROOT/sub/$tok" ]; then
+            keys=$(base64 -d < "$WEBROOT/sub/$tok" 2>/dev/null | grep -c '^hysteria2')
+            echo "  Ключей в подписке (со всех нод): ${keys:-0}"
+            echo "  Ссылка: $(subscription_url "$u")"
+            if [ "$total" -gt 0 ] && [ "${keys:-0}" -le 1 ]; then
+                echo "  ⚠️  В подписке только свой ключ при наличии пиров — ключи пиров не подтянулись."
+                echo "       Обычно из-за недоступных пиров выше. Почините их и нажмите «Синхронизировать»."
+            fi
+        else
+            echo "  ⚠️  Файл подписки ещё не сгенерирован — нажмите «Синхронизировать»."
+        fi
+    fi
+    echo "  ══════════════════════════════════════════════════════"
+}
+
 # ---- Проверка домена и сертификата ----
 
 # Базовая валидация FQDN (чтобы не записать «белиберду»).
