@@ -810,6 +810,7 @@ subscription_menu() {
         echo "  7. 🔢 Лимит устройств на подписку"
         echo "  8. 🩺 Диагностика подписки"
         echo "  9. 🛡  Домен подключения в ссылке (скрыть голый IP)"
+        echo " 10. 🛰  Релей (реально спрятать IP ноды через фронт-VPS)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -1054,6 +1055,52 @@ subscription_menu() {
                     sub_refresh
                     echo "  ✅ В ссылках теперь домен $nd. Раздайте пользователям новую подписку/ссылку."
                 fi
+                pause
+                ;;
+            10)
+                clear
+                echo "  🛰  РЕЛЕЙ — реально прячет IP ноды"
+                echo "  ──────────────────────────────────────────────────────"
+                echo "  Релей — отдельный дешёвый VPS. Клиенты видят IP РЕЛЕЯ, он"
+                echo "  форвардит трафик на эту (скрытую) ноду $(get_ip)."
+                echo "  В ссылке будет адрес релея; dig покажет релей, не ноду."
+                echo ""
+                echo "  ⚠️ Минус: нода будет видеть всех клиентов с одного IP (релея) —"
+                echo "     детектор утечки по IP перестанет различать устройства."
+                echo ""
+                local rh
+                ask rh "  Адрес релея (IP или домен, который видит клиент; '-' убрать): "
+                if [ "$rh" = "-" ]; then
+                    node_set RELAY_HOST ""
+                    sed -i '/^RELAY_HOST=$/d' "$NODE_CONF" 2>/dev/null
+                    node_set CONN_HOST ""
+                    sed -i '/^CONN_HOST=$/d' "$NODE_CONF" 2>/dev/null
+                    sub_refresh
+                    echo "  ✅ Релей убран — в ссылке снова прямой адрес ноды."
+                    pause; continue
+                fi
+                [ -z "$rh" ] && { echo "  Отменено."; pause; continue; }
+                node_set RELAY_HOST "$rh"
+                node_set CONN_HOST "$rh"     # ссылки указывают на релей
+                local rscript
+                rscript=$(generate_relay_script)
+                sub_refresh
+                echo ""
+                echo "  ✅ Ссылки теперь указывают на релей «$rh»."
+                echo ""
+                echo "  📋 ДАЛЬШЕ — НА РЕЛЕЙ-СЕРВЕРЕ (от root) выполните скрипт:"
+                echo "  Скрипт сохранён здесь: $rscript"
+                echo "  Скопируйте его на релей и запустите, например:"
+                echo "     scp $rscript root@$rh:/root/relay-setup.sh"
+                echo "     ssh root@$rh 'bash /root/relay-setup.sh'"
+                echo ""
+                echo "  Затем направьте DNS:"
+                echo "    • домен подключения  → IP релея (A-запись, DNS-only)"
+                echo "    • домен подписки ($(node_host)) → IP релея (если хотите спрятать IP и для подписки)"
+                echo ""
+                echo "  Показать содержимое скрипта сейчас? (да/нет): "
+                local sc; ask sc ""
+                if is_yes "$sc"; then echo ""; sed 's/^/    /' "$rscript"; fi
                 pause
                 ;;
             0) return ;;
