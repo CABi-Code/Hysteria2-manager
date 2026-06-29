@@ -128,10 +128,15 @@ delete_user() {
         sub_token_remove "$user"
     fi
     db_remove_user "$user"
-    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$CLUSTER_USERS_FILE" 2>/dev/null
+    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" 2>/dev/null
+    declare -F roster_remove >/dev/null && roster_remove "$user"   # снять метку «кластерный»
     api_post "/kick" "[\"$user\"]" &>/dev/null
     sub_refresh
+    declare -F publish_roster >/dev/null && publish_roster
     echo "  ✅ Пользователь $user полностью удалён (применено сразу)"
+    if sub_enabled && [ -n "$(cluster_peers 2>/dev/null)" ]; then
+        echo "  ℹ️  На других нодах удалите этого юзера отдельно (кластерное удаление не авторазносится)."
+    fi
 }
 
 reset_user_stats() {

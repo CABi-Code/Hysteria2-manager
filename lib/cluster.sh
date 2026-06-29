@@ -44,7 +44,7 @@ cluster_remove_peer() {   # host
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
     if [ -n "$name" ]; then
-        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" 2>/dev/null
+        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" 2>/dev/null
     fi
     publish_peers_list
     regen_subscriptions
@@ -104,6 +104,7 @@ cluster_sync() {
     publish_peers_list
     publish_manifest
     publish_subtokens
+    publish_roster
 
     local host name data
     while IFS= read -r host; do
@@ -120,11 +121,60 @@ cluster_sync() {
         # токены подписки пира -> кэш (для единого токена по кластеру)
         data=$(cluster_call "$host" "/cluster/subtokens")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.subtokens"
+        # список «кластерных» юзеров пира -> кэш (для заведения у себя)
+        data=$(cluster_call "$host" "/cluster/roster")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.roster"
     done < <(cluster_peers)
 
     merge_subtokens          # единый токен подписки на всех нодах
+    cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
+}
+
+# ---- Кластерные пользователи (живут на ВСЕХ нодах) ----
+# Подход pull: нода-владелец помечает юзера в roster и публикует его; остальные
+# ноды на своём cluster_sync видят это и заводят юзера ЛОКАЛЬНО (свой пароль).
+# Авто-заведённые в свой roster НЕ добавляются — источник истины один (владелец),
+# чтобы удаление у владельца не приводило к бесконечному пересозданию.
+roster_add()    { mkdir -p "$DATA_DIR"; touch "$CLUSTER_USERS_FILE"; grep -qxF "$1" "$CLUSTER_USERS_FILE" 2>/dev/null || echo "$1" >> "$CLUSTER_USERS_FILE"; }
+roster_has()    { grep -qxF "$1" "$CLUSTER_USERS_FILE" 2>/dev/null; }
+roster_remove() {
+    [ -f "$CLUSTER_USERS_FILE" ] || return 0
+    grep -vxF "$1" "$CLUSTER_USERS_FILE" > "${CLUSTER_USERS_FILE}.t" 2>/dev/null || true
+    mv "${CLUSTER_USERS_FILE}.t" "$CLUSTER_USERS_FILE" 2>/dev/null || true
+}
+
+publish_roster() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"; touch "$CLUSTER_USERS_FILE"
+    cp -f "$CLUSTER_USERS_FILE" "$WEBROOT/cluster/roster" 2>/dev/null || : > "$WEBROOT/cluster/roster"
+    secure_web_files
+}
+
+# Заводит локально кластерных юзеров, объявленных пирами, которых тут ещё нет.
+cluster_apply_roster() {
+    sub_enabled || return 0
+    local want u f created=0
+    want=$(for f in "$PEERS_DIR"/*.roster; do [ -f "$f" ] && cat "$f"; done 2>/dev/null)
+    want=$(printf '%s\n' "$want" | grep -v '^$' | sort -u)
+    [ -n "$want" ] || return 0
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        db_user_exists "$u" && continue
+        is_user_disabled "$u" && continue
+        db_add_user "$u" "$(pwgen -s 64 1)"
+        created=1
+    done <<< "$want"
+    [ "$created" = 1 ] && sub_refresh
+}
+
+# Пометить юзера кластерным и разослать (peers заведут у себя на своём sync).
+cluster_share_user() {   # user
+    roster_add "$1"
+    publish_roster
+    cluster_sync
 }
 
 # Частая синхронизация СТАТИСТИКИ (онлайн/трафик/скорость по кластеру + лимит
