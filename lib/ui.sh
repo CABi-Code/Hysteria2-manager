@@ -933,6 +933,31 @@ subscription_menu() {
             8)
                 clear
                 subscription_diagnose
+                # Если Caddy не поднялся из-за занятого порта — предлагаем освободить.
+                if [ -n "$DIAG_CONFLICT_UNIT" ]; then
+                    echo ""
+                    echo "  Порт $DIAG_CONFLICT_PORT занимает сервис «$DIAG_CONFLICT_UNIT»."
+                    local c
+                    ask c "  Остановить его и запустить Caddy? (да/нет): "
+                    if is_yes "$c"; then
+                        systemctl stop "$DIAG_CONFLICT_UNIT" 2>/dev/null
+                        ask c "  Отключить «$DIAG_CONFLICT_UNIT» из автозапуска (чтобы не вернулся после ребута)? (да/нет): "
+                        is_yes "$c" && systemctl disable "$DIAG_CONFLICT_UNIT" 2>/dev/null
+                        ensure_ports_open
+                        setup_caddy >/dev/null 2>&1
+                        sleep 2
+                        if systemctl is-active --quiet caddy 2>/dev/null; then
+                            echo "  ✅ Caddy запущен. Жду сертификат..."
+                            if wait_cert "$(node_host)" 15; then
+                                echo "  ✅ Сертификат выдан (до $(cert_expiry "$(node_host)")). Подписка работает."
+                            else
+                                echo "  ⚠️  Caddy поднялся, но сертификат пока не подтверждён — проверьте DNS/порт 80."
+                            fi
+                        else
+                            echo "  ❌ Caddy всё ещё не запускается — journalctl -u caddy -e | tail -n 30"
+                        fi
+                    fi
+                fi
                 pause
                 ;;
             0) return ;;

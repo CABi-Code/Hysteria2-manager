@@ -281,6 +281,85 @@ port_listening() {
     fi
 }
 
+# Кто слушает TCP-порт. Печатает «процесс|pid|unit» (любое поле может быть пустым).
+# Требует root (ss -p) — менеджер работает от root.
+port_holder() {
+    local p="$1" line proc pid unit
+    command -v ss >/dev/null 2>&1 || { printf '||'; return; }
+    line=$(ss -ltnp 2>/dev/null | awk -v p=":$p" '$4 ~ (p"$"){print; exit}')
+    proc=$(printf '%s' "$line" | sed -nE 's/.*\(\("([^"]+)".*/\1/p')
+    pid=$(printf '%s'  "$line" | sed -nE 's/.*pid=([0-9]+).*/\1/p')
+    if [ -n "$pid" ] && [ -r "/proc/$pid/cgroup" ]; then
+        unit=$(sed -nE 's@.*/([a-zA-Z0-9_.@-]+\.service).*@\1@p' "/proc/$pid/cgroup" 2>/dev/null | head -1)
+    fi
+    printf '%s|%s|%s' "$proc" "$pid" "$unit"
+}
+
+# Последняя содержательная строка ошибки запуска Caddy из журнала.
+caddy_failure_reason() {
+    journalctl -u caddy -n 80 --no-pager 2>/dev/null \
+        | grep -iE 'Error:|address already in use|permission denied|bind:|cannot' \
+        | tail -1 | sed -E 's/.*caddy\[[0-9]+\]: //; s/^[[:space:]]*//'
+}
+
+# Пробует запустить Caddy и вернуть результат. Заодно гарантирует автозапуск.
+# Печатает диагноз; при конфликте порта выставляет глобальные DIAG_CONFLICT_*.
+caddy_start_report() {
+    DIAG_CONFLICT_UNIT=""; DIAG_CONFLICT_PORT=""; DIAG_CONFLICT_PROC=""
+    if ! command -v caddy >/dev/null 2>&1; then
+        echo "  ❌ Caddy не установлен (Подписка → 1 поставит автоматически)"
+        return 1
+    fi
+    if ! caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null; then
+        echo "  ❌ Caddyfile невалиден — пересоберите (Подписка → 1 или Настройки → 3)"
+    else
+        echo "  ✅ Caddyfile валиден"
+    fi
+    # автозапуск
+    if systemctl is-enabled --quiet caddy 2>/dev/null; then
+        echo "  ✅ Caddy в автозапуске"
+    else
+        echo "  ⏳ Включаю автозапуск Caddy..."
+        systemctl enable caddy &>/dev/null && echo "  ✅ Автозапуск включён" \
+            || echo "  ⚠️  Не удалось включить автозапуск"
+    fi
+    # запущен? если нет — пробуем поднять
+    if ! systemctl is-active --quiet caddy 2>/dev/null; then
+        echo "  ⏳ Caddy не запущен — пробую запустить..."
+        systemctl start caddy 2>/dev/null
+        sleep 1
+    fi
+    if systemctl is-active --quiet caddy 2>/dev/null; then
+        echo "  ✅ Caddy запущен"
+        return 0
+    fi
+
+    # Не поднялся — объясняем причину.
+    local reason; reason=$(caddy_failure_reason)
+    echo "  ❌ Caddy НЕ запускается."
+    [ -n "$reason" ] && echo "     Причина: $reason"
+    case "$reason" in
+        *"address already in use"*|*"bind:"*)
+            local cp; cp=$(printf '%s' "$reason" | grep -oE ':(80|443)\b' | tr -d ':' | head -1)
+            [ -z "$cp" ] && cp=443
+            local h proc pid unit; h=$(port_holder "$cp")
+            proc=${h%%|*}; pid=$(printf '%s' "$h" | cut -d'|' -f2); unit=${h##*|}
+            echo "     ⛔ Порт $cp/tcp уже занят: ${proc:-неизвестный процесс}${pid:+ (pid $pid)}${unit:+, сервис: $unit}"
+            if [ -n "$unit" ]; then
+                echo "     Освободить порт: systemctl stop $unit   (или смените порт у того сервиса)"
+                DIAG_CONFLICT_UNIT="$unit"; DIAG_CONFLICT_PORT="$cp"; DIAG_CONFLICT_PROC="$proc"
+            else
+                echo "     Найдите процесс: ss -ltnp | grep :$cp   и освободите порт."
+            fi
+            ;;
+        *"permission denied"*)
+            echo "     Нет прав на привязку порта. Проверьте capabilities caddy.service."
+            ;;
+    esac
+    echo "     Полный лог: journalctl -u caddy -e | tail -n 30"
+    return 1
+}
+
 # Полная диагностика подписки: DNS→сервер, порты, Caddy, сертификат, пиры и
 # содержимое подписки. Печатает отчёт с ✅/❌ и подсказками.
 subscription_diagnose() {
@@ -306,24 +385,26 @@ subscription_diagnose() {
         echo "        без проксирования — иначе Let's Encrypt не подтвердит домен."
     fi
 
-    # 2. Порты
+    # 2. Caddy: проверяем, при необходимости включаем/запускаем, объясняем сбой.
+    echo "  ── Caddy ──"
+    caddy_start_report
+
+    # 3. Порты — кто реально слушает (и не мешает ли кто-то Caddy).
+    echo "  ── Порты ──"
     local p
     for p in 80 443; do
-        if port_listening "$p"; then echo "  ✅ Порт $p/tcp слушается"
-        else echo "  ⚠️  Порт $p/tcp не слушается (Caddy не запущен или порт занят)"; fi
+        if port_listening "$p"; then
+            local h proc unit
+            h=$(port_holder "$p"); proc=${h%%|*}; unit=${h##*|}
+            if printf '%s' "$proc" | grep -qi caddy; then
+                echo "  ✅ Порт $p/tcp слушает Caddy"
+            else
+                echo "  ⚠️  Порт $p/tcp занят НЕ Caddy: ${proc:-неизвестно}${unit:+ (сервис $unit)}"
+            fi
+        else
+            echo "  ⚠️  Порт $p/tcp никто не слушает$( [ "$p" = 80 ] && echo " (нужен для выпуска сертификата)" )"
+        fi
     done
-
-    # 3. Caddy
-    if ! command -v caddy >/dev/null 2>&1; then
-        echo "  ❌ Caddy не установлен"
-    else
-        systemctl is-active  --quiet caddy 2>/dev/null && echo "  ✅ Caddy запущен" \
-            || echo "  ❌ Caddy не запущен — journalctl -u caddy -e | tail -n 30"
-        systemctl is-enabled --quiet caddy 2>/dev/null && echo "  ✅ Caddy в автозапуске" \
-            || echo "  ⚠️  Caddy не в автозапуске"
-        caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null \
-            && echo "  ✅ Caddyfile валиден" || echo "  ❌ Caddyfile невалиден"
-    fi
 
     # 4. Сертификат
     if cert_ready "$host"; then
