@@ -236,7 +236,6 @@ user_action_menu() {
                 else
                     disable_user "$user"
                 fi
-                prompt_apply_restart
                 refresh_online
                 pause
                 need_clear=1
@@ -244,7 +243,6 @@ user_action_menu() {
             2)
                 change_user_password "$user"
                 echo "  ⚠️  Пользователю нужна новая ссылка!"
-                prompt_apply_restart
                 pause
                 need_clear=1
                 ;;
@@ -252,12 +250,7 @@ user_action_menu() {
                 local confirm
                 ask confirm "  ⚠️  Удалить $user ПОЛНОСТЬЮ? (да/нет): "
                 if is_yes "$confirm"; then
-                    local was_active=false
-                    grep -q "^[[:space:]]*${user}:[[:space:]]" "$CONFIG" && was_active=true
                     delete_user "$user"
-                    if $was_active; then
-                        prompt_apply_restart
-                    fi
                     pause
                     return
                 fi
@@ -272,11 +265,11 @@ user_action_menu() {
                 ;;
             5)
                 echo ""
-                local cur_exp dl new_days new_date
+                local cur_exp rem new_days new_date
                 cur_exp=$(get_user_expiry "$user")
                 if [ -n "$cur_exp" ]; then
-                    dl=$(expiry_days_left "$cur_exp")
-                    echo "  Текущий срок: $cur_exp (осталось ${dl:-?} дн.)"
+                    rem=$(format_remaining "$cur_exp")
+                    echo "  Текущий срок: $cur_exp (осталось $rem)"
                 else
                     echo "  Срок действия не установлен."
                 fi
@@ -433,14 +426,14 @@ _render_user_action() {
         echo "  ⚠️  Подозрительно много IP — возможна утечка!"
     fi
 
-    local exp dl
+    local exp rem
     exp=$(get_user_expiry "$user")
     if [ -n "$exp" ]; then
-        dl=$(expiry_days_left "$exp")
-        if [ -n "$dl" ] && [ "$dl" -lt 0 ] 2>/dev/null; then
-            echo "  Срок действия: $exp (просрочен на $(( -dl )) дн.)"
+        rem=$(format_remaining "$exp")
+        if [ "$rem" = "истёк" ]; then
+            echo "  Срок действия: $exp (истёк)"
         else
-            echo "  Срок действия: $exp (осталось ${dl:-?} дн.)"
+            echo "  Срок действия: $exp (осталось $rem)"
         fi
     else
         echo "  Срок действия: не установлен"
@@ -524,6 +517,59 @@ user_list_menu() {
     done
 }
 
+# ====================== ИСПРАВЛЕНИЕ / ОБНОВЛЕНИЕ ДАННЫХ ======================
+# Чинит типовые проблемы: недоступный API, слетевшие права, рассинхрон базы и
+# «нулевую» статистику у работающего клиента. Заодно показывает диагностику —
+# каких клиентов Hysteria видит, но менеджер о них не знает.
+repair_data() {
+    echo ""
+    echo "  🔧 Проверка и восстановление данных..."
+    echo "  ──────────────────────────────────────────────"
+
+    # 1. Аутентификация и API: пересоздаём скрипт, чиним права, проверяем секрет.
+    install_auth_script
+    secure_auth_files
+    setup_stats_api
+    echo "  ✅ Скрипт аутентификации и права восстановлены, API-секрет проверен"
+
+    # 2. Принудительный свежий сбор статистики и IP.
+    refresh_online
+    collect_traffic
+    collect_ips
+    echo "  ✅ Онлайн, трафик и IP пересобраны"
+
+    # 3. Диагностика расхождений между Hysteria и базой менеджера.
+    local online traffic
+    online=$(api_get "/online")
+    if [ -z "$online" ] || ! echo "$online" | jq empty 2>/dev/null; then
+        echo "  ⚠️  API Hysteria не отвечает — проверьте секцию trafficStats и сервис."
+        echo "      journalctl -u $SERVICE -e"
+        return
+    fi
+    echo "  ✅ API Hysteria отвечает"
+
+    traffic=$(api_get "/traffic")
+    local seen id ghost=0
+    seen=$(
+        { echo "$online"  | jq -r 'keys[]?' 2>/dev/null
+          echo "$traffic" | jq -r 'keys[]?' 2>/dev/null; } | sort -u
+    )
+    while IFS= read -r id; do
+        [ -z "$id" ] && continue
+        if ! db_user_exists "$id" && ! is_user_disabled "$id"; then
+            echo "  ⚠️  Hysteria знает клиента «$id», которого НЕТ в базе менеджера!"
+            echo "      Добавьте его заново тем же именем или удалите подключение."
+            ghost=$((ghost + 1))
+        fi
+    done <<< "$seen"
+    [ "$ghost" -eq 0 ] && echo "  ✅ Все активные клиенты присутствуют в базе менеджера"
+
+    local total
+    total=$(grep -c '^' "$USERS_DB" 2>/dev/null | tr -dc '0-9')
+    echo "  ℹ️  Пользователей в базе: ${total:-0}"
+    echo "  ✅ Готово."
+}
+
 # ====================== НАСТРОЙКИ ======================
 
 settings_menu() {
@@ -562,6 +608,7 @@ settings_menu() {
         else
             echo "  2. 🔄 Перезапустить Hysteria"
         fi
+        echo "  3. 🔧 Исправить / обновить данные (если статистика не сходится)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -593,6 +640,10 @@ settings_menu() {
                 else
                     echo "  Отменено."
                 fi
+                pause
+                ;;
+            3)
+                repair_data
                 pause
                 ;;
             0) return ;;
