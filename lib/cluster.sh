@@ -102,4 +102,26 @@ cluster_sync() {
     done < <(cluster_peers)
 
     regen_subscriptions
+    cluster_online_sync     # заодно обновим онлайн и применим лимит устройств
+}
+
+# Частая синхронизация ОНЛАЙНА (для лимита устройств по кластеру). Публикует свой
+# онлайн, стягивает онлайн пиров и применяет лимит. Лёгкая — гоняется по cron чаще
+# (раз в минуту), чем полная cluster_sync.
+cluster_online_sync() {
+    sub_enabled || return 0
+    mkdir -p "$PEERS_DIR"
+    publish_online
+
+    local host name data
+    while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
+        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        # Свежий онлайн пира; недоступен/нет онлайна -> пусто (= 0), не залипаем на старом.
+        data=$(cluster_call "$host" "/cluster/online")
+        printf '%s' "$data" > "$PEERS_DIR/${name}.online"
+    done < <(cluster_peers)
+
+    enforce_device_limits
 }

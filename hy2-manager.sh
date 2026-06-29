@@ -76,6 +76,13 @@ if [ "$1" = "--cluster-sync" ]; then
     exit 0
 fi
 
+if [ "$1" = "--online-sync" ]; then
+    # Частый обмен онлайном + применение лимита устройств по кластеру (cron, 1 мин).
+    setup_stats_api
+    cluster_online_sync
+    exit 0
+fi
+
 # === ИНИЦИАЛИЗАЦИЯ ===
 
 migrate_auth
@@ -124,6 +131,14 @@ while true; do
         echo "║ SNI / Маскировка: $CACHED_SNI"
         echo "║ OBFS-пароль     : $(echo "$CACHED_OBFS" | cut -c1-10)..."
         echo "║ Пользователей   : $total_count (активных: $active_count, онлайн: $online_count)"
+        if sub_enabled; then
+            cluster_nodes=$(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9'); cluster_nodes=${cluster_nodes:-1}
+            dev_limit=$(get_device_limit)
+            [ "$dev_limit" -gt 0 ] 2>/dev/null && limit_str=", лимит устройств: $dev_limit" || limit_str=""
+            echo "║ Подписка        : 🟢 нода «$(node_name)», нод в кластере: $cluster_nodes$limit_str"
+        else
+            echo "║ Подписка        : ⚪ не настроена (Настройки → 4)"
+        fi
         echo "╚══════════════════════════════════════════════════════════════╝"
         if is_restart_pending; then
             echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria (Настройки → 2)"
