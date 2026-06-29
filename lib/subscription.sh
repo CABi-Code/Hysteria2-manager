@@ -136,13 +136,51 @@ regen_subscriptions() {
               if (!seen[hp]++) print $0
             }' | base64 -w0 > "$WEBROOT/sub/$token"
     done <<< "$users"
+
+    # Чистим осиротевшие файлы подписки (токены, которых уже нет в базе).
+    if [ -d "$WEBROOT/sub" ]; then
+        local valid bn
+        valid=$(cut -d: -f2 "$SUBTOKENS_DB" 2>/dev/null)
+        for f in "$WEBROOT/sub"/*; do
+            [ -f "$f" ] || continue
+            bn=$(basename "$f")
+            printf '%s\n' "$valid" | grep -qxF "$bn" || rm -f "$f"
+        done
+    fi
     secure_web_files
 }
 
-# Удобный хук: обновить манифест и подписки после изменения пользователей.
+# Публикует токены подписки для остальных нод (за X-Cluster-Auth).
+publish_subtokens() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    cp -f "$SUBTOKENS_DB" "$WEBROOT/cluster/subtokens" 2>/dev/null || true
+    secure_web_files
+}
+
+# Сводит токены подписки к ЕДИНЫМ по кластеру (детерминированно — меньший токен
+# выигрывает), чтобы ссылка /sub/<token> для юзера была ОДИНАКОВОЙ на всех нодах.
+merge_subtokens() {
+    sub_enabled || return 0
+    local tmp; tmp=$(mktemp) || return 1
+    {
+        cat "$SUBTOKENS_DB" 2>/dev/null
+        [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.subtokens 2>/dev/null
+    } | awk -F: 'NF>=2 && $1!="" {
+            u=$1; t=substr($0,length($1)+2)
+            if (!(u in best) || t < best[u]) best[u]=t
+        }
+        END { for (u in best) print u ":" best[u] }' | sort > "$tmp"
+    [ -s "$tmp" ] && cat "$tmp" > "$SUBTOKENS_DB"
+    rm -f "$tmp"
+    secure_sub_files
+}
+
+# Удобный хук: обновить манифест/токены и подписки после изменения пользователей.
 sub_refresh() {
     sub_enabled || return 0
     publish_manifest
+    publish_subtokens
     regen_subscriptions
 }
 
