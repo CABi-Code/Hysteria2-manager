@@ -46,6 +46,56 @@ link_host() {
     get_ip
 }
 
+# ---- Релей (фронт-сервер, реально прячет IP ноды) ----
+# Релей — отдельный дешёвый VPS. Клиенты/DNS видят IP релея, релей форвардит
+# трафик (UDP Hysteria + TCP 80/443) на скрытую ноду. dig покажет IP релея.
+relay_host() { node_get RELAY_HOST; }
+
+# Генерирует скрипт, который надо запустить НА РЕЛЕЙ-СЕРВЕРЕ (от root). Печатает
+# путь к скрипту. Форвардит UDP-порт Hysteria и TCP 80/443 на реальную ноду.
+generate_relay_script() {
+    local node_ip hyport out
+    node_ip=$(get_ip); hyport=$(get_port)
+    out="$DATA_DIR/relay-setup.sh"
+    cat > "$out" <<EOF
+#!/bin/bash
+# ╔═══════════════════════════════════════════════════════════════╗
+# ║  ЗАПУСКАТЬ НА РЕЛЕЙ-СЕРВЕРЕ (отдельный VPS), от root.           ║
+# ║  Форвардит трафик на скрытую ноду ${node_ip}.                  ║
+# ╚═══════════════════════════════════════════════════════════════╝
+set -e
+NODE_IP="${node_ip}"
+HYPORT="${hyport}"
+
+# Включаем форвардинг пакетов
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+
+# UDP — сам VPN (Hysteria/QUIC)
+iptables -t nat -C PREROUTING -p udp --dport "\$HYPORT" -j DNAT --to-destination "\$NODE_IP:\$HYPORT" 2>/dev/null || \\
+  iptables -t nat -A PREROUTING -p udp --dport "\$HYPORT" -j DNAT --to-destination "\$NODE_IP:\$HYPORT"
+
+# TCP 80/443 — подписка (Caddy на ноде). Нужно, только если домен подписки тоже
+# указывает на релей. Без этого можно убрать, но тогда IP ноды виден в подписке.
+for tp in 80 443; do
+  iptables -t nat -C PREROUTING -p tcp --dport "\$tp" -j DNAT --to-destination "\$NODE_IP:\$tp" 2>/dev/null || \\
+    iptables -t nat -A PREROUTING -p tcp --dport "\$tp" -j DNAT --to-destination "\$NODE_IP:\$tp"
+done
+
+# Обратный путь
+iptables -t nat -C POSTROUTING -d "\$NODE_IP" -j MASQUERADE 2>/dev/null || \\
+  iptables -t nat -A POSTROUTING -d "\$NODE_IP" -j MASQUERADE
+
+# Сохраняем правила (если установлен iptables-persistent)
+mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+
+echo "✅ Релей настроен: UDP \$HYPORT + TCP 80,443 -> \$NODE_IP"
+echo "   Не забудьте открыть эти порты в firewall релея."
+EOF
+    chmod +x "$out"
+    printf '%s' "$out"
+}
+
 # Права на секреты подписки (читает только менеджер от root).
 secure_sub_files() {
     [ -f "$SUBTOKENS_DB" ] && chmod 600 "$SUBTOKENS_DB" 2>/dev/null || true
