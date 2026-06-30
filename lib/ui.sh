@@ -141,10 +141,12 @@ render_user_table() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  ${title:-Пользователи} (стр. $page/$USER_LIST_PAGES, всего: $USER_LIST_TOTAL)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    local _sub=0; sub_enabled && _sub=1
     printf '  '
     print_cell "No"       3  0 r; printf ' '
     print_cell "Имя"      14 0;   printf ' '
     print_cell "Статус"   9  0;   printf ' '
+    [ "$_sub" = 1 ] && { print_cell "Кластер" 9 0; printf ' '; }
     print_cell "Скорость" 14 0;   printf ' '
     print_cell "Трафик"   16 0;   printf ' '
     print_cell "IP"       3  0 r; printf ' '
@@ -175,16 +177,26 @@ render_user_table() {
             fi
         fi
 
-        local tl tx rx traffic
-        tl=$(get_user_traffic "$user")
-        tx=$(echo "$tl" | cut -d'|' -f2)
-        rx=$(echo "$tl" | cut -d'|' -f3)
-        traffic="↑$(format_bytes "$tx") ↓$(format_bytes "$rx")"
+        # Кластерный статус + суммарные трафик/скорость (если подписка включена).
+        local cstatus cstatus_wide tx rx sp_tx sp_rx
+        if [ "$_sub" = 1 ]; then
+            local cc ct cs
+            cc=$(cluster_user_connections "$user")
+            if [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
+                cstatus="🟢 ${cc}"; cstatus_wide=1
+            else
+                cstatus="⚫ —"; cstatus_wide=1
+            fi
+            ct=$(cluster_user_traffic "$user"); tx=${ct%% *}; rx=${ct##* }
+            cs=$(cluster_user_speed "$user");   sp_tx=${cs%% *}; sp_rx=${cs##* }
+        else
+            local tl sp
+            tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+            sp=$(get_user_speed "$user");   sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        fi
 
-        local sp sp_tx sp_rx speed
-        sp=$(get_user_speed "$user")
-        sp_tx=$(echo "$sp" | cut -d'|' -f2)
-        sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        local traffic speed
+        traffic="↑$(format_bytes "$tx") ↓$(format_bytes "$rx")"
         if [ "${sp_tx:-0}" -eq 0 ] && [ "${sp_rx:-0}" -eq 0 ] 2>/dev/null; then
             speed="—"
         else
@@ -199,6 +211,7 @@ render_user_table() {
         print_cell "$num"     3  0 r;           printf ' '
         print_cell "$(trunc "$user" 14)" 14 0;  printf ' '
         print_cell "$status"  9  "$status_wide"; printf ' '
+        [ "$_sub" = 1 ] && { print_cell "$cstatus" 9 "$cstatus_wide"; printf ' '; }
         print_cell "$speed"   14 0;             printf ' '
         print_cell "$traffic" 16 0;             printf ' '
         print_cell "$ipc"     3  0 r;           printf ' '
@@ -217,6 +230,7 @@ user_action_menu() {
         # Живые данные: онлайн-статус, трафик и текущая скорость
         refresh_online
         collect_traffic
+        cluster_stats_live      # подтянуть свежую статистику с других нод
 
         local frame
         frame=$(_render_user_action "$user")
@@ -237,12 +251,14 @@ user_action_menu() {
                     disable_user "$user"
                 fi
                 refresh_online
+                offer_sync
                 pause
                 need_clear=1
                 ;;
             2)
                 change_user_password "$user"
                 echo "  ⚠️  Пользователю нужна новая ссылка!"
+                offer_sync
                 pause
                 need_clear=1
                 ;;
@@ -251,6 +267,7 @@ user_action_menu() {
                 ask confirm "  ⚠️  Удалить $user ПОЛНОСТЬЮ? (да/нет): "
                 if is_yes "$confirm"; then
                     delete_user "$user"
+                    offer_sync
                     pause
                     return
                 fi
@@ -274,19 +291,26 @@ user_action_menu() {
                     echo "  Срок действия не установлен."
                 fi
                 ask new_days "  Срок в днях от сегодня (0 или 'нет' — снять): "
+                local _changed=0
                 if [ "$new_days" = "нет" ] || [ "$new_days" = "0" ]; then
-                    remove_user_expiry "$user"
+                    remove_user_expiry "$user"; _changed=1
                     echo "  ✅ Срок действия снят"
                 elif [[ "$new_days" =~ ^[0-9]+$ ]]; then
                     new_date=$(days_to_date "$new_days")
                     if [ -n "$new_date" ]; then
-                        set_user_expiry "$user" "$new_date"
+                        set_user_expiry "$user" "$new_date"; _changed=1
                         echo "  ✅ Срок действия: $new_date (через $new_days дн.)"
                     else
                         echo "  ❌ Не удалось вычислить дату"
                     fi
                 else
                     echo "  ❌ Введите число дней"
+                fi
+                # Для кластерного юзера срок влияет на всю подписку — разносим сразу.
+                if [ "$_changed" = 1 ] && sub_enabled && is_cluster_user "$user"; then
+                    echo "  🌐 Юзер кластерный — синхронизирую срок на все ноды..."
+                    cluster_sync >/dev/null 2>&1
+                    echo "  ✅ Срок применён ко всей подписке (на пирах — в течение ~5 мин)."
                 fi
                 pause
                 need_clear=1
@@ -340,7 +364,8 @@ user_action_menu() {
                     pass=$(get_user_password "$user")
                 fi
                 if [ -n "$pass" ]; then
-                    local link="hysteria2://${user}:${pass}@${CACHED_IP}:${CACHED_PORT}/?obfs=salamander&obfs-password=${CACHED_OBFS}&sni=${CACHED_SNI}&insecure=1#${user}"
+                    local link
+                    link=$(build_user_link "$user" "$pass" "$CACHED_IP" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
                     echo ""
                     echo "  🔗 ССЫЛКА:"
                     echo "  $link"
@@ -383,6 +408,41 @@ user_action_menu() {
                 pause
                 need_clear=1
                 ;;
+            9)
+                if ! sub_enabled; then
+                    echo "  ❌ Подписка не настроена (Настройки → Подписка / Кластер)"
+                else
+                    sub_refresh
+                    echo ""
+                    echo "  🌐 ССЫЛКА-ПОДПИСКА (ключи со всех серверов, автообновление):"
+                    echo "  $(subscription_url "$user")"
+                    echo ""
+                    echo "  💡 Одна ссылка на все ноды. Добавьте в Hiddify/Nekobox как подписку."
+                    echo "  ℹ️  Покрываются ноды, где этот юзер заведён тем же именем."
+                fi
+                pause
+                need_clear=1
+                ;;
+            10)
+                if ! sub_enabled; then
+                    echo "  ❌ Кластер не настроен (Настройки → Подписка / Кластер)"
+                else
+                    echo ""
+                    echo "  ⏳ Помечаю $user как кластерного и рассылаю..."
+                    cluster_share_user "$user"
+                    echo "  ✅ Готово. На нодах, где его нет, он появится в течение ~5 мин"
+                    echo "     (там сгенерируется свой пароль; в подписке соберутся ключи со всех нод)."
+                    echo "  ℹ️  Условие: между нодами должен работать HTTPS (Диагностика → пункт 8)."
+                fi
+                pause
+                need_clear=1
+                ;;
+            11)
+                clear
+                user_debug "$user"
+                pause
+                need_clear=1
+                ;;
             0) return ;;
         esac
     done
@@ -395,29 +455,58 @@ _render_user_action() {
     echo "  Пользователь: $user"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+    local oc
     if is_user_disabled "$user"; then
         echo "  Статус:        🔴 ОТКЛЮЧЁН"
+        oc=0
     else
-        local oc
         oc=$(get_user_online_count "$user")
         if [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
-            echo "  Статус:        🟢 ОНЛАЙН ($oc подключений)"
+            echo "  Статус:        🟢 ОНЛАЙН ($oc на этой ноде)"
         else
-            echo "  Статус:        ⚫ ОФФЛАЙН"
+            echo "  Статус:        ⚫ ОФФЛАЙН (на этой ноде)"
         fi
     fi
 
-    local tl tx rx
-    tl=$(get_user_traffic "$user")
-    tx=$(echo "$tl" | cut -d'|' -f2)
-    rx=$(echo "$tl" | cut -d'|' -f3)
-    echo "  Трафик:        ↑$(format_bytes "$tx") / ↓$(format_bytes "$rx")"
+    # Статус и статистика в МАСШТАБЕ КЛАСТЕРА.
+    if sub_enabled; then
+        local cc lim warn="" nodes_online
+        cc=$(cluster_user_connections "$user")
+        nodes_online=$(cluster_user_breakdown "$user" | awk -F'\t' '$2>0' | wc -l | tr -dc '0-9')
+        if [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
+            echo "  Статус кластера: 🟢 ОНЛАЙН — $cc подключений на ${nodes_online:-0} нод(ах)"
+        else
+            echo "  Статус кластера: ⚫ оффлайн во всём кластере"
+        fi
+        lim=$(get_device_limit)
+        if [ "$lim" -gt 0 ] 2>/dev/null; then
+            [ "${cc:-0}" -gt "$lim" ] 2>/dev/null && warn="  ⚠️ превышение!"
+            echo "  Лимит устройств: $cc / $lim$warn"
+        fi
 
-    local sp sp_tx sp_rx
-    sp=$(get_user_speed "$user")
-    sp_tx=$(echo "$sp" | cut -d'|' -f2)
-    sp_rx=$(echo "$sp" | cut -d'|' -f3)
-    echo "  Скорость:      ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
+        # Трафик и скорость — суммарно по кластеру.
+        local ct cs ctx crx cstx csrx
+        ct=$(cluster_user_traffic "$user"); ctx=${ct%% *}; crx=${ct##* }
+        cs=$(cluster_user_speed "$user");   cstx=${cs%% *}; csrx=${cs##* }
+        echo "  Трафик (всего): ↑$(format_bytes "$ctx") / ↓$(format_bytes "$crx")"
+        echo "  Скорость(всего):↑$(format_speed "$cstx") / ↓$(format_speed "$csrx")"
+
+        # Разбивка по нодам, где юзер сейчас онлайн.
+        local any_online=0 bn bo btx brx bstx bsrx
+        while IFS=$'\t' read -r bn bo btx brx bstx bsrx; do
+            [ "${bo:-0}" -gt 0 ] 2>/dev/null || continue
+            [ "$any_online" -eq 0 ] && echo "  Онлайн по нодам:"
+            any_online=1
+            echo "    • $bn: ${bo} подкл · ↑$(format_bytes "$btx")/↓$(format_bytes "$brx") · ↑$(format_speed_short "$bstx")/↓$(format_speed_short "$bsrx")"
+        done < <(cluster_user_breakdown "$user")
+    else
+        local tl tx rx
+        tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+        echo "  Трафик:        ↑$(format_bytes "$tx") / ↓$(format_bytes "$rx")"
+        local sp sp_tx sp_rx
+        sp=$(get_user_speed "$user"); sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        echo "  Скорость:      ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
+    fi
 
     local ipc
     ipc=$(get_user_ip_count "$user")
@@ -454,6 +543,15 @@ _render_user_action() {
     echo "  6. 🌐 Просмотр IP-адресов"
     echo "  7. 🔗 Получить ссылку"
     echo "  8. 📄 Конфиг для sing-box"
+    if sub_enabled; then
+        echo "  9. 🌐 Ссылка-подписка (все серверы кластера)"
+        if roster_has "$user"; then
+            echo " 10. 🔄 Синхронизировать на все ноды (уже кластерный ✓)"
+        else
+            echo " 10. 🔄 Завести на всех нодах кластера"
+        fi
+        echo " 11. 🩺 Диагностика профиля (по кластеру)"
+    fi
     echo "  0. ↩  Назад"
     echo ""
 }
@@ -466,6 +564,7 @@ user_list_menu() {
         # Живые данные таблицы: онлайн-статус, трафик и скорость
         refresh_online
         collect_traffic
+        cluster_stats_live      # свежая статистика с других нод (троттлинг внутри)
         load_user_list
 
         if [ "$USER_LIST_TOTAL" -eq 0 ]; then
@@ -567,6 +666,21 @@ repair_data() {
     local total
     total=$(grep -c '^' "$USERS_DB" 2>/dev/null | tr -dc '0-9')
     echo "  ℹ️  Пользователей в базе: ${total:-0}"
+
+    # Чиним подписку/Caddy, если настроена.
+    if sub_enabled; then
+        echo "  🌐 Подписка: открываю порты, пересобираю Caddy, проверяю сертификат..."
+        ensure_ports_open
+        if setup_caddy >/dev/null 2>&1; then
+            if cert_ready "$(node_host)"; then
+                echo "  ✅ Caddy работает, сертификат валиден до $(cert_expiry "$(node_host)")"
+            else
+                echo "  ⚠️  Caddy работает, но сертификат ещё не выпущен (проверьте DNS/порт 80)."
+            fi
+        else
+            echo "  ❌ Caddy не запустился — journalctl -u caddy -e | tail -n 30"
+        fi
+    fi
     echo "  ✅ Готово."
 }
 
@@ -609,6 +723,7 @@ settings_menu() {
             echo "  2. 🔄 Перезапустить Hysteria"
         fi
         echo "  3. 🔧 Исправить / обновить данные (если статистика не сходится)"
+        echo "  4. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -644,6 +759,476 @@ settings_menu() {
                 ;;
             3)
                 repair_data
+                pause
+                ;;
+            4)
+                subscription_menu
+                ;;
+            0) return ;;
+            *)
+                echo "  ❌ Неверный выбор!"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ====================== ПОДПИСКА / КЛАСТЕР ======================
+# Единая подписка: клиент добавляет одну ссылку https://<домен>/sub/<token>, а
+# нода отдаёт ключи юзера со ВСЕХ серверов кластера (статику раздаёт Caddy).
+subscription_menu() {
+    while true; do
+        clear
+        local host caddy_st cert_st
+        host=$(node_host)
+        if ! command -v caddy &>/dev/null; then
+            caddy_st="не установлен"
+        elif systemctl is-active --quiet caddy 2>/dev/null; then
+            caddy_st="🟢 работает$(systemctl is-enabled --quiet caddy 2>/dev/null && echo ', автозапуск вкл')"
+        else
+            caddy_st="🔴 остановлен"
+        fi
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  🌐 Подписка / Кластер"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        if sub_enabled; then
+            echo "  Состояние : 🟢 включена"
+            echo "  Нода      : $(node_name)  ($host)"
+            # Живой статус сертификата — подтверждает, что домен реально привязан.
+            if cert_ready "$host"; then
+                cert_st="🟢 валиден до $(cert_expiry "$host") (автопродление)"
+            else
+                cert_st="🔴 не подтверждён (HTTPS не работает — см. пункт 1)"
+            fi
+            echo "  Сертификат: $cert_st"
+            local conn; conn=$(node_get CONN_HOST)
+            if [ -n "$conn" ]; then
+                echo "  В ссылке  : домен подключения $conn (вместо IP)"
+            else
+                echo "  В ссылке  : IP ноды $(node_ip) (домен не задан — пункт 9)"
+            fi
+        else
+            echo "  Состояние : ⚪ не настроена"
+        fi
+        echo "  Caddy     : $caddy_st"
+        echo "  Нод в кластере: $(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9' || echo 0)"
+        local dlim; dlim=$(get_device_limit)
+        if [ "$dlim" -gt 0 ] 2>/dev/null; then
+            echo "  Лимит устройств на подписку: $dlim (по всему кластеру)"
+        else
+            echo "  Лимит устройств на подписку: ∞ (выкл)"
+        fi
+        echo ""
+        echo "  1. 🌐 Настроить домен и включить подписку"
+        echo "  2. 🔗 Создать кластер (получить join-токен)"
+        echo "  3. 🔌 Подключиться к кластеру по токену"
+        echo "  4. ➕ Добавить пир вручную (домен ноды)"
+        echo "  5. 📋 Ноды кластера (просмотр и удаление)"
+        echo "  6. 🔄 Синхронизировать сейчас"
+        echo "  7. 🔢 Лимит устройств на подписку"
+        echo "  8. 🩺 Диагностика подписки"
+        echo "  9. 🛡  Домен подключения в ссылке (скрыть голый IP)"
+        echo " 10. 🛰  Релей (реально спрятать IP ноды через фронт-VPS)"
+        echo " 11. 🔢 Выбрать IP ноды (если у сервера несколько IP)"
+        echo " 12. 🎨 Оформление подписки (название, метки серверов)"
+        local _sm; _sm=$(node_get SYNC_MODE); [ -z "$_sm" ] && _sm=ask
+        echo " 13. ⚙  Режим синхронизации после изменений (сейчас: $_sm)"
+        echo "  0. ↩  Назад"
+        echo ""
+        local choice
+        ask choice "  Выберите: "
+
+        case "$choice" in
+            1)
+                echo ""
+                local domain name dph rc
+                ask domain "  Домен этой ноды (A-запись на её IP, напр. vpn1.example.com): "
+                domain=$(printf '%s' "$domain" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+                if ! valid_domain "$domain"; then
+                    echo "  ❌ «$domain» не похоже на домен. Нужен FQDN, напр. vpn1.example.com"
+                    echo "     Сертификат на произвольную строку выдать невозможно."
+                    pause; continue
+                fi
+                # Проверяем, что домен реально указывает на этот сервер — иначе
+                # Let's Encrypt не подтвердит владение и сертификата не будет.
+                echo "  ⏳ Проверяю DNS для $domain ..."
+                domain_points_here "$domain"; rc=$?
+                local _locals; _locals=$(list_local_ips | tr '\n' ' ')
+                if [ "$rc" -eq 0 ]; then
+                    echo "  ✅ DNS: $domain → $(resolve_domain "$domain" | tr '\n' ' ')(этот сервер)"
+                elif [ "$rc" -eq 2 ]; then
+                    echo "  ❌ Домен $domain не резолвится."
+                    echo "     Создайте A-запись $domain → один из IP: ${_locals}"
+                    local c; ask c "  Всё равно продолжить (сертификат пока не выпустится)? (да/нет): "
+                    is_yes "$c" || { echo "  Отменено."; pause; continue; }
+                else
+                    echo "  ⚠️  $domain резолвится НЕ на этот сервер."
+                    echo "     Адрес(а) домена: $(resolve_domain "$domain" | tr '\n' ' ')"
+                    echo "     Локальные IP сервера: ${_locals}"
+                    echo "     Let's Encrypt не выдаст сертификат, пока A-запись не указывает на один из них."
+                    local c; ask c "  Всё равно продолжить? (да/нет): "
+                    is_yes "$c" || { echo "  Отменено."; pause; continue; }
+                fi
+                ask name "  Имя ноды (метка в клиенте, Enter — $(hostname -s 2>/dev/null || echo node)): "
+                [ -z "$name" ] && name=$(hostname -s 2>/dev/null || echo node)
+                echo "  ⏳ Открываю порты 80/443 в firewall (если активен)..."
+                ensure_ports_open
+                echo "  ⏳ Проверяю/устанавливаю Caddy..."
+                if ! ensure_caddy; then
+                    echo "  ❌ Не удалось установить Caddy. Установите вручную и повторите."
+                    pause; continue
+                fi
+                node_configure "$domain" "$name"
+                cluster_add_peer "$name" "$domain"
+                echo "  ⏳ Настраиваю Caddy..."
+                if ! setup_caddy "$domain"; then
+                    echo "  ❌ Caddy не запустился с новым конфигом (откатил)."
+                    echo "     Диагностика: journalctl -u caddy -e | tail -n 30"
+                    pause; continue
+                fi
+                sub_refresh
+                publish_peers_list
+                # Подтверждаем РЕАЛЬНЫЙ выпуск доверенного сертификата, а не просто
+                # «записали домен». Без этого подписка по HTTPS не работает.
+                echo "  ⏳ Запрашиваю TLS-сертификат (Let's Encrypt), до ~45 сек..."
+                if wait_cert "$domain" 15; then
+                    echo "  ✅ Сертификат выдан и доверенный — подписка активна."
+                    echo "     Домен      : $domain"
+                    echo "     Действителен до: $(cert_expiry "$domain")"
+                    echo "     🔄 Caddy продлевает сертификат автоматически (бессрочно),"
+                    echo "        пока сервис caddy включён и открыт порт 80/tcp."
+                else
+                    echo "  ⚠️  Сертификат пока НЕ подтверждён — HTTPS-подписка ещё не работает."
+                    echo "     Частые причины: A-запись не на этот сервер; закрыт 80/tcp;"
+                    echo "     DNS не распространился. Диагностика:"
+                    echo "        journalctl -u caddy -e | tail -n 40"
+                    echo "     Когда поправите — Caddy выпустит сертификат сам, либо повторите пункт 1."
+                fi
+                pause
+                ;;
+            2)
+                if ! sub_enabled; then echo "  ❌ Сначала настройте домен (пункт 1)"; sleep 2; continue; fi
+                echo ""
+                echo "  🔗 JOIN-ТОКЕН (вставьте его на других нодах, пункт 3):"
+                echo ""
+                echo "  $(cluster_init)"
+                echo ""
+                echo "  ℹ️  После подключения новой ноды добавьте её домен здесь (пункт 4)."
+                pause
+                ;;
+            3)
+                if ! sub_enabled; then echo "  ❌ Сначала настройте домен (пункт 1)"; sleep 2; continue; fi
+                echo ""
+                local token
+                ask token "  Вставьте join-токен: "
+                [ -z "$token" ] && { echo "  Отменено."; sleep 1; continue; }
+                cluster_join "$token"
+                pause
+                ;;
+            4)
+                echo ""
+                local phost
+                ask phost "  Домен пира (напр. vpn2.example.com): "
+                if [ -n "$phost" ]; then
+                    cluster_add_peer "$phost" "$phost"
+                    publish_peers_list
+                    cluster_sync
+                    echo "  ✅ Пир $phost добавлен и синхронизирован."
+                fi
+                pause
+                ;;
+            5)
+                while true; do
+                    clear
+                    echo "  📋 Ноды кластера"
+                    echo "  Эта нода: «$(node_name)»  ($(node_host))"
+                    echo "  ──────────────────────────────────────────────────────"
+                    local -a node_hosts=() node_names=()
+                    local i=0 st self
+                    self=$(node_host)
+                    if [ -s "$CLUSTER_CONF" ]; then
+                        while IFS='|' read -r pn ph; do
+                            [ -n "$ph" ] || continue
+                            i=$((i+1)); node_names[$i]="$pn"; node_hosts[$i]="$ph"
+                            if [ "$ph" = "$self" ]; then
+                                st="(эта нода)"
+                            elif cluster_call "$ph" "/cluster/manifest" >/dev/null 2>&1; then
+                                st="🟢 на связи"
+                            else
+                                st="🔴 недоступна"
+                            fi
+                            printf "    %d. %-18s %-28s %s\n" "$i" "$pn" "$ph" "$st"
+                        done < "$CLUSTER_CONF"
+                    fi
+                    [ "$i" -eq 0 ] && echo "    (пусто — кластер не настроен)"
+                    echo ""
+                    echo "    Номер — удалить ноду из реестра  |  0 — назад"
+                    local sel
+                    ask sel "  Выберите: "
+                    [ "$sel" = "0" ] || [ -z "$sel" ] && break
+                    if [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le "$i" ]; then
+                        local dh="${node_hosts[$sel]}" dn="${node_names[$sel]}"
+                        if [ "$dh" = "$self" ]; then
+                            echo "  ❌ Нельзя удалить саму эту ноду здесь."; sleep 2; continue
+                        fi
+                        local c; ask c "  Удалить «$dn» ($dh) из реестра? (да/нет): "
+                        if is_yes "$c"; then
+                            cluster_remove_peer "$dh"
+                            echo "  ✅ Удалено. ⚠️ Если пир ещё «живой» и есть в реестрах других нод —"
+                            echo "     удалите его и там, иначе вернётся через gossip."
+                            sleep 3
+                        fi
+                    else
+                        echo "  ❌ Неверный номер."; sleep 1
+                    fi
+                done
+                ;;
+            6)
+                echo ""
+                echo "  ⏳ Синхронизация с пирами..."
+                cluster_sync
+                echo "  ✅ Готово."
+                pause
+                ;;
+            7)
+                echo ""
+                echo "  Лимит — сколько устройств может одновременно подключаться по ОДНОЙ"
+                echo "  подписке СУММАРНО по всем нодам. Лишние сессии будут отключаться."
+                echo "  Текущий: $(get_device_limit)  (0 = без лимита)"
+                local nlim
+                ask nlim "  Новый лимит (число, 0 — выключить): "
+                if [[ "$nlim" =~ ^[0-9]+$ ]]; then
+                    set_device_limit "$nlim"
+                    if [ "$nlim" -gt 0 ]; then
+                        echo "  ✅ Лимит: $nlim устройств на подписку (по кластеру)."
+                        echo "     Применяется в течение ~1 мин (cron --online-sync) на каждой ноде."
+                        echo "     ⚠️ Лимит должен быть одинаковым на ВСЕХ нодах — задайте его на каждой."
+                    else
+                        echo "  ✅ Лимит снят (без ограничений)."
+                    fi
+                else
+                    echo "  ❌ Нужно число."
+                fi
+                pause
+                ;;
+            8)
+                clear
+                subscription_diagnose
+                # Если Caddy не поднялся из-за занятого порта — предлагаем освободить.
+                if [ -n "$DIAG_CONFLICT_UNIT" ]; then
+                    echo ""
+                    echo "  Порт $DIAG_CONFLICT_PORT занимает сервис «$DIAG_CONFLICT_UNIT»."
+                    local c
+                    ask c "  Остановить его и запустить Caddy? (да/нет): "
+                    if is_yes "$c"; then
+                        systemctl stop "$DIAG_CONFLICT_UNIT" 2>/dev/null
+                        ask c "  Отключить «$DIAG_CONFLICT_UNIT» из автозапуска (чтобы не вернулся после ребута)? (да/нет): "
+                        is_yes "$c" && systemctl disable "$DIAG_CONFLICT_UNIT" 2>/dev/null
+                        ensure_ports_open
+                        setup_caddy >/dev/null 2>&1
+                        sleep 2
+                        if systemctl is-active --quiet caddy 2>/dev/null; then
+                            echo "  ✅ Caddy запущен. Жду сертификат..."
+                            if wait_cert "$(node_host)" 15; then
+                                echo "  ✅ Сертификат выдан (до $(cert_expiry "$(node_host)")). Подписка работает."
+                            else
+                                echo "  ⚠️  Caddy поднялся, но сертификат пока не подтверждён — проверьте DNS/порт 80."
+                            fi
+                        else
+                            echo "  ❌ Caddy всё ещё не запускается — journalctl -u caddy -e | tail -n 30"
+                        fi
+                    fi
+                fi
+                pause
+                ;;
+            9)
+                echo ""
+                local cur_conn; cur_conn=$(node_get CONN_HOST)
+                [ -z "$cur_conn" ] && cur_conn="нет, используется IP $(get_ip)"
+                echo "  Домен подключения подставляется в ссылку вместо голого IP"
+                echo "  (host у hysteria2://...@host:port). Текущий: $cur_conn"
+                echo ""
+                echo "  ⚠️ ВАЖНО: домен должен быть DNS-only (A-запись прямо на IP ноды),"
+                echo "     БЕЗ оранжевого облака Cloudflare — Hysteria работает по UDP,"
+                echo "     а CF-прокси UDP не пропускает, и подключение сломается."
+                echo ""
+                local nd
+                ask nd "  Домен подключения (Enter — оставить, '-' — убрать и вернуть IP): "
+                if [ "$nd" = "-" ]; then
+                    node_set CONN_HOST ""
+                    sed -i '/^CONN_HOST=$/d' "$NODE_CONF" 2>/dev/null
+                    echo "  ✅ Убрано — в ссылке снова IP $(get_ip)."
+                    sub_refresh
+                elif [ -z "$nd" ]; then
+                    echo "  Без изменений."
+                elif ! valid_domain "$nd"; then
+                    echo "  ❌ «$nd» не похоже на домен."
+                else
+                    local ph
+                    ph=$(resolve_domain "$nd")
+                    if domain_points_here "$nd"; then
+                        echo "  ✅ DNS: $nd → $(printf '%s' "$ph" | tr '\n' ' ')(этот сервер, DNS-only — то, что нужно)."
+                    elif [ -z "$ph" ]; then
+                        echo "  ⚠️ $nd пока не резолвится. Создайте A-запись $nd → один из: $(list_local_ips | tr '\n' ' ')(DNS-only)."
+                    else
+                        echo "  ⚠️ $nd резолвится на $(printf '%s' "$ph" | tr '\n' ' ')— НЕ на этот сервер."
+                        echo "     Локальные IP: $(list_local_ips | tr '\n' ' '). Если это IP Cloudflare (оранжевое облако) — VPN не подключится."
+                    fi
+                    node_set CONN_HOST "$nd"
+                    sub_refresh
+                    echo "  ✅ В ссылках теперь домен $nd. Раздайте пользователям новую подписку/ссылку."
+                fi
+                pause
+                ;;
+            10)
+                clear
+                echo "  🛰  РЕЛЕЙ — реально прячет IP ноды"
+                echo "  ──────────────────────────────────────────────────────"
+                echo "  Релей — отдельный дешёвый VPS. Клиенты видят IP РЕЛЕЯ, он"
+                echo "  форвардит трафик на эту (скрытую) ноду $(node_ip)."
+                echo "  В ссылке будет адрес релея; dig покажет релей, не ноду."
+                echo ""
+                echo "  ⚠️ Минус: нода будет видеть всех клиентов с одного IP (релея) —"
+                echo "     детектор утечки по IP перестанет различать устройства."
+                echo ""
+                local rh
+                ask rh "  Адрес релея (IP или домен, который видит клиент; '-' убрать): "
+                if [ "$rh" = "-" ]; then
+                    node_set RELAY_HOST ""
+                    sed -i '/^RELAY_HOST=$/d' "$NODE_CONF" 2>/dev/null
+                    node_set CONN_HOST ""
+                    sed -i '/^CONN_HOST=$/d' "$NODE_CONF" 2>/dev/null
+                    sub_refresh
+                    echo "  ✅ Релей убран — в ссылке снова прямой адрес ноды."
+                    pause; continue
+                fi
+                [ -z "$rh" ] && { echo "  Отменено."; pause; continue; }
+                node_set RELAY_HOST "$rh"
+                node_set CONN_HOST "$rh"     # ссылки указывают на релей
+                local rscript
+                rscript=$(generate_relay_script)
+                sub_refresh
+                echo ""
+                echo "  ✅ Ссылки теперь указывают на релей «$rh»."
+                echo ""
+                echo "  📋 ДАЛЬШЕ — НА РЕЛЕЙ-СЕРВЕРЕ (от root) выполните скрипт:"
+                echo "  Скрипт сохранён здесь: $rscript"
+                echo "  Скопируйте его на релей и запустите, например:"
+                echo "     scp $rscript root@$rh:/root/relay-setup.sh"
+                echo "     ssh root@$rh 'bash /root/relay-setup.sh'"
+                echo ""
+                echo "  Затем направьте DNS:"
+                echo "    • домен подключения  → IP релея (A-запись, DNS-only)"
+                echo "    • домен подписки ($(node_host)) → IP релея (если хотите спрятать IP и для подписки)"
+                echo ""
+                echo "  Показать содержимое скрипта сейчас? (да/нет): "
+                local sc; ask sc ""
+                if is_yes "$sc"; then echo ""; sed 's/^/    /' "$rscript"; fi
+                pause
+                ;;
+            11)
+                clear
+                echo "  🔢 Выбор IP ноды (Caddy сядет на него)"
+                echo "  ──────────────────────────────────────────────────────"
+                echo "  Если у сервера несколько IP и на одном из них заняты порты"
+                echo "  (nginx и т.п.), укажите свободный — Caddy привяжется к нему."
+                echo ""
+                local -a ips_arr=(); local k=0 cur
+                cur=$(node_ip)
+                while IFS= read -r oneip; do
+                    [ -n "$oneip" ] || continue
+                    k=$((k+1)); ips_arr[$k]="$oneip"
+                    local mark=""; [ "$oneip" = "$cur" ] && mark="  ← сейчас"
+                    local ph; ph=$(port_holder 443 "$oneip"); ph=${ph%%|*}
+                    printf "    %d. %-18s %s%s\n" "$k" "$oneip" "${ph:+занят 443: $ph}" "$mark"
+                done < <(list_local_ips)
+                [ "$k" -eq 0 ] && { echo "    Не удалось определить локальные IP."; pause; continue; }
+                echo "    0. Авто (отвязать от конкретного IP)"
+                echo ""
+                local pick; ask pick "  Выберите IP: "
+                if [ "$pick" = "0" ]; then
+                    node_set NODE_IP ""
+                    sed -i '/^NODE_IP=$/d' "$NODE_CONF" 2>/dev/null
+                    echo "  ✅ Авто-режим."
+                elif [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "$k" ]; then
+                    node_set NODE_IP "${ips_arr[$pick]}"
+                    echo "  ✅ IP ноды: ${ips_arr[$pick]}"
+                else
+                    echo "  ❌ Неверный выбор."; pause; continue
+                fi
+                echo "  ⏳ Пересобираю Caddy на выбранном IP..."
+                ensure_ports_open
+                if setup_caddy >/dev/null 2>&1; then
+                    echo "  ✅ Caddy перезапущен. Жду сертификат..."
+                    if wait_cert "$(node_host)" 15; then
+                        echo "  ✅ Сертификат выдан (до $(cert_expiry "$(node_host)")). Подписка работает."
+                    else
+                        echo "  ⚠️  Сертификат пока не подтверждён — проверьте DNS на этот IP и порт 80."
+                    fi
+                else
+                    echo "  ❌ Caddy не поднялся — Диагностика (пункт 8) покажет причину."
+                fi
+                sub_refresh
+                pause
+                ;;
+            12)
+                while true; do
+                    clear
+                    echo "  🎨 Оформление подписки (что видит пользователь)"
+                    echo "  ──────────────────────────────────────────────────────"
+                    echo "  Название профиля : $(sub_title)"
+                    echo "  Метка этой ноды  : $(node_label)"
+                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name})"
+                    echo "  Интервал обновл. : каждые $(sub_update_hours) ч"
+                    echo ""
+                    echo "  Пример подписи ключа этой ноды: $(render_tag 'username')"
+                    echo ""
+                    echo "  1. Название профиля"
+                    echo "  2. Метка ноды (можно с эмодзи/флагом, напр. «🇩🇪 Германия-1»)"
+                    echo "  3. Шаблон подписи ключа"
+                    echo "  4. Интервал обновления (часы)"
+                    echo "  0. Назад"
+                    echo "  ℹ️ Название, шаблон и интервал — ОБЩИЕ для кластера (синхронизируются)."
+                    echo "     Метка ноды — своя у каждого сервера."
+                    local ed glob_changed=0; ask ed "  Выберите: "
+                    case "$ed" in
+                        1) local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
+                        2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
+                        3) echo "    Примеры: {label}   |   {label} · {user}   |   {name} ({user})"
+                           local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; setting_set SUB_TAG_TMPL "$v"; glob_changed=1 ;;
+                        4) local v; ask v "  Интервал обновления, часов (напр. 12): "; if [[ "$v" =~ ^[0-9]+$ ]]; then setting_set SUB_UPDATE_HOURS "$v"; glob_changed=1; else echo "  ❌ Нужно число"; fi ;;
+                        0) break ;;
+                        *) echo "  ❌ Неверный выбор"; sleep 1; continue ;;
+                    esac
+                    # Применяем: метки → пересборка подписок; заголовки → перенастройка Caddy.
+                    sub_refresh
+                    setup_caddy >/dev/null 2>&1
+                    # Общие настройки — публикуем и разносим по кластеру сразу.
+                    if [ "$glob_changed" = 1 ]; then
+                        publish_cluster_settings
+                        [ -n "$(cluster_peers 2>/dev/null)" ] && { echo "  🌐 Синхронизирую оформление по кластеру..."; cluster_sync >/dev/null 2>&1; }
+                    fi
+                    echo "  ✅ Применено."
+                    sleep 1
+                done
+                ;;
+            13)
+                clear
+                echo "  ⚙  Режим синхронизации после любых изменений"
+                echo "  ──────────────────────────────────────────────────────"
+                echo "  Текущий: $(node_get SYNC_MODE || echo ask)"
+                echo ""
+                echo "  1. ask  — спрашивать каждый раз (сразу или по расписанию)"
+                echo "  2. auto — синхронизировать сразу, без вопроса"
+                echo "  3. cron — только по расписанию (каждые 5 мин), не спрашивать"
+                local sm; ask sm "  Выберите (1/2/3): "
+                case "$sm" in
+                    1) node_set SYNC_MODE ask;  echo "  ✅ Спрашивать каждый раз." ;;
+                    2) node_set SYNC_MODE auto; echo "  ✅ Синхронизировать сразу." ;;
+                    3) node_set SYNC_MODE cron; echo "  ✅ Только по расписанию." ;;
+                    *) echo "  Без изменений." ;;
+                esac
                 pause
                 ;;
             0) return ;;
