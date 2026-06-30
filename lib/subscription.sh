@@ -642,6 +642,61 @@ subscription_diagnose() {
     echo "  ══════════════════════════════════════════════════════"
 }
 
+# Диагностика КОНКРЕТНОГО профиля по кластеру: где есть, онлайн по нодам, токены,
+# срок, доступность пиров. Помогает понять, почему профиль где-то не работает.
+user_debug() {
+    local user="$1"
+    echo "  🩺 Диагностика профиля «$user»"
+    echo "  ──────────────────────────────────────────────────────"
+    if db_user_exists "$user"; then
+        echo "  ✅ На этой ноде ($(node_name)): активен"
+    elif is_user_disabled "$user"; then
+        echo "  ⏸  На этой ноде: ОТКЛЮЧЁН"
+    else
+        echo "  ❌ На этой ноде: отсутствует"
+    fi
+    if sub_enabled && is_cluster_user "$user"; then
+        echo "  🌐 Тип: кластерный (должен быть на всех нодах)"
+    else
+        echo "  🔒 Тип: локальный (только эта нода)"
+    fi
+    local e; e=$(get_user_expiry "$user")
+    if [ -n "$e" ]; then echo "  ⏰ Срок: $e ($(format_remaining "$e"))"; else echo "  ⏰ Срок: не задан"; fi
+
+    if ! sub_enabled; then echo "  ⚪ Подписка не настроена."; return 0; fi
+
+    echo "  🔗 Ссылка-подписка: $(subscription_url "$user")"
+    local toks
+    toks=$( { awk -F: -v u="$user" '$1==u{print $2}' "$SUBTOKENS_DB" 2>/dev/null
+              [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null; } \
+            | grep -v '^$' | sort -u )
+    echo "  🎫 Токенов в кластере: $(printf '%s\n' "$toks" | grep -c .) (любой работает на любой ноде)"
+
+    echo "  📡 По нодам (онлайн · трафик):"
+    local bn bo btx brx
+    while IFS=$'\t' read -r bn bo btx brx _ _; do
+        echo "     • $bn: онлайн ${bo:-0} · ↑$(format_bytes "$btx")/↓$(format_bytes "$brx")"
+    done < <(cluster_user_breakdown "$user")
+
+    if cert_ready "$(node_host)"; then
+        echo "  ✅ HTTPS этой ноды работает (сертификат валиден)"
+    else
+        echo "  ❌ HTTPS этой ноды НЕ работает — подписка по этой ссылке не отдаётся!"
+        echo "     Запустите общую Диагностику (Подписка → 8)."
+    fi
+    local pn ph total=0 bad=0
+    while IFS='|' read -r pn ph; do
+        [ -n "$ph" ] || continue; [ "$ph" = "$(node_host)" ] && continue
+        total=$((total+1))
+        if ! cluster_call "$ph" "/cluster/manifest" 3 >/dev/null 2>&1; then
+            echo "  ⚠️  Пир «$pn» ($ph) недоступен — его ключ может не попасть в подписку."
+            bad=$((bad+1))
+        fi
+    done < "$CLUSTER_CONF"
+    [ "$total" -gt 0 ] && [ "$bad" -eq 0 ] && echo "  ✅ Все пиры на связи."
+    [ "$total" -eq 0 ] && echo "  ℹ️  Пиров нет (одиночная нода)."
+}
+
 # ---- Проверка домена и сертификата ----
 
 # Базовая валидация FQDN (чтобы не записать «белиберду»).
