@@ -251,12 +251,14 @@ user_action_menu() {
                     disable_user "$user"
                 fi
                 refresh_online
+                offer_sync
                 pause
                 need_clear=1
                 ;;
             2)
                 change_user_password "$user"
                 echo "  ⚠️  Пользователю нужна новая ссылка!"
+                offer_sync
                 pause
                 need_clear=1
                 ;;
@@ -265,6 +267,7 @@ user_action_menu() {
                 ask confirm "  ⚠️  Удалить $user ПОЛНОСТЬЮ? (да/нет): "
                 if is_yes "$confirm"; then
                     delete_user "$user"
+                    offer_sync
                     pause
                     return
                 fi
@@ -434,6 +437,12 @@ user_action_menu() {
                 pause
                 need_clear=1
                 ;;
+            11)
+                clear
+                user_debug "$user"
+                pause
+                need_clear=1
+                ;;
             0) return ;;
         esac
     done
@@ -541,6 +550,7 @@ _render_user_action() {
         else
             echo " 10. 🔄 Завести на всех нодах кластера"
         fi
+        echo " 11. 🩺 Диагностика профиля (по кластеру)"
     fi
     echo "  0. ↩  Назад"
     echo ""
@@ -822,6 +832,8 @@ subscription_menu() {
         echo " 10. 🛰  Релей (реально спрятать IP ноды через фронт-VPS)"
         echo " 11. 🔢 Выбрать IP ноды (если у сервера несколько IP)"
         echo " 12. 🎨 Оформление подписки (название, метки серверов)"
+        local _sm; _sm=$(node_get SYNC_MODE); [ -z "$_sm" ] && _sm=ask
+        echo " 13. ⚙  Режим синхронизации после изменений (сейчас: $_sm)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -1200,6 +1212,24 @@ subscription_menu() {
                     echo "  ✅ Применено."
                     sleep 1
                 done
+                ;;
+            13)
+                clear
+                echo "  ⚙  Режим синхронизации после любых изменений"
+                echo "  ──────────────────────────────────────────────────────"
+                echo "  Текущий: $(node_get SYNC_MODE || echo ask)"
+                echo ""
+                echo "  1. ask  — спрашивать каждый раз (сразу или по расписанию)"
+                echo "  2. auto — синхронизировать сразу, без вопроса"
+                echo "  3. cron — только по расписанию (каждые 5 мин), не спрашивать"
+                local sm; ask sm "  Выберите (1/2/3): "
+                case "$sm" in
+                    1) node_set SYNC_MODE ask;  echo "  ✅ Спрашивать каждый раз." ;;
+                    2) node_set SYNC_MODE auto; echo "  ✅ Синхронизировать сразу." ;;
+                    3) node_set SYNC_MODE cron; echo "  ✅ Только по расписанию." ;;
+                    *) echo "  Без изменений." ;;
+                esac
+                pause
                 ;;
             0) return ;;
             *)
