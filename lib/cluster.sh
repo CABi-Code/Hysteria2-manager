@@ -130,7 +130,6 @@ cluster_sync() {
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.expiry"
     done < <(cluster_peers)
 
-    merge_subtokens          # единый токен подписки на всех нодах
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
     regen_subscriptions
