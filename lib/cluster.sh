@@ -44,7 +44,7 @@ cluster_remove_peer() {   # host
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
     if [ -n "$name" ]; then
-        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" 2>/dev/null
+        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.expiry" 2>/dev/null
     fi
     publish_peers_list
     regen_subscriptions
@@ -105,6 +105,7 @@ cluster_sync() {
     publish_manifest
     publish_subtokens
     publish_roster
+    publish_cluster_expiry
 
     local host name data
     while IFS= read -r host; do
@@ -124,10 +125,14 @@ cluster_sync() {
         # список «кластерных» юзеров пира -> кэш (для заведения у себя)
         data=$(cluster_call "$host" "/cluster/roster")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.roster"
+        # сроки действия кластерных юзеров пира -> кэш (для синхронизации срока)
+        data=$(cluster_call "$host" "/cluster/expiry")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.expiry"
     done < <(cluster_peers)
 
     merge_subtokens          # единый токен подписки на всех нодах
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
+    cluster_apply_expiry     # подтянуть единый срок действия по кластеру
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
 }
@@ -175,6 +180,59 @@ cluster_share_user() {   # user
     roster_add "$1"
     publish_roster
     cluster_sync
+}
+
+# ---- Синхронизация СРОКА ДЕЙСТВИЯ кластерных юзеров ----
+# Все «кластерные» юзеры (объявлены в roster локально или у пиров).
+cluster_users_all() {
+    { [ -f "$CLUSTER_USERS_FILE" ] && cat "$CLUSTER_USERS_FILE"
+      [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.roster 2>/dev/null; } \
+      | grep -v '^$' | sort -u
+}
+is_cluster_user() { cluster_users_all | grep -qxF "$1" 2>/dev/null; }
+
+# Публикует сроки кластерных юзеров: «user|date|ts». Разделитель «|» (не пробел),
+# иначе пустая дата (срок снят) схлопывалась бы при разборе через IFS-таб.
+publish_cluster_expiry() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    local tmp="$WEBROOT/cluster/expiry.tmp" u d t
+    : > "$tmp"
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        d=$(get_user_expiry "$u"); t=$(expiry_get_ts "$u")
+        printf '%s|%s|%s\n' "$u" "$d" "$t" >> "$tmp"
+    done < <(cluster_users_all)
+    mv "$tmp" "$WEBROOT/cluster/expiry"
+    secure_web_files
+}
+
+# Применяет сроки с других нод: для каждого юзера берём запись с наибольшим ts;
+# если она новее локальной — применяем (с тем же ts, чтобы не зациклить).
+# Так изменение срока на любой ноде влияет на всю подписку (последнее изменение
+# выигрывает).
+cluster_apply_expiry() {
+    sub_enabled || return 0
+    local merged
+    merged=$(
+        { [ -f "$WEBROOT/cluster/expiry" ] && cat "$WEBROOT/cluster/expiry"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.expiry 2>/dev/null; } \
+        | awk -F'|' 'NF>=3 && $1!="" { if (($3+0) >= (ts[$1]+0)) { ts[$1]=$3; d[$1]=$2 } }
+                      END { for (u in ts) printf "%s|%s|%s\n", u, d[u], ts[u] }'
+    )
+    [ -n "$merged" ] || return 0
+    local u d t localts changed=0
+    while IFS='|' read -r u d t; do
+        [ -n "$u" ] || continue
+        localts=$(expiry_get_ts "$u")
+        [ "${t:-0}" -gt "${localts:-0}" ] 2>/dev/null || continue
+        if [ -n "$d" ]; then set_user_expiry "$u" "$d" "$t"; else remove_user_expiry "$u" "$t"; fi
+        changed=1
+    done <<< "$merged"
+    if [ "$changed" = 1 ]; then
+        check_expired_users >/dev/null 2>&1
+        publish_cluster_expiry
+    fi
 }
 
 # Частая синхронизация СТАТИСТИКИ (онлайн/трафик/скорость по кластеру + лимит

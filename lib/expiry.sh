@@ -3,10 +3,26 @@
 # Управление сроками действия пользователей
 # ================================================
 
+# Метка времени последнего изменения срока (для кластерной синхронизации).
+expiry_set_ts() {   # user [ts]
+    local user="$1" ts="${2:-$(date +%s)}"
+    touch "$EXPIRY_TS_FILE" 2>/dev/null
+    sed -i "/^${user}|/d" "$EXPIRY_TS_FILE" 2>/dev/null
+    echo "${user}|${ts}" >> "$EXPIRY_TS_FILE"
+}
+expiry_get_ts() {   # user -> ts (0 если нет)
+    local t; t=$(grep "^${1}|" "$EXPIRY_TS_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0
+}
+
+# Третий аргумент ts — внутренний (применение срока, пришедшего с другой ноды,
+# чтобы не зациклить синхронизацию). Из UI не передаётся → ts=now + публикация.
 set_user_expiry() {
-    local user="$1" date="$2"
+    local user="$1" date="$2" ts="$3"
     sed -i "/^${user}|/d" "$EXPIRY_FILE"
     echo "${user}|${date}" >> "$EXPIRY_FILE"
+    expiry_set_ts "$user" "$ts"
+    [ -z "$ts" ] && declare -F publish_cluster_expiry >/dev/null && publish_cluster_expiry
 }
 
 get_user_expiry() {
@@ -56,7 +72,10 @@ format_remaining() {
 }
 
 remove_user_expiry() {
-    sed -i "/^${1}|/d" "$EXPIRY_FILE"
+    local user="$1" ts="$2"
+    sed -i "/^${user}|/d" "$EXPIRY_FILE"
+    expiry_set_ts "$user" "$ts"     # снятие срока — тоже «изменение» (пустая дата)
+    [ -z "$ts" ] && declare -F publish_cluster_expiry >/dev/null && publish_cluster_expiry
 }
 
 check_expired_users() {
