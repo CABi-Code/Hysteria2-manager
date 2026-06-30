@@ -44,7 +44,7 @@ cluster_remove_peer() {   # host
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
     if [ -n "$name" ]; then
-        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" 2>/dev/null
+        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.state" "$PEERS_DIR/${name}.ips" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" 2>/dev/null
     fi
     publish_peers_list
     regen_subscriptions
@@ -127,8 +127,10 @@ cluster_sync() {
     publish_manifest
     publish_subtokens
     publish_roster
+    publish_cluster_state
     publish_cluster_expiry
     publish_cluster_settings
+    publish_ips
 
     local host name data
     while IFS= read -r host; do
@@ -148,6 +150,12 @@ cluster_sync() {
         # список «кластерных» юзеров пира -> кэш (для заведения у себя)
         data=$(cluster_call "$host" "/cluster/roster")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.roster"
+        # состояния (active/disabled/deleted) пира -> кэш (точка правды)
+        data=$(cluster_call "$host" "/cluster/state")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.state"
+        # IP-адреса юзеров пира -> кэш (для показа IP со всех нод)
+        data=$(cluster_call "$host" "/cluster/ips")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.ips"
         # сроки действия кластерных юзеров пира -> кэш (для синхронизации срока)
         data=$(cluster_call "$host" "/cluster/expiry")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.expiry"
@@ -156,6 +164,7 @@ cluster_sync() {
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.settings"
     done < <(cluster_peers)
 
+    cluster_apply_state      # точка правды: вкл/выкл/удаление с других нод
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
     cluster_apply_settings   # подтянуть общее оформление подписки
@@ -176,6 +185,105 @@ roster_remove() {
     mv "${CLUSTER_USERS_FILE}.t" "$CLUSTER_USERS_FILE" 2>/dev/null || true
 }
 
+# ---- ТОЧКА ПРАВДЫ: жизненный цикл кластерного юзера (active/disabled/deleted) ----
+# Нода, на которой произошло действие, бампает ts=now и публикует. Остальные на
+# своём sync применяют у себя запись с наибольшим ts (last-write-wins). Так
+# отключение/удаление/включение распространяются по кластеру, а deleted-tombstone
+# не даёт манифесту/roster пира воскресить юзера обратно.
+cstate_get()    { awk -F'|' -v u="$1" '$1==u{print $2; exit}' "$CLUSTER_STATE_FILE" 2>/dev/null; }
+cstate_get_ts() { local t; t=$(awk -F'|' -v u="$1" '$1==u{print $3; exit}' "$CLUSTER_STATE_FILE" 2>/dev/null); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
+cstate_set() {   # user state [ts]
+    local u="$1" s="$2" ts="${3:-$(date +%s)}"
+    mkdir -p "$DATA_DIR"; touch "$CLUSTER_STATE_FILE"
+    sed -i "/^${u}|/d" "$CLUSTER_STATE_FILE" 2>/dev/null
+    printf '%s|%s|%s\n' "$u" "$s" "$ts" >> "$CLUSTER_STATE_FILE"
+}
+
+# Зафиксировать новое состояние юзера ЛОКАЛЬНЫМ действием и тут же опубликовать.
+# Только для кластерных юзеров — локальные (одна нода) не распространяем.
+# Для delete вызывать ДО снятия метки (membership проверяется по roster).
+cstate_mark() {   # user state
+    sub_enabled || return 0
+    is_cluster_user "$1" || return 0
+    cstate_set "$1" "$2"
+    publish_cluster_state
+}
+
+publish_cluster_state() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"; touch "$CLUSTER_STATE_FILE"
+    cp -f "$CLUSTER_STATE_FILE" "$WEBROOT/cluster/state" 2>/dev/null || : > "$WEBROOT/cluster/state"
+    chmod 640 "$WEBROOT/cluster/state" 2>/dev/null || true
+    secure_web_files
+}
+
+# Тихое локальное удаление (без печати/сообщений) — для применения tombstone.
+cluster_delete_local() {   # user
+    local user="$1" _t
+    if [ -f "$SUBTOKENS_DB" ]; then
+        _t=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$SUBTOKENS_DB" 2>/dev/null)
+        [ -n "$_t" ] && rm -f "$WEBROOT/sub/$_t" 2>/dev/null
+        sub_token_remove "$user"
+    fi
+    db_remove_user "$user"
+    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" 2>/dev/null
+    roster_remove "$user"
+    api_post "/kick" "[\"$user\"]" &>/dev/null
+}
+
+# Применяет состояния с других нод: для каждого юзера берём запись с наибольшим
+# ts; если она новее локальной — применяем у себя (создать/включить, отключить,
+# удалить) и фиксируем тот же ts (чтобы не зациклить). Лёгкие raw-операции (без
+# per-user sub_refresh) — финальная пересборка делается один раз в конце.
+cluster_apply_state() {
+    sub_enabled || return 0
+    local merged
+    merged=$(
+        { [ -f "$CLUSTER_STATE_FILE" ] && cat "$CLUSTER_STATE_FILE"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.state 2>/dev/null; } \
+        | awk -F'|' 'NF>=3 && $1!="" { if (($3+0) > (ts[$1]+0)) { ts[$1]=$3; s[$1]=$2 } }
+                     END { for (u in ts) printf "%s|%s|%s\n", u, s[u], ts[u] }'
+    )
+    [ -n "$merged" ] || return 0
+    local u s t localts pw changed=0
+    while IFS='|' read -r u s t; do
+        [ -n "$u" ] || continue
+        [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        localts=$(cstate_get_ts "$u")
+        [ "${t:-0}" -gt "${localts:-0}" ] 2>/dev/null || continue
+        case "$s" in
+            active)
+                if is_user_disabled "$u"; then
+                    pw=$(get_disabled_password "$u")
+                    [ -n "$pw" ] && db_add_user "$u" "$pw"
+                    sed -i "/^${u}|/d" "$DISABLED_FILE" 2>/dev/null
+                elif ! db_user_exists "$u"; then
+                    db_add_user "$u" "$(pwgen -s 64 1)"
+                fi
+                roster_add "$u"          # это объявленный кластерный юзер
+                ;;
+            disabled)
+                if db_user_exists "$u"; then
+                    pw=$(get_user_password "$u")
+                    grep -q "^${u}|" "$DISABLED_FILE" 2>/dev/null || echo "${u}|${pw}" >> "$DISABLED_FILE"
+                    db_remove_user "$u"
+                    api_post "/kick" "[\"$u\"]" &>/dev/null
+                fi
+                ;;
+            deleted)
+                cluster_delete_local "$u"
+                ;;
+        esac
+        cstate_set "$u" "$s" "$t"
+        changed=1
+    done <<< "$merged"
+    if [ "$changed" = 1 ]; then
+        secure_auth_files
+        sub_refresh
+        publish_cluster_state
+    fi
+}
+
 publish_roster() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"; touch "$CLUSTER_USERS_FILE"
@@ -193,6 +301,9 @@ cluster_apply_roster() {
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        # Точка правды важнее roster: удалённого/отключённого по кластеру НЕ
+        # пересоздаём, даже если он ещё «висит» в roster-кэше пира.
+        case "$(cstate_get "$u")" in deleted|disabled) continue ;; esac
         db_user_exists "$u" && continue
         is_user_disabled "$u" && continue
         db_add_user "$u" "$(pwgen -s 64 1)"
@@ -204,7 +315,9 @@ cluster_apply_roster() {
 # Пометить юзера кластерным и разослать (peers заведут у себя на своём sync).
 cluster_share_user() {   # user
     roster_add "$1"
+    cstate_set "$1" active            # точка правды: юзер активен по кластеру
     publish_roster
+    publish_cluster_state
     cluster_sync
 }
 

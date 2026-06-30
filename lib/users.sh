@@ -120,6 +120,11 @@ enable_user() {
 # Полное удаление: чистим базу и все файлы статистики. Без рестарта.
 delete_user() {
     local user="$1"
+    # Кластерный ли юзер? Считаем ДО снятия метки (roster_remove ниже).
+    local was_cluster=0
+    if sub_enabled && declare -F is_cluster_user >/dev/null && is_cluster_user "$user"; then
+        was_cluster=1
+    fi
     # Снимаем токен подписки и удаляем готовый файл подписки.
     if [ -f "$SUBTOKENS_DB" ]; then
         local _t
@@ -133,9 +138,15 @@ delete_user() {
     api_post "/kick" "[\"$user\"]" &>/dev/null
     sub_refresh
     declare -F publish_roster >/dev/null && publish_roster
+    # Точка правды: ставим tombstone и публикуем — удаление кластерного юзера
+    # САМО разнесётся по нодам (а старый roster/манифест пира его не воскресит).
+    if [ "$was_cluster" = 1 ] && declare -F cstate_set >/dev/null; then
+        cstate_set "$user" deleted
+        publish_cluster_state
+    fi
     echo "  ✅ Пользователь $user полностью удалён (применено сразу)"
-    if sub_enabled && [ -n "$(cluster_peers 2>/dev/null)" ]; then
-        echo "  ℹ️  На других нодах удалите этого юзера отдельно (кластерное удаление не авторазносится)."
+    if [ "$was_cluster" = 1 ]; then
+        echo "  🌐 Удаление разнесётся по кластеру (на пирах — в течение ~5 мин или по «Синхронизировать»)."
     fi
 }
 

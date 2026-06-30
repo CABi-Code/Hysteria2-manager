@@ -67,6 +67,7 @@ if [ "$1" = "--collect" ]; then
     setup_stats_api
     collect_traffic
     collect_ips
+    publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
     exit 0
 fi
 

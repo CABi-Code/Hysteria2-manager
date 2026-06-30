@@ -12,19 +12,25 @@ collect_ips() {
     fi
     date '+%Y-%m-%d %H:%M:%S' > "$LAST_LOG_TS"
 
+    # ВАЖНО: Hysteria 2 (auth.type: command) логирует подключение строкой
+    #   ... msg":"client connected" ... "addr":"<IP>:<порт>" ... "id":"<user>"
+    # Поля «username» в логе НЕТ — раньше тут грепали именно его, поэтому IP
+    # НИКОГДА не собирались («IP-адресов нет» в карточке). Берём пару addr+id из
+    # событий подключения. «client disconnected» исключаем (это не новый коннект).
     journalctl -u "$SERVICE" --no-pager -o cat --since="$since_ts" 2>/dev/null | \
-    grep -E '"(addr|remote|client)"' | grep -E '"username"' | \
-    while read -r line; do
-        local ip user
-        ip=$(echo "$line" | grep -oP '"(?:addr|remote|client)"\s*:\s*"\K[\d.]+' | head -1)
-        user=$(echo "$line" | grep -oP '"username"\s*:\s*"\K[^"]+' | head -1)
+    grep -F 'client connected' | \
+    while IFS= read -r line; do
+        local ip user now
+        # addr/remote/client — на разных версиях по-разному; берём IPv4 до «:».
+        ip=$(printf '%s' "$line" | grep -oP '"(?:addr|remote|client)"\s*:\s*"\K[0-9.]+' | head -1)
+        # id (имя из auth-скрипта); username — на случай иного формата лога.
+        user=$(printf '%s' "$line" | grep -oP '"(?:id|username)"\s*:\s*"\K[^"]+' | head -1)
         if [ -z "$ip" ] || [ -z "$user" ] || [ "$ip" = "127.0.0.1" ]; then
             continue
         fi
 
-        local now
         now=$(date +%s)
-        if grep -q "^${user}|${ip}|" "$IPS_FILE"; then
+        if grep -q "^${user}|${ip}|" "$IPS_FILE" 2>/dev/null; then
             local old_line first_seen old_count new_count
             old_line=$(grep "^${user}|${ip}|" "$IPS_FILE" | head -1)
             first_seen=$(echo "$old_line" | cut -d'|' -f3)
