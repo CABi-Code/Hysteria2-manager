@@ -250,33 +250,50 @@ regen_subscriptions() {
     )
     users=$(printf '%s\n' "$users" | grep -v '^$' | sort -u)
 
-    local user lp node ip port obfs sni content tok toks
+    local user lp node ip port obfs sni content tok toks cst
     node=$(node_name)
     ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
     while IFS= read -r user; do
         [ -n "$user" ] || continue
-        lp=$(get_user_password "$user")
-        content=$(
-            {
-                [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
-                [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
-                    | awk -F'\t' -v u="$user" '$1==u{print $2}'
-            } | grep -v '^$' | awk '
+        # Точка правды: для удалённого/отключённого по кластеру отдаём ПУСТУЮ
+        # подписку (клиент остаётся без серверов), даже если он ещё «висит» в кэше
+        # манифеста пира. Так отключение/удаление действует сразу, не дожидаясь
+        # пиров. Важно перезаписать токены пустым, а не пропустить — иначе остался
+        # бы старый файл подписки с рабочими ключами.
+        cst=""
+        declare -F cstate_get >/dev/null 2>&1 && cst=$(cstate_get "$user")
+        if [ "$cst" = "deleted" ] || [ "$cst" = "disabled" ]; then
+            content=""
+        else
+            lp=$(get_user_password "$user")
+            content=$(
                 {
-                  s=$0
-                  sub(/^[^/]*\/\//,"",s)   # убрать схему hysteria2://
-                  sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
-                  n=split(s,p,"@"); hp=p[n]  # host:port = после ПОСЛЕДНЕГО @ (пароль может содержать @)
-                  if (!seen[hp]++) print $0
-                }' | base64 -w0
-        )
+                    [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
+                    [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
+                        | awk -F'\t' -v u="$user" '$1==u{print $2}'
+                } | grep -v '^$' | awk '
+                    {
+                      s=$0
+                      sub(/^[^/]*\/\//,"",s)   # убрать схему hysteria2://
+                      sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
+                      n=split(s,p,"@"); hp=p[n]  # host:port = после ПОСЛЕДНЕГО @ (пароль может содержать @)
+                      if (!seen[hp]++) print $0
+                    }' | base64 -w0
+            )
+        fi
         # ВАЖНО: пишем подписку под ВСЕ токены юзера (наш + токены пиров). Так
         # уже розданная ссылка НИКОГДА не ломается, даже если на другой ноде у
-        # юзера свой токен. Свой токен обязателен — создаём, если нет.
-        toks=$(
-            { sub_token_for "$user"; echo; }
-            [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null
-        )
+        # юзера свой токен. Свой токен обязателен — создаём, если нет. Для
+        # УДАЛЁННОГО свой токен НЕ создаём (иначе воскреснет) — только перезапишем
+        # пустым уже существующие токены пиров.
+        if [ "$cst" = "deleted" ]; then
+            toks=$( [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null )
+        else
+            toks=$(
+                { sub_token_for "$user"; echo; }
+                [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null
+            )
+        fi
         toks=$(printf '%s\n' "$toks" | grep -v '^$' | sort -u)
         while IFS= read -r tok; do
             [ -n "$tok" ] || continue
@@ -797,6 +814,45 @@ publish_stats() {
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/stats"
     secure_web_files
+}
+
+# Публикует IP-адреса локальных юзеров для других нод (за X-Cluster-Auth), чтобы
+# в карточке были видны IP со ВСЕХ нод кластера (юзер мог коннектиться на любую).
+# Формат — как IPS_FILE: «user|ip|first|last|count».
+publish_ips() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    cp -f "$IPS_FILE" "$WEBROOT/cluster/ips" 2>/dev/null || : > "$WEBROOT/cluster/ips"
+    chmod 640 "$WEBROOT/cluster/ips" 2>/dev/null || true
+    secure_web_files
+}
+
+# IP юзера по ВСЕМУ кластеру: локальные + из кэшей пиров, объединённые по IP
+# (минимальный first, максимальный last, суммарный count, список нод).
+# Печатает строки «ip<TAB>first<TAB>last<TAB>count<TAB>nodes».
+cluster_user_ips() {
+    local user="$1" self f name
+    self=$(node_name)
+    {
+        get_user_ips "$user" | awk -F'|' -v n="$self" 'NF>=5{print $2"|"$3"|"$4"|"$5"|"n}'
+        if [ -d "$PEERS_DIR" ]; then
+            for f in "$PEERS_DIR"/*.ips; do
+                [ -f "$f" ] || continue
+                name=$(basename "$f" .ips)
+                awk -F'|' -v u="$user" -v n="$name" '$1==u && NF>=5{print $2"|"$3"|"$4"|"$5"|"n}' "$f"
+            done
+        fi
+    } | awk -F'|' '
+        {
+            ip=$1
+            if (!(ip in cnt)) { first[ip]=$2; last[ip]=$3 }
+            if ($2+0 < first[ip]+0) first[ip]=$2
+            if ($3+0 > last[ip]+0)  last[ip]=$3
+            cnt[ip]+=$4
+            if (index(","nodes[ip]",", ","$5",")==0) nodes[ip]=(nodes[ip]==""?$5:nodes[ip]","$5)
+        }
+        END { for (ip in cnt) printf "%s\t%s\t%s\t%s\t%s\n", ip, first[ip], last[ip], cnt[ip], nodes[ip] }
+    ' | sort -t$'\t' -k3,3nr
 }
 
 # Внутренний хелпер: сумма колонки $col из stats-кэшей пиров для юзера.
