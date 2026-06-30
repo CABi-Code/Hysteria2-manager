@@ -238,32 +238,49 @@ regen_subscriptions() {
     )
     users=$(printf '%s\n' "$users" | grep -v '^$' | sort -u)
 
-    local user token lp node ip port obfs sni
+    local user lp node ip port obfs sni content tok toks
     node=$(node_name)
     ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
     while IFS= read -r user; do
         [ -n "$user" ] || continue
-        token=$(sub_token_for "$user")
-        [ -n "$token" ] || continue   # без токена не пишем (иначе путь = каталог sub/)
         lp=$(get_user_password "$user")
-        {
-            [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
-            [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
-                | awk -F'\t' -v u="$user" '$1==u{print $2}'
-        } | grep -v '^$' | awk '
+        content=$(
             {
-              s=$0
-              sub(/^[^/]*\/\//,"",s)   # убрать схему hysteria2://
-              sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
-              n=split(s,p,"@"); hp=p[n]  # host:port = после ПОСЛЕДНЕГО @ (пароль может содержать @)
-              if (!seen[hp]++) print $0
-            }' | base64 -w0 > "$WEBROOT/sub/$token"
+                [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
+                [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
+                    | awk -F'\t' -v u="$user" '$1==u{print $2}'
+            } | grep -v '^$' | awk '
+                {
+                  s=$0
+                  sub(/^[^/]*\/\//,"",s)   # убрать схему hysteria2://
+                  sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
+                  n=split(s,p,"@"); hp=p[n]  # host:port = после ПОСЛЕДНЕГО @ (пароль может содержать @)
+                  if (!seen[hp]++) print $0
+                }' | base64 -w0
+        )
+        # ВАЖНО: пишем подписку под ВСЕ токены юзера (наш + токены пиров). Так
+        # уже розданная ссылка НИКОГДА не ломается, даже если на другой ноде у
+        # юзера свой токен. Свой токен обязателен — создаём, если нет.
+        toks=$(
+            { sub_token_for "$user"; echo; }
+            [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null
+        )
+        toks=$(printf '%s\n' "$toks" | grep -v '^$' | sort -u)
+        while IFS= read -r tok; do
+            [ -n "$tok" ] || continue
+            printf '%s' "$content" > "$WEBROOT/sub/$tok"
+        done <<< "$toks"
     done <<< "$users"
 
-    # Чистим осиротевшие файлы подписки (токены, которых уже нет в базе).
+    # Чистим ТОЛЬКО действительно осиротевшие токены: которых нет ни в нашей базе,
+    # ни в кэше токенов пиров (т.е. юзер удалён везде). Иначе бы ломали чужие ссылки.
     if [ -d "$WEBROOT/sub" ]; then
         local valid bn
-        valid=$(cut -d: -f2 "$SUBTOKENS_DB" 2>/dev/null)
+        valid=$(
+            cut -d: -f2 "$SUBTOKENS_DB" 2>/dev/null
+            [ -d "$PEERS_DIR" ] && awk -F: '{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null
+        )
+        valid=$(printf '%s\n' "$valid" | grep -v '^$' | sort -u)
         for f in "$WEBROOT/sub"/*; do
             [ -f "$f" ] || continue
             bn=$(basename "$f")
@@ -281,23 +298,11 @@ publish_subtokens() {
     secure_web_files
 }
 
-# Сводит токены подписки к ЕДИНЫМ по кластеру (детерминированно — меньший токен
-# выигрывает), чтобы ссылка /sub/<token> для юзера была ОДИНАКОВОЙ на всех нодах.
-merge_subtokens() {
-    sub_enabled || return 0
-    local tmp; tmp=$(mktemp) || return 1
-    {
-        cat "$SUBTOKENS_DB" 2>/dev/null
-        [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.subtokens 2>/dev/null
-    } | awk -F: 'NF>=2 && $1!="" {
-            u=$1; t=substr($0,length($1)+2)
-            if (!(u in best) || t < best[u]) best[u]=t
-        }
-        END { for (u in best) print u ":" best[u] }' | sort > "$tmp"
-    [ -s "$tmp" ] && cat "$tmp" > "$SUBTOKENS_DB"
-    rm -f "$tmp"
-    secure_sub_files
-}
+# Токены НЕ объединяем: у каждой ноды свой стабильный токен для юзера, а подписка
+# отдаётся под ВСЕМИ токенами (см. regen_subscriptions). Это гарантирует, что уже
+# розданная ссылка не ломается, даже если на другой ноде юзер с тем же именем
+# получил свой токен. Оставлено no-op для обратной совместимости вызовов.
+merge_subtokens() { return 0; }
 
 # Удобный хук: обновить манифест/токены и подписки после изменения пользователей.
 sub_refresh() {
