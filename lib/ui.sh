@@ -230,6 +230,7 @@ user_action_menu() {
         # Живые данные: онлайн-статус, трафик и текущая скорость
         refresh_online
         collect_traffic
+        cluster_stats_live      # подтянуть свежую статистику с других нод
 
         local frame
         frame=$(_render_user_action "$user")
@@ -553,6 +554,7 @@ user_list_menu() {
         # Живые данные таблицы: онлайн-статус, трафик и скорость
         refresh_online
         collect_traffic
+        cluster_stats_live      # свежая статистика с других нод (троттлинг внутри)
         load_user_list
 
         if [ "$USER_LIST_TOTAL" -eq 0 ]; then

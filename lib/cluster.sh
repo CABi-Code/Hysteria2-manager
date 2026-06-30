@@ -59,10 +59,32 @@ publish_peers_list() {
 }
 
 # Запрос к пиру с кластерной аутентификацией.
-cluster_call() {   # host path -> stdout
-    local host="$1" path="$2" secret
+cluster_call() {   # host path [timeout] -> stdout
+    local host="$1" path="$2" to="${3:-8}" secret
     secret=$(cluster_secret)
-    curl -fsS --max-time 8 -H "X-Cluster-Auth: $secret" "https://${host}${path}" 2>/dev/null
+    curl -fsS --max-time "$to" -H "X-Cluster-Auth: $secret" "https://${host}${path}" 2>/dev/null
+}
+
+# Живой опрос статистики пиров — для интерактивных экранов, где видно онлайн/
+# скорость/трафик по кластеру. Троттлинг: не чаще раза в LIVE_THROTTLE сек, чтобы
+# не дёргать пиров на каждый перерисов. Тайм-аут короткий (живые пиры отвечают
+# быстро; недоступные не вешают интерфейс надолго).
+LIVE_THROTTLE=4
+cluster_stats_live() {
+    sub_enabled || return 0
+    local now last fp="$PEERS_DIR/.live_ts"
+    now=$(date +%s); last=$(cat "$fp" 2>/dev/null); [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    [ $((now - last)) -lt "${LIVE_THROTTLE:-4}" ] && return 0
+    mkdir -p "$PEERS_DIR"; echo "$now" > "$fp"
+    publish_stats
+    local host name data
+    while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
+        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        data=$(cluster_call "$host" "/cluster/stats" 3)
+        [ -n "$data" ] && printf '%s' "$data" > "$PEERS_DIR/${name}.stats"
+    done < <(cluster_peers)
 }
 
 # Инициализация кластера на первой ноде. Печатает join-токен для остальных.
