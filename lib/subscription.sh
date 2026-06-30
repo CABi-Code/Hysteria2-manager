@@ -83,6 +83,25 @@ link_host() {
     node_ip
 }
 
+# ---- Оформление подписки (что видит пользователь в клиенте) ----
+# Метка ноды (название сервера в клиенте; можно с эмодзи/флагом). По умолчанию — имя ноды.
+node_label()       { local l; l=$(node_get NODE_LABEL); echo "${l:-$(node_name)}"; }
+# Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name}.
+sub_tag_tmpl()     { local t; t=$(node_get SUB_TAG_TMPL); [ -z "$t" ] && t='{label}'; printf '%s' "$t"; }
+# Название всего профиля подписки в клиенте.
+sub_title()        { local t; t=$(node_get SUB_TITLE); echo "${t:-VPN}"; }
+# Как часто клиент обновляет подписку (часы).
+sub_update_hours() { local h; h=$(node_get SUB_UPDATE_HOURS); [[ "$h" =~ ^[0-9]+$ ]] || h=12; echo "$h"; }
+
+# Подпись ключа по шаблону для конкретного юзера.
+render_tag() {   # user
+    local u="$1" t; t=$(sub_tag_tmpl)
+    t=${t//\{user\}/$u}
+    t=${t//\{label\}/$(node_label)}
+    t=${t//\{name\}/$(node_name)}
+    printf '%s' "$t"
+}
+
 # ---- Релей (фронт-сервер, реально прячет IP ноды) ----
 # Релей — отдельный дешёвый VPS. Клиенты/DNS видят IP релея, релей форвардит
 # трафик (UDP Hysteria + TCP 80/443) на скрытую ноду. dig покажет IP релея.
@@ -200,7 +219,7 @@ publish_manifest() {
     : > "$tmp"
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
-        printf '%s\t%s\n' "$u" "$(build_user_link "$u" "$p" "$ip" "$port" "$obfs" "$sni" "${u}@${node}")" >> "$tmp"
+        printf '%s\t%s\n' "$u" "$(build_user_link "$u" "$p" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$u")")" >> "$tmp"
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/manifest"
     secure_web_files
@@ -228,7 +247,7 @@ regen_subscriptions() {
         [ -n "$token" ] || continue   # без токена не пишем (иначе путь = каталог sub/)
         lp=$(get_user_password "$user")
         {
-            [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "${user}@${node}"; echo; }
+            [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
             [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
                 | awk -F'\t' -v u="$user" '$1==u{print $2}'
         } | grep -v '^$' | awk '
@@ -310,6 +329,12 @@ setup_caddy() {
         bind_line="    bind ${bind_ip}"
     fi
 
+    # Оформление подписки: название профиля (base64) и интервал обновления —
+    # клиенты (Hiddify и др.) читают эти заголовки и показывают их пользователю.
+    local title_b64 upd
+    title_b64=$(printf '%s' "$(sub_title)" | base64 -w0 2>/dev/null)
+    upd=$(sub_update_hours)
+
     # Бэкап текущего конфига — чтобы при ошибке не уронить уже работающий Caddy.
     bak=""
     [ -f "$CADDYFILE" ] && { bak=$(mktemp); cp -f "$CADDYFILE" "$bak"; }
@@ -337,6 +362,10 @@ ${bind_line}
         file_server
     }
     handle /sub/* {
+        header Content-Type "text/plain; charset=utf-8"
+        header profile-title "base64:${title_b64}"
+        header profile-update-interval "${upd}"
+        header profile-web-page-url "https://${domain}/"
         file_server
     }
     handle {

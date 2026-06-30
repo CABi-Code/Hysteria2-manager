@@ -812,6 +812,7 @@ subscription_menu() {
         echo "  9. 🛡  Домен подключения в ссылке (скрыть голый IP)"
         echo " 10. 🛰  Релей (реально спрятать IP ноды через фронт-VPS)"
         echo " 11. 🔢 Выбрать IP ноды (если у сервера несколько IP)"
+        echo " 12. 🎨 Оформление подписки (название, метки серверов)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -1149,6 +1150,40 @@ subscription_menu() {
                 fi
                 sub_refresh
                 pause
+                ;;
+            12)
+                while true; do
+                    clear
+                    echo "  🎨 Оформление подписки (что видит пользователь)"
+                    echo "  ──────────────────────────────────────────────────────"
+                    echo "  Название профиля : $(sub_title)"
+                    echo "  Метка этой ноды  : $(node_label)"
+                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name})"
+                    echo "  Интервал обновл. : каждые $(sub_update_hours) ч"
+                    echo ""
+                    echo "  Пример подписи ключа этой ноды: $(render_tag 'username')"
+                    echo ""
+                    echo "  1. Название профиля"
+                    echo "  2. Метка ноды (можно с эмодзи/флагом, напр. «🇩🇪 Германия-1»)"
+                    echo "  3. Шаблон подписи ключа"
+                    echo "  4. Интервал обновления (часы)"
+                    echo "  0. Назад"
+                    local ed; ask ed "  Выберите: "
+                    case "$ed" in
+                        1) local v; ask v "  Название профиля: "; [ -n "$v" ] && node_set SUB_TITLE "$v" ;;
+                        2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
+                        3) echo "    Примеры: {label}   |   {label} · {user}   |   {name} ({user})"
+                           local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; node_set SUB_TAG_TMPL "$v"; [ -z "$v" ] && sed -i '/^SUB_TAG_TMPL=$/d' "$NODE_CONF" 2>/dev/null ;;
+                        4) local v; ask v "  Интервал обновления, часов (напр. 12): "; [[ "$v" =~ ^[0-9]+$ ]] && node_set SUB_UPDATE_HOURS "$v" || echo "  ❌ Нужно число" ;;
+                        0) break ;;
+                        *) echo "  ❌ Неверный выбор"; sleep 1; continue ;;
+                    esac
+                    # Применяем: метки → пересборка подписок; заголовки → перенастройка Caddy.
+                    sub_refresh
+                    setup_caddy >/dev/null 2>&1
+                    echo "  ✅ Применено."
+                    sleep 1
+                done
                 ;;
             0) return ;;
             *)
