@@ -28,7 +28,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry users cron migration ui)
+_required_libs=(config deps api traffic ip_tracking online expiry users cron migration subscription cluster ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -70,6 +70,19 @@ if [ "$1" = "--collect" ]; then
     exit 0
 fi
 
+if [ "$1" = "--cluster-sync" ]; then
+    # Периодический обмен ключами с пирами + пересборка подписок (cron).
+    cluster_sync
+    exit 0
+fi
+
+if [ "$1" = "--online-sync" ]; then
+    # Частый обмен онлайном + применение лимита устройств по кластеру (cron, 1 мин).
+    setup_stats_api
+    cluster_online_sync
+    exit 0
+fi
+
 # === ИНИЦИАЛИЗАЦИЯ ===
 
 migrate_auth
@@ -79,6 +92,16 @@ collect_traffic
 collect_ips
 check_expired_users
 setup_cron
+
+# Самовосстановление подписки: если она настроена, но Caddy лежит или его конфиг
+# битый — открываем порты и пересобираем конфиг автоматически (без действий юзера).
+if sub_enabled; then
+    ensure_ports_open
+    if ! systemctl is-active --quiet caddy 2>/dev/null \
+       || ! caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null; then
+        setup_caddy >/dev/null 2>&1
+    fi
+fi
 
 CACHED_IP=$(get_ip)
 CACHED_PORT=$(get_port)
@@ -118,6 +141,14 @@ while true; do
         echo "║ SNI / Маскировка: $CACHED_SNI"
         echo "║ OBFS-пароль     : $(echo "$CACHED_OBFS" | cut -c1-10)..."
         echo "║ Пользователей   : $total_count (активных: $active_count, онлайн: $online_count)"
+        if sub_enabled; then
+            cluster_nodes=$(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9'); cluster_nodes=${cluster_nodes:-1}
+            dev_limit=$(get_device_limit)
+            [ "$dev_limit" -gt 0 ] 2>/dev/null && limit_str=", лимит устройств: $dev_limit" || limit_str=""
+            echo "║ Подписка        : 🟢 нода «$(node_name)», нод в кластере: $cluster_nodes$limit_str"
+        else
+            echo "║ Подписка        : ⚪ не настроена (Настройки → 4)"
+        fi
         echo "╚══════════════════════════════════════════════════════════════╝"
         if is_restart_pending; then
             echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria (Настройки → 2)"
@@ -183,6 +214,20 @@ while true; do
 
             echo "  ✅ Пользователь $USERNAME добавлен (применено сразу, без перезапуска)"
 
+            # Локально или на весь кластер? (только если подписка/кластер настроены)
+            if sub_enabled; then
+                echo ""
+                echo "  Где завести пользователя?"
+                echo "    1. Только на этой ноде (по умолчанию)"
+                echo "    2. На всех нодах кластера (появится на остальных автоматически)"
+                ask SCOPE "  Выбор (1/2): "
+                if [ "$SCOPE" = "2" ]; then
+                    cluster_share_user "$USERNAME"
+                    echo "  🌐 Помечен как кластерный. На других нодах появится в течение ~5 мин"
+                    echo "     (с собственным паролем там; в подписке соберутся ключи со всех нод)."
+                fi
+            fi
+
             ask EXP_DAYS "  Срок действия в днях от сегодня (Enter — без срока): "
             if [[ "$EXP_DAYS" =~ ^[0-9]+$ ]] && [ "$EXP_DAYS" -gt 0 ]; then
                 EXP_DATE=$(days_to_date "$EXP_DAYS")
@@ -192,13 +237,24 @@ while true; do
                 fi
             fi
 
-            LINK="hysteria2://${USERNAME}:${PASSWORD}@${CACHED_IP}:${CACHED_PORT}/?obfs=salamander&obfs-password=${CACHED_OBFS}&sni=${CACHED_SNI}&insecure=1#${USERNAME}"
+            LINK=$(build_user_link "$USERNAME" "$PASSWORD" "$(link_host)" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
             echo ""
             echo "  🔗 ГОТОВАЯ ССЫЛКА:"
             echo "  $LINK"
             echo ""
             echo "  💡 Hiddify, Nekobox, Streisand и т.д."
             echo "  ✅ Клиент может подключаться прямо сейчас."
+
+            # Если настроена подписка — обновляем её и показываем единую ссылку,
+            # которая соберёт ключи этого юзера со всех серверов кластера.
+            if sub_enabled; then
+                sub_refresh
+                echo ""
+                echo "  🌐 ССЫЛКА-ПОДПИСКА (все серверы, автообновление):"
+                echo "  $(subscription_url "$USERNAME")"
+                echo "  ℹ️  Заведите этого юзера тем же именем на других нодах —"
+                echo "      их ключи появятся в этой подписке автоматически."
+            fi
             pause "  Enter для возврата..."
             ;;
 

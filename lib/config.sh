@@ -19,6 +19,9 @@ DATA_DIR="/etc/hysteria/manager"
 STATS_FILE="$DATA_DIR/stats.dat"
 IPS_FILE="$DATA_DIR/ips.dat"
 EXPIRY_FILE="$DATA_DIR/expiry.dat"
+# Когда срок действия юзера был выставлен (user|unixts) — для разрешения
+# конфликтов при синхронизации срока по кластеру: «последнее изменение выигрывает».
+EXPIRY_TS_FILE="$DATA_DIR/expiry_ts.dat"
 DISABLED_FILE="$DATA_DIR/disabled.dat"
 LAST_LOG_TS="$DATA_DIR/last_log_ts"
 API_SECRET_FILE="$DATA_DIR/api_secret"
@@ -35,6 +38,25 @@ RESTART_PENDING_FILE="$DATA_DIR/restart_pending"
 # пользователя применяется МГНОВЕННО, без рестарта сервера.
 USERS_DB="$DATA_DIR/users.db"
 AUTH_SCRIPT="$DATA_DIR/hysteria-auth.sh"
+
+# ====================== ПОДПИСКА / КЛАСТЕР ======================
+# Единая подписка: клиент добавляет ссылку https://<домен>/sub/<token>, а нода
+# отдаёт base64-список всех ключей hysteria2:// этого юзера со всех серверов
+# кластера. Раздаёт статику Caddy (авто-HTTPS), менеджер лишь перегенерирует
+# файлы. См. lib/subscription.sh и lib/cluster.sh.
+NODE_CONF="$DATA_DIR/node.conf"            # NODE_NAME / NODE_HOST(домен) / WEBROOT
+CLUSTER_CONF="$DATA_DIR/cluster.conf"      # реестр пиров: строки «name|host»
+CLUSTER_SECRET_FILE="$DATA_DIR/cluster.secret"  # общий секрет кластера (chmod 600)
+SUBTOKENS_DB="$DATA_DIR/subtokens.db"      # «user:token» — секрет подписки юзера
+CLUSTER_USERS_FILE="$DATA_DIR/cluster_users"    # имена «кластерных» юзеров
+WEBROOT="/var/www/hy2sub"                   # корень статики Caddy (sub/ и cluster/)
+                                            # отдельно от DATA_DIR: его читает caddy, не hysteria
+PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
+CADDYFILE="/etc/caddy/Caddyfile"
+# Лимит одновременных подключений на ОДНУ подписку по ВСЕМУ кластеру (0 = без
+# лимита). Не даёт раздать одну подписку на десяток устройств через разные ноды.
+SUB_LIMIT_FILE="$DATA_DIR/device_limit"
+
 API_PORT=25580
 PAGE_SIZE=10
 # Интервал автообновления интерактивных меню (секунды)
