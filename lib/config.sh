@@ -19,6 +19,9 @@ DATA_DIR="/etc/hysteria/manager"
 STATS_FILE="$DATA_DIR/stats.dat"
 IPS_FILE="$DATA_DIR/ips.dat"
 EXPIRY_FILE="$DATA_DIR/expiry.dat"
+# Когда срок действия юзера был выставлен (user|unixts) — для разрешения
+# конфликтов при синхронизации срока по кластеру: «последнее изменение выигрывает».
+EXPIRY_TS_FILE="$DATA_DIR/expiry_ts.dat"
 DISABLED_FILE="$DATA_DIR/disabled.dat"
 LAST_LOG_TS="$DATA_DIR/last_log_ts"
 API_SECRET_FILE="$DATA_DIR/api_secret"

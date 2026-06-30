@@ -287,19 +287,26 @@ user_action_menu() {
                     echo "  Срок действия не установлен."
                 fi
                 ask new_days "  Срок в днях от сегодня (0 или 'нет' — снять): "
+                local _changed=0
                 if [ "$new_days" = "нет" ] || [ "$new_days" = "0" ]; then
-                    remove_user_expiry "$user"
+                    remove_user_expiry "$user"; _changed=1
                     echo "  ✅ Срок действия снят"
                 elif [[ "$new_days" =~ ^[0-9]+$ ]]; then
                     new_date=$(days_to_date "$new_days")
                     if [ -n "$new_date" ]; then
-                        set_user_expiry "$user" "$new_date"
+                        set_user_expiry "$user" "$new_date"; _changed=1
                         echo "  ✅ Срок действия: $new_date (через $new_days дн.)"
                     else
                         echo "  ❌ Не удалось вычислить дату"
                     fi
                 else
                     echo "  ❌ Введите число дней"
+                fi
+                # Для кластерного юзера срок влияет на всю подписку — разносим сразу.
+                if [ "$_changed" = 1 ] && sub_enabled && is_cluster_user "$user"; then
+                    echo "  🌐 Юзер кластерный — синхронизирую срок на все ноды..."
+                    cluster_sync >/dev/null 2>&1
+                    echo "  ✅ Срок применён ко всей подписке (на пирах — в течение ~5 мин)."
                 fi
                 pause
                 need_clear=1
