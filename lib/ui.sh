@@ -787,7 +787,7 @@ subscription_menu() {
             if [ -n "$conn" ]; then
                 echo "  В ссылке  : домен подключения $conn (вместо IP)"
             else
-                echo "  В ссылке  : IP сервера $(get_ip) (домен не задан — пункт 9)"
+                echo "  В ссылке  : IP ноды $(node_ip) (домен не задан — пункт 9)"
             fi
         else
             echo "  Состояние : ⚪ не настроена"
@@ -811,6 +811,7 @@ subscription_menu() {
         echo "  8. 🩺 Диагностика подписки"
         echo "  9. 🛡  Домен подключения в ссылке (скрыть голый IP)"
         echo " 10. 🛰  Релей (реально спрятать IP ноды через фронт-VPS)"
+        echo " 11. 🔢 Выбрать IP ноды (если у сервера несколько IP)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -831,18 +832,19 @@ subscription_menu() {
                 # Let's Encrypt не подтвердит владение и сертификата не будет.
                 echo "  ⏳ Проверяю DNS для $domain ..."
                 domain_points_here "$domain"; rc=$?
+                local _locals; _locals=$(list_local_ips | tr '\n' ' ')
                 if [ "$rc" -eq 0 ]; then
-                    echo "  ✅ DNS: $domain → $(get_ip) (этот сервер)"
+                    echo "  ✅ DNS: $domain → $(resolve_domain "$domain" | tr '\n' ' ')(этот сервер)"
                 elif [ "$rc" -eq 2 ]; then
                     echo "  ❌ Домен $domain не резолвится."
-                    echo "     Создайте A-запись $domain → $(get_ip) и дайте DNS распространиться."
+                    echo "     Создайте A-запись $domain → один из IP: ${_locals}"
                     local c; ask c "  Всё равно продолжить (сертификат пока не выпустится)? (да/нет): "
                     is_yes "$c" || { echo "  Отменено."; pause; continue; }
                 else
                     echo "  ⚠️  $domain резолвится НЕ на этот сервер."
                     echo "     Адрес(а) домена: $(resolve_domain "$domain" | tr '\n' ' ')"
-                    echo "     Этот сервер:     $(get_ip)"
-                    echo "     Let's Encrypt не выдаст сертификат, пока A-запись не указывает сюда."
+                    echo "     Локальные IP сервера: ${_locals}"
+                    echo "     Let's Encrypt не выдаст сертификат, пока A-запись не указывает на один из них."
                     local c; ask c "  Всё равно продолжить? (да/нет): "
                     is_yes "$c" || { echo "  Отменено."; pause; continue; }
                 fi
@@ -1041,15 +1043,15 @@ subscription_menu() {
                 elif ! valid_domain "$nd"; then
                     echo "  ❌ «$nd» не похоже на домен."
                 else
-                    local ph rc2
+                    local ph
                     ph=$(resolve_domain "$nd")
-                    if printf '%s\n' "$ph" | grep -qxF "$(get_ip)"; then
-                        echo "  ✅ DNS: $nd → $(get_ip) (этот сервер, DNS-only — то, что нужно)."
+                    if domain_points_here "$nd"; then
+                        echo "  ✅ DNS: $nd → $(printf '%s' "$ph" | tr '\n' ' ')(этот сервер, DNS-only — то, что нужно)."
                     elif [ -z "$ph" ]; then
-                        echo "  ⚠️ $nd пока не резолвится. Создайте A-запись $nd → $(get_ip) (DNS-only)."
+                        echo "  ⚠️ $nd пока не резолвится. Создайте A-запись $nd → один из: $(list_local_ips | tr '\n' ' ')(DNS-only)."
                     else
-                        echo "  ⚠️ $nd резолвится на $(printf '%s' "$ph" | tr '\n' ' ')— НЕ на этот сервер ($(get_ip))."
-                        echo "     Если это IP Cloudflare (оранжевое облако) — VPN не подключится. Нужен DNS-only."
+                        echo "  ⚠️ $nd резолвится на $(printf '%s' "$ph" | tr '\n' ' ')— НЕ на этот сервер."
+                        echo "     Локальные IP: $(list_local_ips | tr '\n' ' '). Если это IP Cloudflare (оранжевое облако) — VPN не подключится."
                     fi
                     node_set CONN_HOST "$nd"
                     sub_refresh
@@ -1062,7 +1064,7 @@ subscription_menu() {
                 echo "  🛰  РЕЛЕЙ — реально прячет IP ноды"
                 echo "  ──────────────────────────────────────────────────────"
                 echo "  Релей — отдельный дешёвый VPS. Клиенты видят IP РЕЛЕЯ, он"
-                echo "  форвардит трафик на эту (скрытую) ноду $(get_ip)."
+                echo "  форвардит трафик на эту (скрытую) ноду $(node_ip)."
                 echo "  В ссылке будет адрес релея; dig покажет релей, не ноду."
                 echo ""
                 echo "  ⚠️ Минус: нода будет видеть всех клиентов с одного IP (релея) —"
@@ -1101,6 +1103,51 @@ subscription_menu() {
                 echo "  Показать содержимое скрипта сейчас? (да/нет): "
                 local sc; ask sc ""
                 if is_yes "$sc"; then echo ""; sed 's/^/    /' "$rscript"; fi
+                pause
+                ;;
+            11)
+                clear
+                echo "  🔢 Выбор IP ноды (Caddy сядет на него)"
+                echo "  ──────────────────────────────────────────────────────"
+                echo "  Если у сервера несколько IP и на одном из них заняты порты"
+                echo "  (nginx и т.п.), укажите свободный — Caddy привяжется к нему."
+                echo ""
+                local -a ips_arr=(); local k=0 cur
+                cur=$(node_ip)
+                while IFS= read -r oneip; do
+                    [ -n "$oneip" ] || continue
+                    k=$((k+1)); ips_arr[$k]="$oneip"
+                    local mark=""; [ "$oneip" = "$cur" ] && mark="  ← сейчас"
+                    local ph; ph=$(port_holder 443 "$oneip"); ph=${ph%%|*}
+                    printf "    %d. %-18s %s%s\n" "$k" "$oneip" "${ph:+занят 443: $ph}" "$mark"
+                done < <(list_local_ips)
+                [ "$k" -eq 0 ] && { echo "    Не удалось определить локальные IP."; pause; continue; }
+                echo "    0. Авто (отвязать от конкретного IP)"
+                echo ""
+                local pick; ask pick "  Выберите IP: "
+                if [ "$pick" = "0" ]; then
+                    node_set NODE_IP ""
+                    sed -i '/^NODE_IP=$/d' "$NODE_CONF" 2>/dev/null
+                    echo "  ✅ Авто-режим."
+                elif [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "$k" ]; then
+                    node_set NODE_IP "${ips_arr[$pick]}"
+                    echo "  ✅ IP ноды: ${ips_arr[$pick]}"
+                else
+                    echo "  ❌ Неверный выбор."; pause; continue
+                fi
+                echo "  ⏳ Пересобираю Caddy на выбранном IP..."
+                ensure_ports_open
+                if setup_caddy >/dev/null 2>&1; then
+                    echo "  ✅ Caddy перезапущен. Жду сертификат..."
+                    if wait_cert "$(node_host)" 15; then
+                        echo "  ✅ Сертификат выдан (до $(cert_expiry "$(node_host)")). Подписка работает."
+                    else
+                        echo "  ⚠️  Сертификат пока не подтверждён — проверьте DNS на этот IP и порт 80."
+                    fi
+                else
+                    echo "  ❌ Caddy не поднялся — Диагностика (пункт 8) покажет причину."
+                fi
+                sub_refresh
                 pause
                 ;;
             0) return ;;

@@ -18,6 +18,43 @@ node_get() {
 node_host() { node_get NODE_HOST; }
 node_name() { local n; n=$(node_get NODE_NAME); echo "${n:-node}"; }
 
+# Все локальные «белые» IPv4 сервера (у VPS их может быть несколько).
+list_local_ips() {
+    if command -v ip >/dev/null 2>&1; then
+        ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+    else
+        hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9.]+$'
+    fi
+}
+
+# IP, который использует ИМЕННО эта нода: Caddy на него садится, он же идёт в
+# ссылку. Берём NODE_IP из node.conf (если задан и всё ещё локальный), иначе
+# авто (внешний get_ip). Важно при нескольких IP: на занятом nginx-ом IP Caddy
+# не поднять, поэтому используем свободный, на который указывает домен.
+node_ip() {
+    local saved
+    saved=$(node_get NODE_IP)
+    if [ -n "$saved" ] && list_local_ips | grep -qxF "$saved" 2>/dev/null; then
+        printf '%s' "$saved"; return
+    fi
+    get_ip
+}
+
+# Если домен ноды резолвится в один из ЛОКАЛЬНЫХ IP — фиксируем именно его как
+# NODE_IP (Caddy сядет туда, не конфликтуя с другим сервисом на другом IP).
+autoset_node_ip() {
+    local host dip locals
+    host=$(node_host); [ -n "$host" ] || return 1
+    locals=$(list_local_ips)
+    for dip in $(resolve_domain "$host" 2>/dev/null); do
+        if printf '%s\n' "$locals" | grep -qxF "$dip"; then
+            node_set NODE_IP "$dip"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Записывает node.conf (домен + имя ноды).
 # Устанавливает/обновляет одно поле node.conf, не трогая остальные.
 node_set() {   # key value
@@ -43,7 +80,7 @@ node_configure() {   # domain name
 link_host() {
     local h; h=$(node_get CONN_HOST)
     [ -n "$h" ] && { printf '%s' "$h"; return; }
-    get_ip
+    node_ip
 }
 
 # ---- Релей (фронт-сервер, реально прячет IP ноды) ----
@@ -55,7 +92,7 @@ relay_host() { node_get RELAY_HOST; }
 # путь к скрипту. Форвардит UDP-порт Hysteria и TCP 80/443 на реальную ноду.
 generate_relay_script() {
     local node_ip hyport out
-    node_ip=$(get_ip); hyport=$(get_port)
+    node_ip=$(node_ip); hyport=$(get_port)
     out="$DATA_DIR/relay-setup.sh"
     cat > "$out" <<EOF
 #!/bin/bash
@@ -261,6 +298,18 @@ setup_caddy() {
     secret=$(cluster_secret)
     mkdir -p "$(dirname "$CADDYFILE")" "$WEBROOT/sub" "$WEBROOT/cluster"
 
+    # Если домен указывает на один из локальных IP — фиксируем его как NODE_IP,
+    # чтобы при нескольких IP Caddy сел на нужный (свободный), а не на занятый.
+    autoset_node_ip 2>/dev/null || true
+
+    # Если у сервера несколько IP и наш IP — реально локальный, привязываем Caddy
+    # ИМЕННО к нему. Тогда другой сервис (nginx и т.п.) на другом IP не мешает.
+    local bind_ip bind_line=""
+    bind_ip=$(node_ip)
+    if [ "$(list_local_ips | grep -c .)" -gt 1 ] && list_local_ips | grep -qxF "$bind_ip" 2>/dev/null; then
+        bind_line="    bind ${bind_ip}"
+    fi
+
     # Бэкап текущего конфига — чтобы при ошибке не уронить уже работающий Caddy.
     bak=""
     [ -f "$CADDYFILE" ] && { bak=$(mktemp); cp -f "$CADDYFILE" "$bak"; }
@@ -271,7 +320,7 @@ setup_caddy() {
     cat > "$CADDYFILE" <<EOF
 ${domain} {
     root * ${WEBROOT}
-
+${bind_line}
     @cluster_noauth {
         path /cluster/*
         not header X-Cluster-Auth "${secret}"
@@ -337,24 +386,36 @@ ensure_ports_open() {
     return 0
 }
 
-# Слушается ли TCP-порт локально (Caddy на 80/443).
-port_listening() {
-    local p="$1"
+# Регэксп локального адреса для ss/netstat: либо конкретный ip:port, либо
+# wildcard (*/0.0.0.0/[::]):port (такой слушатель покрывает и наш ip).
+_addr_pat() {   # port [ip]
+    local p="$1" ip="$2"
+    if [ -n "$ip" ]; then
+        printf '(\\*|0\\.0\\.0\\.0|\\[::\\]|%s):%s$' "${ip//./\\.}" "$p"
+    else
+        printf ':%s$' "$p"
+    fi
+}
+
+# Слушается ли TCP-порт (опц. на конкретном ip). Caddy на 80/443.
+port_listening() {   # port [ip]
+    local pat; pat=$(_addr_pat "$1" "$2")
     if command -v ss >/dev/null 2>&1; then
-        ss -ltn 2>/dev/null | grep -qE ":${p}[[:space:]]"
+        ss -ltn 2>/dev/null | awk -v pat="$pat" '$4 ~ pat{f=1} END{exit !f}'
     elif command -v netstat >/dev/null 2>&1; then
-        netstat -ltn 2>/dev/null | grep -qE ":${p}[[:space:]]"
+        netstat -ltn 2>/dev/null | awk -v pat="$pat" '$4 ~ pat{f=1} END{exit !f}'
     else
         return 0
     fi
 }
 
-# Кто слушает TCP-порт. Печатает «процесс|pid|unit» (любое поле может быть пустым).
+# Кто слушает TCP-порт (опц. на конкретном ip). Печатает «процесс|pid|unit».
 # Требует root (ss -p) — менеджер работает от root.
-port_holder() {
-    local p="$1" line proc pid unit
+port_holder() {   # port [ip]
+    local pat line proc pid unit
     command -v ss >/dev/null 2>&1 || { printf '||'; return; }
-    line=$(ss -ltnp 2>/dev/null | awk -v p=":$p" '$4 ~ (p"$"){print; exit}')
+    pat=$(_addr_pat "$1" "$2")
+    line=$(ss -ltnp 2>/dev/null | awk -v pat="$pat" '$4 ~ pat{print; exit}')
     proc=$(printf '%s' "$line" | sed -nE 's/.*\(\("([^"]+)".*/\1/p')
     pid=$(printf '%s'  "$line" | sed -nE 's/.*pid=([0-9]+).*/\1/p')
     if [ -n "$pid" ] && [ -r "/proc/$pid/cgroup" ]; then
@@ -408,16 +469,29 @@ caddy_start_report() {
     [ -n "$reason" ] && echo "     Причина: $reason"
     case "$reason" in
         *"address already in use"*|*"bind:"*)
-            local cp; cp=$(printf '%s' "$reason" | grep -oE ':(80|443)\b' | tr -d ':' | head -1)
+            local cp nip; cp=$(printf '%s' "$reason" | grep -oE ':(80|443)\b' | tr -d ':' | head -1)
             [ -z "$cp" ] && cp=443
-            local h proc pid unit; h=$(port_holder "$cp")
+            # Несколько IP? Пробуем привязать Caddy к свободному (на который указывает домен).
+            if [ "$(list_local_ips | grep -c .)" -gt 1 ]; then
+                echo "     💡 У сервера несколько IP — пробую привязать Caddy к свободному..."
+                autoset_node_ip 2>/dev/null || true
+                setup_caddy >/dev/null 2>&1
+                if systemctl is-active --quiet caddy 2>/dev/null; then
+                    echo "  ✅ Caddy запущен на IP $(node_ip) (другой сервис на другом IP не мешает)."
+                    return 0
+                fi
+            fi
+            nip=$(node_ip)
+            local h proc pid unit; h=$(port_holder "$cp" "$nip")
             proc=${h%%|*}; pid=$(printf '%s' "$h" | cut -d'|' -f2); unit=${h##*|}
-            echo "     ⛔ Порт $cp/tcp уже занят: ${proc:-неизвестный процесс}${pid:+ (pid $pid)}${unit:+, сервис: $unit}"
+            echo "     ⛔ Порт ${nip}:$cp занят: ${proc:-неизвестный процесс}${pid:+ (pid $pid)}${unit:+, сервис: $unit}"
+            if [ "$(list_local_ips | grep -c .)" -gt 1 ]; then
+                echo "     Укажите свободный IP вручную: Подписка → 11 (Выбрать IP ноды),"
+                echo "     и убедитесь, что домен указывает на этот IP."
+            fi
             if [ -n "$unit" ]; then
-                echo "     Освободить порт: systemctl stop $unit   (или смените порт у того сервиса)"
+                echo "     Либо освободить порт: systemctl stop $unit (или смените его порт)."
                 DIAG_CONFLICT_UNIT="$unit"; DIAG_CONFLICT_PORT="$cp"; DIAG_CONFLICT_PROC="$proc"
-            else
-                echo "     Найдите процесс: ss -ltnp | grep :$cp   и освободите порт."
             fi
             ;;
         *"permission denied"*)
@@ -437,40 +511,43 @@ subscription_diagnose() {
         echo "  ⚪ Подписка не настроена (Настройки → Подписка → 1)."
         return 0
     fi
-    host=$(node_host); myip=$(get_ip)
-    echo "  Нода «$(node_name)» · домен $host · IP сервера $myip"
+    autoset_node_ip 2>/dev/null || true
+    host=$(node_host); myip=$(node_ip)
+    local alllocal; alllocal=$(list_local_ips | tr '\n' ' ')
+    echo "  Нода «$(node_name)» · домен $host"
+    echo "  IP ноды (Caddy): $myip   ·   Все IP сервера: ${alllocal:-?}"
     echo ""
 
-    # 1. DNS
+    # 1. DNS — принимаем ЛЮБОЙ локальный IP (у сервера их может быть несколько).
     ips=$(resolve_domain "$host")
     if [ -z "$ips" ]; then
-        echo "  ❌ DNS: $host не резолвится. Нужна A-запись $host → $myip."
-    elif printf '%s\n' "$ips" | grep -qxF "$myip"; then
-        echo "  ✅ DNS: $host → $myip (этот сервер)"
+        echo "  ❌ DNS: $host не резолвится. Нужна A-запись $host → один из: ${alllocal}"
+    elif domain_points_here "$host"; then
+        echo "  ✅ DNS: $host → $(printf '%s' "$ips" | tr '\n' ' ')(этот сервер)"
     else
-        echo "  ❌ DNS: $host → $(printf '%s' "$ips" | tr '\n' ' ')(НЕ этот сервер $myip)"
-        echo "        Похоже на CDN/прокси (Akamai/Cloudflare). Нужна ПРЯМАЯ A-запись на $myip,"
-        echo "        без проксирования — иначе Let's Encrypt не подтвердит домен."
+        echo "  ❌ DNS: $host → $(printf '%s' "$ips" | tr '\n' ' ')(НЕ этот сервер)"
+        echo "        Локальные IP сервера: ${alllocal}"
+        echo "        Нужна ПРЯМАЯ A-запись на один из них, без CDN/прокси (Akamai/Cloudflare)."
     fi
 
     # 2. Caddy: проверяем, при необходимости включаем/запускаем, объясняем сбой.
     echo "  ── Caddy ──"
     caddy_start_report
 
-    # 3. Порты — кто реально слушает (и не мешает ли кто-то Caddy).
-    echo "  ── Порты ──"
+    # 3. Порты — проверяем ИМЕННО на IP ноды (на другом IP может сидеть nginx — это ок).
+    echo "  ── Порты (на IP ноды $myip) ──"
     local p
     for p in 80 443; do
-        if port_listening "$p"; then
+        if port_listening "$p" "$myip"; then
             local h proc unit
-            h=$(port_holder "$p"); proc=${h%%|*}; unit=${h##*|}
+            h=$(port_holder "$p" "$myip"); proc=${h%%|*}; unit=${h##*|}
             if printf '%s' "$proc" | grep -qi caddy; then
-                echo "  ✅ Порт $p/tcp слушает Caddy"
+                echo "  ✅ Порт ${myip}:$p слушает Caddy"
             else
-                echo "  ⚠️  Порт $p/tcp занят НЕ Caddy: ${proc:-неизвестно}${unit:+ (сервис $unit)}"
+                echo "  ⚠️  Порт ${myip}:$p занят НЕ Caddy: ${proc:-неизвестно}${unit:+ (сервис $unit)}"
             fi
         else
-            echo "  ⚠️  Порт $p/tcp никто не слушает$( [ "$p" = 80 ] && echo " (нужен для выпуска сертификата)" )"
+            echo "  ⚠️  Порт ${myip}:$p никто не слушает$( [ "$p" = 80 ] && echo " (нужен для выпуска сертификата)" )"
         fi
     done
 
@@ -540,31 +617,38 @@ resolve_domain() {
     fi
 }
 
-# Указывает ли домен на этот сервер? 0 — да; 1 — резолвится, но не сюда; 2 — не резолвится.
+# Указывает ли домен на этот сервер? 0 — да; 1 — резолвится, но не сюда; 2 — не
+# резолвится. Учитываем ВСЕ локальные IP (у сервера их может быть несколько).
 domain_points_here() {
-    local d="$1" myip ips
-    myip=$(get_ip)
+    local d="$1" ips dip locals
     ips=$(resolve_domain "$d")
     [ -n "$ips" ] || return 2
-    printf '%s\n' "$ips" | grep -qxF "$myip" && return 0
+    locals=$(list_local_ips)
+    for dip in $ips; do
+        printf '%s\n' "$locals" | grep -qxF "$dip" && return 0
+    done
     return 1
 }
 
 # Уже выпущен публично-доверенный сертификат для домена? Бьёмся в локальный Caddy
-# (--resolve на 127.0.0.1) и проверяем цепочку СИСТЕМНЫМ доверием: внутренний
-# self-signed Caddy не пройдёт, настоящий Let's Encrypt/ZeroSSL — пройдёт. Это и
-# отличает реально привязанный домен от «белиберды».
+# (--resolve на IP ноды — Caddy может слушать НЕ на 127.0.0.1, а на конкретном IP)
+# и проверяем цепочку СИСТЕМНЫМ доверием: внутренний self-signed Caddy не пройдёт,
+# настоящий Let's Encrypt/ZeroSSL — пройдёт.
 cert_ready() {
-    local d="$1"
+    local d="$1" ip
     [ -n "$d" ] || return 1
-    curl -sS --max-time 8 --resolve "${d}:443:127.0.0.1" "https://${d}/" -o /dev/null 2>/dev/null
+    ip=$(node_ip)
+    curl -sS --max-time 8 --resolve "${d}:443:${ip}" "https://${d}/" -o /dev/null 2>/dev/null \
+        || curl -sS --max-time 8 --resolve "${d}:443:127.0.0.1" "https://${d}/" -o /dev/null 2>/dev/null
 }
 
 # Дата окончания текущего сертификата (для показа), пусто если нет.
 cert_expiry() {
-    local d="$1"
+    local d="$1" ip
     command -v openssl >/dev/null 2>&1 || return 0
-    echo | timeout 8 openssl s_client -connect 127.0.0.1:443 -servername "$d" 2>/dev/null \
+    ip=$(node_ip)
+    { echo | timeout 8 openssl s_client -connect "${ip}:443" -servername "$d" 2>/dev/null \
+        || echo | timeout 8 openssl s_client -connect "127.0.0.1:443" -servername "$d" 2>/dev/null; } \
         | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2
 }
 
