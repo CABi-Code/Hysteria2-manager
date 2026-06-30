@@ -102,6 +102,18 @@ render_tag() {   # user
     printf '%s' "$t"
 }
 
+# Глобальные (общие для всего кластера) настройки оформления. Метка ноды
+# (NODE_LABEL) сюда НЕ входит — она у каждой ноды своя.
+SETTING_KEYS="SUB_TITLE SUB_TAG_TMPL SUB_UPDATE_HOURS"
+
+# Установить общую настройку + метку времени (для синхронизации last-write-wins).
+setting_set() {   # key value [ts]
+    local k="$1" v="$2" ts="${3:-$(date +%s)}"
+    node_set "$k" "$v"
+    node_set "${k}_TS" "$ts"
+}
+setting_ts() { local t; t=$(node_get "${1}_TS"); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
+
 # ---- Релей (фронт-сервер, реально прячет IP ноды) ----
 # Релей — отдельный дешёвый VPS. Клиенты/DNS видят IP релея, релей форвардит
 # трафик (UDP Hysteria + TCP 80/443) на скрытую ноду. dig покажет IP релея.

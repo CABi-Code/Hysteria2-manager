@@ -1175,19 +1175,26 @@ subscription_menu() {
                     echo "  3. Шаблон подписи ключа"
                     echo "  4. Интервал обновления (часы)"
                     echo "  0. Назад"
-                    local ed; ask ed "  Выберите: "
+                    echo "  ℹ️ Название, шаблон и интервал — ОБЩИЕ для кластера (синхронизируются)."
+                    echo "     Метка ноды — своя у каждого сервера."
+                    local ed glob_changed=0; ask ed "  Выберите: "
                     case "$ed" in
-                        1) local v; ask v "  Название профиля: "; [ -n "$v" ] && node_set SUB_TITLE "$v" ;;
+                        1) local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
                         2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
                         3) echo "    Примеры: {label}   |   {label} · {user}   |   {name} ({user})"
-                           local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; node_set SUB_TAG_TMPL "$v"; [ -z "$v" ] && sed -i '/^SUB_TAG_TMPL=$/d' "$NODE_CONF" 2>/dev/null ;;
-                        4) local v; ask v "  Интервал обновления, часов (напр. 12): "; [[ "$v" =~ ^[0-9]+$ ]] && node_set SUB_UPDATE_HOURS "$v" || echo "  ❌ Нужно число" ;;
+                           local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; setting_set SUB_TAG_TMPL "$v"; glob_changed=1 ;;
+                        4) local v; ask v "  Интервал обновления, часов (напр. 12): "; if [[ "$v" =~ ^[0-9]+$ ]]; then setting_set SUB_UPDATE_HOURS "$v"; glob_changed=1; else echo "  ❌ Нужно число"; fi ;;
                         0) break ;;
                         *) echo "  ❌ Неверный выбор"; sleep 1; continue ;;
                     esac
                     # Применяем: метки → пересборка подписок; заголовки → перенастройка Caddy.
                     sub_refresh
                     setup_caddy >/dev/null 2>&1
+                    # Общие настройки — публикуем и разносим по кластеру сразу.
+                    if [ "$glob_changed" = 1 ]; then
+                        publish_cluster_settings
+                        [ -n "$(cluster_peers 2>/dev/null)" ] && { echo "  🌐 Синхронизирую оформление по кластеру..."; cluster_sync >/dev/null 2>&1; }
+                    fi
                     echo "  ✅ Применено."
                     sleep 1
                 done

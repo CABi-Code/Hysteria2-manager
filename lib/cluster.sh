@@ -44,7 +44,7 @@ cluster_remove_peer() {   # host
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
     if [ -n "$name" ]; then
-        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.expiry" 2>/dev/null
+        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" 2>/dev/null
     fi
     publish_peers_list
     regen_subscriptions
@@ -106,6 +106,7 @@ cluster_sync() {
     publish_subtokens
     publish_roster
     publish_cluster_expiry
+    publish_cluster_settings
 
     local host name data
     while IFS= read -r host; do
@@ -128,10 +129,14 @@ cluster_sync() {
         # сроки действия кластерных юзеров пира -> кэш (для синхронизации срока)
         data=$(cluster_call "$host" "/cluster/expiry")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.expiry"
+        # общие настройки оформления пира -> кэш
+        data=$(cluster_call "$host" "/cluster/settings")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.settings"
     done < <(cluster_peers)
 
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
+    cluster_apply_settings   # подтянуть общее оформление подписки
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
 }
@@ -179,6 +184,47 @@ cluster_share_user() {   # user
     roster_add "$1"
     publish_roster
     cluster_sync
+}
+
+# ---- Синхронизация ОФОРМЛЕНИЯ подписки (общее для кластера) ----
+# Название профиля, шаблон подписи, интервал обновления — одинаковые на всех
+# нодах. Значения в base64 (могут содержать пробелы/спецсимволы), last-write-wins.
+publish_cluster_settings() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    local tmp="$WEBROOT/cluster/settings.tmp" k v ts
+    : > "$tmp"
+    for k in $SETTING_KEYS; do
+        v=$(node_get "$k"); ts=$(setting_ts "$k")
+        printf '%s|%s|%s\n' "$k" "$(printf '%s' "$v" | base64 -w0)" "$ts" >> "$tmp"
+    done
+    mv "$tmp" "$WEBROOT/cluster/settings"
+    secure_web_files
+}
+
+cluster_apply_settings() {
+    sub_enabled || return 0
+    local merged
+    merged=$(
+        { [ -f "$WEBROOT/cluster/settings" ] && cat "$WEBROOT/cluster/settings"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.settings 2>/dev/null; } \
+        | awk -F'|' 'NF>=3 && $1!="" { if (($3+0) > (ts[$1]+0)) { ts[$1]=$3; v[$1]=$2 } }
+                     END { for (k in ts) printf "%s|%s|%s\n", k, v[k], ts[k] }'
+    )
+    [ -n "$merged" ] || return 0
+    local k b t localts changed=0
+    while IFS='|' read -r k b t; do
+        [ -n "$k" ] || continue
+        localts=$(setting_ts "$k")
+        [ "${t:-0}" -gt "${localts:-0}" ] 2>/dev/null || continue
+        setting_set "$k" "$(printf '%s' "$b" | base64 -d 2>/dev/null)" "$t"
+        changed=1
+    done <<< "$merged"
+    if [ "$changed" = 1 ]; then
+        setup_caddy >/dev/null 2>&1   # обновить заголовки (title/interval)
+        sub_refresh                   # обновить подписи ключей (template)
+        publish_cluster_settings
+    fi
 }
 
 # ---- Синхронизация СРОКА ДЕЙСТВИЯ кластерных юзеров ----
