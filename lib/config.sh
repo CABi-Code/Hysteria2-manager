@@ -49,6 +49,11 @@ CLUSTER_CONF="$DATA_DIR/cluster.conf"      # реестр пиров: строк
 CLUSTER_SECRET_FILE="$DATA_DIR/cluster.secret"  # общий секрет кластера (chmod 600)
 SUBTOKENS_DB="$DATA_DIR/subtokens.db"      # «user:token» — секрет подписки юзера
 CLUSTER_USERS_FILE="$DATA_DIR/cluster_users"    # имена «кластерных» юзеров
+# Жизненный цикл кластерного юзера как ТОЧКА ПРАВДЫ (last-write-wins по ts):
+# строки «user|state|ts», state ∈ active|disabled|deleted. Нода, на которой
+# произошло действие, бампает ts=now и публикует — остальные применяют у себя.
+# deleted — это tombstone: не даёт roster/манифесту пира воскресить удалённого.
+CLUSTER_STATE_FILE="$DATA_DIR/cluster_state.dat"
 WEBROOT="/var/www/hy2sub"                   # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров

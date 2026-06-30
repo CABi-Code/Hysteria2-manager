@@ -7,6 +7,63 @@ declare -a USER_LIST_ARRAY
 USER_LIST_PAGES=1
 USER_LIST_TOTAL=0
 
+# ====================== СНИМОК СТАТИСТИКИ ДЛЯ СПИСКА ======================
+# Раньше таблица на КАЖДУЮ перерисовку (раз в 2с) для КАЖДОГО юзера дёргала
+# jq/awk/grep по многу раз (online, трафик, скорость, суммы по пирам, IP, срок),
+# плюс _peer_stat_sum гонял awk по всем файлам пиров на каждого юзера и каждую
+# колонку. При 15 юзерах это сотни процессов на кадр — отсюда «подвисания».
+# build_user_stats_snapshot читает каждый источник РОВНО ОДИН раз в ассоциативные
+# массивы; рендер берёт готовые значения без новых процессов.
+declare -gA SNAP_ON SNAP_DIS SNAP_LTX SNAP_LRX SNAP_LSTX SNAP_LSRX
+declare -gA PEER_ON PEER_TX PEER_RX PEER_STX PEER_SRX
+declare -gA SNAP_IPC SNAP_EXP
+
+build_user_stats_snapshot() {
+    SNAP_ON=();  SNAP_DIS=(); SNAP_LTX=(); SNAP_LRX=(); SNAP_LSTX=(); SNAP_LSRX=()
+    PEER_ON=();  PEER_TX=();  PEER_RX=();  PEER_STX=(); PEER_SRX=()
+    SNAP_IPC=(); SNAP_EXP=()
+    local u a b c d e cnt
+
+    # Онлайн — один проход jq по кэшу /online.
+    while IFS=$'\t' read -r u a; do
+        [ -n "$u" ] && SNAP_ON["$u"]="$a"
+    done < <(printf '%s' "${CACHED_ONLINE:-{}}" | jq -r 'to_entries[]|"\(.key)\t\(.value)"' 2>/dev/null)
+
+    # Отключённые.
+    while IFS='|' read -r u _; do [ -n "$u" ] && SNAP_DIS["$u"]=1; done < "$DISABLED_FILE"
+    # Локальные трафик и скорость.
+    while IFS='|' read -r u a b; do [ -n "$u" ] && { SNAP_LTX["$u"]=$a; SNAP_LRX["$u"]=$b; }; done < "$STATS_FILE"
+    while IFS='|' read -r u a b; do [ -n "$u" ] && { SNAP_LSTX["$u"]=$a; SNAP_LSRX["$u"]=$b; }; done < "$SPEED_FILE"
+    # Срок действия.
+    while IFS='|' read -r u a; do [ -n "$u" ] && SNAP_EXP["$u"]=$a; done < "$EXPIRY_FILE"
+
+    # Суммы по пирам — ОДИН awk на все *.stats (а не на каждого юзера × колонку).
+    if [ -d "$PEERS_DIR" ] && compgen -G "$PEERS_DIR/*.stats" >/dev/null 2>&1; then
+        while IFS=$'\t' read -r u a b c d e; do
+            [ -n "$u" ] || continue
+            PEER_ON["$u"]=$a; PEER_TX["$u"]=$b; PEER_RX["$u"]=$c; PEER_STX["$u"]=$d; PEER_SRX["$u"]=$e
+        done < <(awk -F'\t' '{on[$1]+=$2; tx[$1]+=$3; rx[$1]+=$4; stx[$1]+=$5; srx[$1]+=$6}
+                             END{for(k in on) printf "%s\t%s\t%s\t%s\t%s\t%s\n",k,on[k],tx[k],rx[k],stx[k],srx[k]}' \
+                             "$PEERS_DIR"/*.stats 2>/dev/null)
+    fi
+
+    # Уникальные IP по кластеру (локально + кэши пиров) — один проход awk.
+    while read -r cnt u; do [ -n "$u" ] && SNAP_IPC["$u"]=$cnt; done < <(
+        { cut -d'|' -f1,2 "$IPS_FILE" 2>/dev/null
+          [ -d "$PEERS_DIR" ] && compgen -G "$PEERS_DIR/*.ips" >/dev/null 2>&1 && cut -d'|' -f1,2 "$PEERS_DIR"/*.ips 2>/dev/null; } \
+        | awk -F'|' 'NF>=2 && $1!="" && !seen[$1"|"$2]++{cnt[$1]++} END{for(k in cnt) print cnt[k], k}'
+    )
+}
+
+# Аксессоры снимка (без процессов). Кластерные = локальные + суммы по пирам.
+snap_disabled() { [ -n "${SNAP_DIS[$1]:-}" ]; }
+snap_online()   { echo "${SNAP_ON[$1]:-0}"; }
+snap_conn()     { echo $(( ${SNAP_ON[$1]:-0}   + ${PEER_ON[$1]:-0} )); }
+snap_tx()       { echo $(( ${SNAP_LTX[$1]:-0}  + ${PEER_TX[$1]:-0} )); }
+snap_rx()       { echo $(( ${SNAP_LRX[$1]:-0}  + ${PEER_RX[$1]:-0} )); }
+snap_stx()      { echo $(( ${SNAP_LSTX[$1]:-0} + ${PEER_STX[$1]:-0} )); }
+snap_srx()      { echo $(( ${SNAP_LSRX[$1]:-0} + ${PEER_SRX[$1]:-0} )); }
+
 # ====================== ОТРИСОВКА БЕЗ МИГАНИЯ ======================
 # Раньше каждое автообновление делало `clear` — весь экран на миг гас, и
 # интерфейс «мигал». Теперь кадр печатается поверх предыдущего: курсор в
@@ -84,16 +141,19 @@ read_key() {
 # внутри группы — по имени. Активные клиенты оказываются вверху списка.
 load_user_list() {
     USER_LIST_ARRAY=()
+    build_user_stats_snapshot          # один раз готовим данные для всей таблицы
     local sorted
     sorted=$(
         get_all_users | while IFS= read -r u; do
             [ -z "$u" ] && continue
-            local key oc
-            if is_user_disabled "$u"; then
+            local key
+            # Сортировка по кластерному онлайну (юзер может быть онлайн на пире).
+            if snap_disabled "$u"; then
                 key=2
+            elif [ "$(snap_conn "$u")" -gt 0 ] 2>/dev/null; then
+                key=0
             else
-                oc=$(get_user_online_count "$u")
-                if [ "${oc:-0}" -gt 0 ] 2>/dev/null; then key=0; else key=1; fi
+                key=1
             fi
             printf '%s\t%s\n' "$key" "$u"
         done | sort -t$'\t' -k1,1n -k2,2
@@ -165,11 +225,12 @@ render_user_table() {
         local num=$((i + 1))
         local status status_wide
 
-        if is_user_disabled "$user"; then
+        # Все значения — из снимка (build_user_stats_snapshot), без новых процессов.
+        if snap_disabled "$user"; then
             status="🔴 ВЫКЛ"; status_wide=1
         else
             local oc
-            oc=$(get_user_online_count "$user")
+            oc=$(snap_online "$user")
             if [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
                 status="🟢 ON(${oc})"; status_wide=1
             else
@@ -180,19 +241,18 @@ render_user_table() {
         # Кластерный статус + суммарные трафик/скорость (если подписка включена).
         local cstatus cstatus_wide tx rx sp_tx sp_rx
         if [ "$_sub" = 1 ]; then
-            local cc ct cs
-            cc=$(cluster_user_connections "$user")
+            local cc
+            cc=$(snap_conn "$user")
             if [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
                 cstatus="🟢 ${cc}"; cstatus_wide=1
             else
                 cstatus="⚫ —"; cstatus_wide=1
             fi
-            ct=$(cluster_user_traffic "$user"); tx=${ct%% *}; rx=${ct##* }
-            cs=$(cluster_user_speed "$user");   sp_tx=${cs%% *}; sp_rx=${cs##* }
+            tx=$(snap_tx "$user"); rx=$(snap_rx "$user")
+            sp_tx=$(snap_stx "$user"); sp_rx=$(snap_srx "$user")
         else
-            local tl sp
-            tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
-            sp=$(get_user_speed "$user");   sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
+            tx=${SNAP_LTX[$user]:-0};  rx=${SNAP_LRX[$user]:-0}
+            sp_tx=${SNAP_LSTX[$user]:-0}; sp_rx=${SNAP_LSRX[$user]:-0}
         fi
 
         local traffic speed
@@ -204,8 +264,8 @@ render_user_table() {
         fi
 
         local ipc exp
-        ipc=$(get_user_ip_count "$user")
-        exp=$(expiry_cell "$(get_user_expiry "$user")")
+        ipc=${SNAP_IPC[$user]:-0}
+        exp=$(expiry_cell "${SNAP_EXP[$user]:-}")
 
         printf '  '
         print_cell "$num"     3  0 r;           printf ' '
@@ -247,8 +307,10 @@ user_action_menu() {
             1)
                 if is_user_disabled "$user"; then
                     enable_user "$user"
+                    cstate_mark "$user" active     # точка правды: разнести «включён»
                 else
                     disable_user "$user"
+                    cstate_mark "$user" disabled   # точка правды: разнести «отключён»
                 fi
                 refresh_online
                 offer_sync
@@ -317,26 +379,29 @@ user_action_menu() {
                 ;;
             6)
                 collect_ips
+                sub_enabled && publish_ips
                 echo ""
-                echo "  🌐 IP-адреса пользователя $user:"
+                echo "  🌐 IP-адреса пользователя $user (по всему кластеру):"
                 echo "  ────────────────────────────────────────────────────────"
+                # Агрегация локальных + IP с других нод (если есть подключения).
                 local ips
-                ips=$(get_user_ips "$user")
+                ips=$(cluster_user_ips "$user")
                 if [ -z "$ips" ]; then
                     echo "  Нет данных об IP-адресах."
+                    echo "  ℹ️  IP появляются после реальных подключений клиента к серверу."
                 else
-                    printf "  %-16s %-20s %-20s %s\n" "IP-адрес" "Первое подкл." "Последнее" "Раз"
-                    echo "$ips" | while IFS='|' read -r _ ip fs ls cnt; do
+                    printf "  %-16s %-17s %-17s %4s  %s\n" "IP-адрес" "Первое" "Последнее" "Раз" "Ноды"
+                    echo "$ips" | while IFS=$'\t' read -r ip fs ls cnt nodes; do
                         local fs_fmt ls_fmt
                         fs_fmt=$(date -d "@$fs" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "—")
                         ls_fmt=$(date -d "@$ls" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "—")
-                        printf "  %-16s %-20s %-20s %s\n" "$ip" "$fs_fmt" "$ls_fmt" "$cnt"
+                        printf "  %-16s %-17s %-17s %4s  %s\n" "$ip" "$fs_fmt" "$ls_fmt" "$cnt" "$nodes"
                     done
 
                     local total_ips recent_ips week_ago
-                    total_ips=$(echo "$ips" | wc -l)
+                    total_ips=$(echo "$ips" | grep -c '^')
                     week_ago=$(date -d '7 days ago' +%s 2>/dev/null || echo 0)
-                    recent_ips=$(echo "$ips" | awk -F'|' -v wa="$week_ago" '$4 >= wa' | wc -l)
+                    recent_ips=$(echo "$ips" | awk -F'\t' -v wa="$week_ago" '$3 >= wa' | grep -c '^')
                     echo ""
                     echo "  📊 Всего уникальных IP: $total_ips"
                     echo "  📊 Активных за 7 дней: $recent_ips"
