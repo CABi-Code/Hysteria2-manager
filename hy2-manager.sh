@@ -28,7 +28,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry users cron migration subscription cluster ui)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription cluster ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -67,7 +67,9 @@ if [ "$1" = "--collect" ]; then
     setup_stats_api
     collect_traffic
     collect_ips
+    collect_sub_ips    # IP по токенам подписки из access-лога Caddy
     publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
+    publish_subips     # разослать IP по токенам подписки
     exit 0
 fi
 
@@ -80,7 +82,9 @@ fi
 if [ "$1" = "--online-sync" ]; then
     # Частый обмен онлайном + применение лимита устройств по кластеру (cron, 1 мин).
     setup_stats_api
+    migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
     cluster_online_sync
+    write_authlimits    # снимок для жёсткой проверки (работает и на одиночной ноде)
     exit 0
 fi
 
@@ -88,10 +92,13 @@ fi
 
 migrate_auth
 migrate_to_command_auth
+migrate_device_limit        # старый device_limit -> общекластерный POOL_LIMIT
 setup_stats_api
 collect_traffic
 collect_ips
+collect_sub_ips
 check_expired_users
+write_authlimits            # снимок лимитов для скрипта аутентификации
 setup_cron
 
 # Самовосстановление подписки: если она настроена, но Caddy лежит или его конфиг
