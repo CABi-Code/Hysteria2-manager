@@ -44,7 +44,7 @@ cluster_remove_peer() {   # host
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
     if [ -n "$name" ]; then
-        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.state" "$PEERS_DIR/${name}.ips" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" 2>/dev/null
+        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.state" "$PEERS_DIR/${name}.ips" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" "$PEERS_DIR/${name}.userlimits" "$PEERS_DIR/${name}.subips" 2>/dev/null
     fi
     publish_peers_list
     regen_subscriptions
@@ -130,7 +130,9 @@ cluster_sync() {
     publish_cluster_state
     publish_cluster_expiry
     publish_cluster_settings
+    publish_cluster_userlimits
     publish_ips
+    publish_subips
 
     local host name data
     while IFS= read -r host; do
@@ -162,12 +164,19 @@ cluster_sync() {
         # общие настройки оформления пира -> кэш
         data=$(cluster_call "$host" "/cluster/settings")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.settings"
+        # персональные лимиты (кол-во устройств, жёсткая проверка) пира -> кэш
+        data=$(cluster_call "$host" "/cluster/userlimits")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.userlimits"
+        # IP по токенам подписки пира -> кэш (для «IP за неделю» по ссылке)
+        data=$(cluster_call "$host" "/cluster/subips")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.subips"
     done < <(cluster_peers)
 
     cluster_apply_state      # точка правды: вкл/выкл/удаление с других нод
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
     cluster_apply_settings   # подтянуть общее оформление подписки
+    cluster_apply_userlimits # подтянуть персональные лимиты устройств
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
 }
@@ -226,7 +235,7 @@ cluster_delete_local() {   # user
         sub_token_remove "$user"
     fi
     db_remove_user "$user"
-    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" 2>/dev/null
+    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" 2>/dev/null
     roster_remove "$user"
     api_post "/kick" "[\"$user\"]" &>/dev/null
 }
@@ -436,6 +445,52 @@ cluster_apply_expiry() {
     if [ "$changed" = 1 ]; then
         check_expired_users >/dev/null 2>&1
         publish_cluster_expiry
+    fi
+}
+
+# ---- Синхронизация ПЕРСОНАЛЬНЫХ ЛИМИТОВ (кол-во устройств + жёсткая проверка) ----
+# Публикует «user|devices|hardcheck|ts» для кластерных юзеров (у которых имя
+# одинаково на всех нодах). Разделитель «|», значения числовые — как срок действия.
+publish_cluster_userlimits() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    local tmp="$WEBROOT/cluster/userlimits.tmp" u d h t
+    : > "$tmp"
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        d=$(get_user_devices "$u"); h=$(get_user_hardcheck "$u"); t=$(userlimits_get_ts "$u")
+        printf '%s|%s|%s|%s\n' "$u" "$d" "$h" "$t" >> "$tmp"
+    done < <(cluster_users_all)
+    mv "$tmp" "$WEBROOT/cluster/userlimits"
+    chmod 640 "$WEBROOT/cluster/userlimits" 2>/dev/null || true
+    secure_web_files
+}
+
+# Применяет лимиты с других нод: для каждого юзера берём запись с наибольшим ts;
+# если новее локальной — применяем у себя (с тем же ts, чтобы не зациклить).
+# Изменение лимита на любой ноде влияет на всю подписку (последнее выигрывает).
+cluster_apply_userlimits() {
+    sub_enabled || return 0
+    local merged
+    merged=$(
+        { [ -f "$WEBROOT/cluster/userlimits" ] && cat "$WEBROOT/cluster/userlimits"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.userlimits 2>/dev/null; } \
+        | awk -F'|' 'NF>=4 && $1!="" { if (($4+0) > (ts[$1]+0)) { ts[$1]=$4; d[$1]=$2; h[$1]=$3 } }
+                     END { for (u in ts) printf "%s|%s|%s|%s\n", u, d[u], h[u], ts[u] }'
+    )
+    [ -n "$merged" ] || return 0
+    local u d h t localts changed=0
+    while IFS='|' read -r u d h t; do
+        [ -n "$u" ] || continue
+        [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        localts=$(userlimits_get_ts "$u")
+        [ "${t:-0}" -gt "${localts:-0}" ] 2>/dev/null || continue
+        set_user_limits "$u" "$d" "$h" "$t"
+        changed=1
+    done <<< "$merged"
+    if [ "$changed" = 1 ]; then
+        write_authlimits
+        publish_cluster_userlimits
     fi
 }
 

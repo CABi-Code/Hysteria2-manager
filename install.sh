@@ -53,7 +53,7 @@ CONFIG="/etc/hysteria/config.yaml"
 CERT_DIR="/etc/hysteria/certs"
 LOG_DIR="/var/log/hy2-manager"
 SERVICE="hysteria-server.service"
-MANAGER_LIBS=(config deps api traffic ip_tracking online expiry users cron migration subscription cluster ui)
+MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration subscription cluster ui)
 
 # === УТИЛИТА: скачивание файлов менеджера ===
 download_file() {

@@ -16,13 +16,18 @@ USER_LIST_TOTAL=0
 # массивы; рендер берёт готовые значения без новых процессов.
 declare -gA SNAP_ON SNAP_DIS SNAP_LTX SNAP_LRX SNAP_LSTX SNAP_LSRX
 declare -gA PEER_ON PEER_TX PEER_RX PEER_STX PEER_SRX
-declare -gA SNAP_IPC SNAP_EXP
+declare -gA SNAP_IPC SNAP_EXP SNAP_DEV SNAP_HC
+declare -g SNAP_POOL SNAP_NODE
 
 build_user_stats_snapshot() {
     SNAP_ON=();  SNAP_DIS=(); SNAP_LTX=(); SNAP_LRX=(); SNAP_LSTX=(); SNAP_LSRX=()
     PEER_ON=();  PEER_TX=();  PEER_RX=();  PEER_STX=(); PEER_SRX=()
-    SNAP_IPC=(); SNAP_EXP=()
+    SNAP_IPC=(); SNAP_EXP=(); SNAP_DEV=(); SNAP_HC=()
     local u a b c d e cnt
+
+    # Персональные лимиты устройств + глобальные лимиты (для символа ⚠️ и карточки).
+    while IFS='|' read -r u a b; do [ -n "$u" ] && { SNAP_DEV["$u"]=$a; SNAP_HC["$u"]=$b; }; done < "$USERLIMITS_FILE" 2>/dev/null
+    SNAP_POOL=$(get_device_limit); SNAP_NODE=$(get_node_limit)
 
     # Онлайн — один проход jq по кэшу /online.
     while IFS=$'\t' read -r u a; do
@@ -63,6 +68,23 @@ snap_tx()       { echo $(( ${SNAP_LTX[$1]:-0}  + ${PEER_TX[$1]:-0} )); }
 snap_rx()       { echo $(( ${SNAP_LRX[$1]:-0}  + ${PEER_RX[$1]:-0} )); }
 snap_stx()      { echo $(( ${SNAP_LSTX[$1]:-0} + ${PEER_STX[$1]:-0} )); }
 snap_srx()      { echo $(( ${SNAP_LSRX[$1]:-0} + ${PEER_SRX[$1]:-0} )); }
+
+# Эффективные лимиты из снимка (только builtins, без внешних процессов).
+snap_devices()  { local d=${SNAP_DEV[$1]:-1}; [[ "$d" =~ ^[0-9]+$ ]] && echo "$d" || echo 1; }
+snap_pool_cap() { local d; d=$(snap_devices "$1"); if [ "$d" -gt 0 ]; then echo "$d"; else echo "${SNAP_POOL:-0}"; fi; }
+snap_node_cap() {
+    local nl=${SNAP_NODE:-0} pc; pc=$(snap_pool_cap "$1")
+    [[ "$nl" =~ ^[0-9]+$ ]] || nl=0
+    if [ "$nl" -le 0 ]; then echo "$pc"; elif [ "$pc" -le 0 ]; then echo "$nl"
+    elif [ "$nl" -lt "$pc" ]; then echo "$nl"; else echo "$pc"; fi
+}
+# Превышен ли лимит: cluster_conn > pool_cap ИЛИ local_conn > node_cap.
+snap_over_limit() {   # user cluster_conn local_conn
+    local pc nc; pc=$(snap_pool_cap "$1"); nc=$(snap_node_cap "$1")
+    { [ "$pc" -gt 0 ] && [ "${2:-0}" -gt "$pc" ]; } 2>/dev/null && return 0
+    { [ "$nc" -gt 0 ] && [ "${3:-0}" -gt "$nc" ]; } 2>/dev/null && return 0
+    return 1
+}
 
 # ====================== ОТРИСОВКА БЕЗ МИГАНИЯ ======================
 # Раньше каждое автообновление делало `clear` — весь экран на миг гас, и
@@ -226,24 +248,28 @@ render_user_table() {
         local status status_wide
 
         # Все значения — из снимка (build_user_stats_snapshot), без новых процессов.
+        # Превышение лимита подключений заменяет символ онлайна на ⚠️.
+        local oc cc over=0
+        oc=$(snap_online "$user")
+        cc=$(snap_conn "$user")
+        if ! snap_disabled "$user" && snap_over_limit "$user" "$cc" "$oc"; then over=1; fi
+
         if snap_disabled "$user"; then
             status="🔴 ВЫКЛ"; status_wide=1
+        elif [ "$over" = 1 ]; then
+            status="⚠️ ON(${oc})"; status_wide=0   # ⚠️ = база+VS16: ${#} уже учитывает ширину
+        elif [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
+            status="🟢 ON(${oc})"; status_wide=1
         else
-            local oc
-            oc=$(snap_online "$user")
-            if [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
-                status="🟢 ON(${oc})"; status_wide=1
-            else
-                status="⚫ OFF"; status_wide=1
-            fi
+            status="⚫ OFF"; status_wide=1
         fi
 
         # Кластерный статус + суммарные трафик/скорость (если подписка включена).
         local cstatus cstatus_wide tx rx sp_tx sp_rx
         if [ "$_sub" = 1 ]; then
-            local cc
-            cc=$(snap_conn "$user")
-            if [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
+            if [ "$over" = 1 ]; then
+                cstatus="⚠️ ${cc}"; cstatus_wide=0   # ⚠️ = база+VS16: ширина уже учтена
+            elif [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
                 cstatus="🟢 ${cc}"; cstatus_wide=1
             else
                 cstatus="⚫ —"; cstatus_wide=1
@@ -508,7 +534,127 @@ user_action_menu() {
                 pause
                 need_clear=1
                 ;;
+            12)
+                user_devices_menu "$user"
+                need_clear=1
+                ;;
             0) return ;;
+        esac
+    done
+}
+
+# ====================== УСТРОЙСТВА И ССЫЛКИ ПОДПИСКИ ======================
+# Персональный лимит устройств (приоритетнее глобальных), жёсткая проверка,
+# доп. ссылки подписки со статистикой IP за неделю, ручной кик сессии.
+user_devices_menu() {
+    local user="$1"
+    while true; do
+        clear
+        refresh_online
+        local dev hc oc cc pc nc
+        dev=$(get_user_devices "$user"); hc=$(get_user_hardcheck "$user")
+        oc=$(get_user_online_count "$user")
+        pc=$(pool_cap "$user"); nc=$(node_cap "$user")
+        if sub_enabled; then cc=$(cluster_user_connections "$user"); else cc=$oc; fi
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  🔢 Устройства и ссылки — $user"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Кол-во устройств (лимит): $dev$([ "$dev" = "0" ] && echo "  (0 = глобальный POOL_LIMIT)")"
+        echo "  Эффективно: pool $([ "$pc" -gt 0 ] && echo "$pc" || echo "∞") · node $([ "$nc" -gt 0 ] && echo "$nc" || echo "∞")"
+        echo "  Подключений сейчас: $cc$(sub_enabled && echo " (кластер)")$([ "$oc" != "$cc" ] && echo " · $oc на этой ноде")"
+        user_over_limit "$user" "$cc" "$oc" && echo "  ⚠️  ПРЕВЫШЕНИЕ ЛИМИТА ПОДКЛЮЧЕНИЙ!"
+        echo "  Жёсткая проверка: $([ "$hc" = "1" ] && echo "🛡 ВКЛючена (лишние устройства не подключатся)" || echo "выключена")"
+        echo ""
+        if sub_enabled; then
+            echo "  🔗 Ссылки подписки (IP за 7 дней — уникальные скачивания):"
+            local -a LINK_TOKENS=(); local li=0 tok primary
+            primary=$(sub_token_for "$user")
+            while IFS= read -r tok; do
+                [ -n "$tok" ] || continue
+                li=$((li+1)); LINK_TOKENS[$li]="$tok"
+                local mark=""; [ "$tok" = "$primary" ] && mark=" (основная)"
+                printf "    %d. …%s%s  ·  IP/нед: %s\n" "$li" "${tok: -8}" "$mark" "$(link_week_ip_count "$tok")"
+            done < <(sub_tokens_all "$user")
+            [ "$li" -eq 0 ] && echo "    (нет — будет создана основная)"
+            echo ""
+        fi
+        echo "  1. ➕ Добавить устройство (лимит +1)"
+        echo "  2. ➖ Убрать устройство (лимит −1)"
+        echo "  3. #  Задать кол-во устройств числом"
+        echo "  4. 🛡 $([ "$hc" = "1" ] && echo "Выключить" || echo "Включить") жёсткую проверку"
+        echo "  5. ✂  Прервать сессию на ЭТОЙ ноде (кик)"
+        if sub_enabled; then
+            echo "  6. 🔗 Получить новую доп. ссылку подписки"
+            echo "  7. 🗑  Удалить доп. ссылку подписки"
+        fi
+        echo "  0. ↩  Назад"
+        echo ""
+        local ch; ask ch "  Выберите: "
+        case "$ch" in
+            1)
+                set_user_devices "$user" $(( dev + 1 ))
+                echo "  ✅ Кол-во устройств: $((dev+1))"
+                write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
+                pause ;;
+            2)
+                if [ "$dev" -le 0 ]; then echo "  Уже 0 (глобальный лимит)."; else
+                    set_user_devices "$user" $(( dev - 1 ))
+                    echo "  ✅ Кол-во устройств: $((dev-1))"
+                    write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
+                fi
+                pause ;;
+            3)
+                local nd; ask nd "  Кол-во устройств (0 = глобальный лимит): "
+                if [[ "$nd" =~ ^[0-9]+$ ]]; then
+                    set_user_devices "$user" "$nd"
+                    echo "  ✅ Кол-во устройств: $nd"
+                    write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
+                else echo "  ❌ Нужно число."; fi
+                pause ;;
+            4)
+                if [ "$hc" = "1" ]; then set_user_hardcheck "$user" 0; echo "  ✅ Жёсткая проверка выключена."
+                else set_user_hardcheck "$user" 1; echo "  ✅ Жёсткая проверка включена — новые устройства сверх лимита не подключатся."; fi
+                write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
+                pause ;;
+            5)
+                api_post "/kick" "[\"$user\"]" &>/dev/null
+                echo "  ✅ Сессии $user на этой ноде сброшены (кик)."
+                pause ;;
+            6)
+                if sub_enabled; then
+                    local newtok
+                    newtok=$(sub_link_add "$user")
+                    if [ -n "$newtok" ]; then
+                        sub_refresh
+                        echo "  ✅ Новая ссылка подписки:"
+                        echo "  https://$(node_host)/sub/$newtok"
+                        offer_sync
+                    else
+                        echo "  ❌ Лимит ссылок исчерпан (= кол-во устройств: $dev)."
+                        echo "     Сначала добавьте устройство (пункт 1)."
+                    fi
+                fi
+                pause ;;
+            7)
+                if sub_enabled; then
+                    if [ "${#LINK_TOKENS[@]}" -le 1 ]; then
+                        echo "  Нет доп. ссылок для удаления (основную удалить нельзя)."
+                    else
+                        local dsel; ask dsel "  Номер ссылки для удаления: "
+                        if [[ "$dsel" =~ ^[0-9]+$ ]] && [ -n "${LINK_TOKENS[$dsel]:-}" ]; then
+                            sub_link_remove "$user" "${LINK_TOKENS[$dsel]}"
+                            case $? in
+                                0) sub_refresh; echo "  ✅ Ссылка удалена."; offer_sync ;;
+                                2) echo "  ❌ Основную ссылку удалить нельзя." ;;
+                                *) echo "  ❌ Ссылка не найдена." ;;
+                            esac
+                        else echo "  ❌ Неверный номер."; fi
+                    fi
+                fi
+                pause ;;
+            0) return ;;
+            *) echo "  ❌ Неверный выбор."; sleep 1 ;;
         esac
     done
 }
@@ -543,11 +689,14 @@ _render_user_action() {
         else
             echo "  Статус кластера: ⚫ оффлайн во всём кластере"
         fi
-        lim=$(get_device_limit)
-        if [ "$lim" -gt 0 ] 2>/dev/null; then
-            [ "${cc:-0}" -gt "$lim" ] 2>/dev/null && warn="  ⚠️ превышение!"
-            echo "  Лимит устройств: $cc / $lim$warn"
-        fi
+        local dev pc nc hc
+        dev=$(get_user_devices "$user"); pc=$(pool_cap "$user"); nc=$(node_cap "$user")
+        hc=$(get_user_hardcheck "$user")
+        user_over_limit "$user" "$cc" "$oc" && warn="  ⚠️ превышение!"
+        echo "  Устройств (лимит): $dev$([ "$dev" = "0" ] && echo " → глоб.")"
+        echo "  Подключений: $cc / pool $([ "$pc" -gt 0 ] && echo "$pc" || echo "∞") · node $([ "$nc" -gt 0 ] && echo "$nc" || echo "∞")$warn"
+        echo "  Жёсткая проверка: $([ "$hc" = "1" ] && echo "🛡 ВКЛ" || echo "выкл")"
+        echo "  Ссылок подписки: $(sub_tokens_cluster "$user" | grep -c .)"
 
         # Трафик и скорость — суммарно по кластеру.
         local ct cs ctx crx cstx csrx
@@ -571,6 +720,11 @@ _render_user_action() {
         local sp sp_tx sp_rx
         sp=$(get_user_speed "$user"); sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
         echo "  Скорость:      ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
+        local dev nc hc warn=""
+        dev=$(get_user_devices "$user"); nc=$(node_cap "$user"); hc=$(get_user_hardcheck "$user")
+        user_over_limit "$user" "$oc" "$oc" && warn="  ⚠️ превышение!"
+        echo "  Устройств (лимит): $dev · подключений $oc / $([ "$nc" -gt 0 ] && echo "$nc" || echo "∞")$warn"
+        echo "  Жёсткая проверка: $([ "$hc" = "1" ] && echo "🛡 ВКЛ" || echo "выкл")"
     fi
 
     local ipc
@@ -617,6 +771,7 @@ _render_user_action() {
         fi
         echo " 11. 🩺 Диагностика профиля (по кластеру)"
     fi
+    echo " 12. 🔢 Устройства и ссылки подписки"
     echo "  0. ↩  Назад"
     echo ""
 }
@@ -878,12 +1033,9 @@ subscription_menu() {
         fi
         echo "  Caddy     : $caddy_st"
         echo "  Нод в кластере: $(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9' || echo 0)"
-        local dlim; dlim=$(get_device_limit)
-        if [ "$dlim" -gt 0 ] 2>/dev/null; then
-            echo "  Лимит устройств на подписку: $dlim (по всему кластеру)"
-        else
-            echo "  Лимит устройств на подписку: ∞ (выкл)"
-        fi
+        local dlim nlim; dlim=$(get_device_limit); nlim=$(get_node_limit)
+        echo "  Глоб. лимит на пул (кластер): $([ "$dlim" -gt 0 ] 2>/dev/null && echo "$dlim" || echo "∞ (выкл)")"
+        echo "  Глоб. лимит на ноду         : $([ "$nlim" -gt 0 ] 2>/dev/null && echo "$nlim" || echo "∞ (выкл)")"
         echo ""
         echo "  1. 🌐 Настроить домен и включить подписку"
         echo "  2. 🔗 Создать кластер (получить join-токен)"
@@ -891,7 +1043,7 @@ subscription_menu() {
         echo "  4. ➕ Добавить пир вручную (домен ноды)"
         echo "  5. 📋 Ноды кластера (просмотр и удаление)"
         echo "  6. 🔄 Синхронизировать сейчас"
-        echo "  7. 🔢 Лимит устройств на подписку"
+        echo "  7. 🔢 Глобальные лимиты (пул + нода, синхронно)"
         echo "  8. 🩺 Диагностика подписки"
         echo "  9. 🛡  Домен подключения в ссылке (скрыть голый IP)"
         echo " 10. 🛰  Релей (реально спрятать IP ноды через фронт-VPS)"
@@ -1058,22 +1210,30 @@ subscription_menu() {
                 ;;
             7)
                 echo ""
-                echo "  Лимит — сколько устройств может одновременно подключаться по ОДНОЙ"
-                echo "  подписке СУММАРНО по всем нодам. Лишние сессии будут отключаться."
-                echo "  Текущий: $(get_device_limit)  (0 = без лимита)"
-                local nlim
-                ask nlim "  Новый лимит (число, 0 — выключить): "
-                if [[ "$nlim" =~ ^[0-9]+$ ]]; then
-                    set_device_limit "$nlim"
-                    if [ "$nlim" -gt 0 ]; then
-                        echo "  ✅ Лимит: $nlim устройств на подписку (по кластеру)."
-                        echo "     Применяется в течение ~1 мин (cron --online-sync) на каждой ноде."
-                        echo "     ⚠️ Лимит должен быть одинаковым на ВСЕХ нодах — задайте его на каждой."
-                    else
-                        echo "  ✅ Лимит снят (без ограничений)."
-                    fi
-                else
-                    echo "  ❌ Нужно число."
+                echo "  Глобальные лимиты подключений на ОДНУ подписку (общие для кластера,"
+                echo "  синхронизируются автоматически). Персональное «кол-во устройств»"
+                echo "  у юзера ПРИОРИТЕТНЕЕ этих значений."
+                echo "    • Пул  — максимум одновременных подключений СУММАРНО по всем нодам."
+                echo "    • Нода — максимум на ОДНУ ноду (страхует от багов синхронизации)."
+                echo "  Пример: нода = 1, пул = 2. Лишние сессии отключаются (~1 мин)."
+                echo ""
+                echo "  Сейчас: пул $(get_device_limit) · нода $(get_node_limit)  (0 = без лимита)"
+                local nlim nnode changed7=0
+                ask nlim "  Лимит на пул (число, 0 — выкл, Enter — не менять): "
+                if [ -n "$nlim" ]; then
+                    if [[ "$nlim" =~ ^[0-9]+$ ]]; then set_device_limit "$nlim"; changed7=1
+                    else echo "  ❌ Пул: нужно число — пропущено."; fi
+                fi
+                ask nnode "  Лимит на ноду (число, 0 — выкл, Enter — не менять): "
+                if [ -n "$nnode" ]; then
+                    if [[ "$nnode" =~ ^[0-9]+$ ]]; then set_node_limit "$nnode"; changed7=1
+                    else echo "  ❌ Нода: нужно число — пропущено."; fi
+                fi
+                if [ "$changed7" = 1 ]; then
+                    echo "  ✅ Лимиты: пул $(get_device_limit) · нода $(get_node_limit)."
+                    publish_cluster_settings
+                    [ -n "$(cluster_peers 2>/dev/null)" ] && { echo "  🌐 Синхронизирую по кластеру..."; cluster_sync >/dev/null 2>&1; echo "  ✅ Готово."; }
+                    echo "     Применяются в течение ~1 мин (cron --online-sync) на каждой ноде."
                 fi
                 pause
                 ;;

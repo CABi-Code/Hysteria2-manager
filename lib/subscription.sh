@@ -102,9 +102,10 @@ render_tag() {   # user
     printf '%s' "$t"
 }
 
-# Глобальные (общие для всего кластера) настройки оформления. Метка ноды
-# (NODE_LABEL) сюда НЕ входит — она у каждой ноды своя.
-SETTING_KEYS="SUB_TITLE SUB_TAG_TMPL SUB_UPDATE_HOURS"
+# Глобальные (общие для всего кластера) настройки. Метка ноды (NODE_LABEL) сюда
+# НЕ входит — она у каждой ноды своя. POOL_LIMIT/NODE_LIMIT — глобальные лимиты
+# подключений (см. ниже), синхронизируются тем же LWW-механизмом.
+SETTING_KEYS="SUB_TITLE SUB_TAG_TMPL SUB_UPDATE_HOURS POOL_LIMIT NODE_LIMIT"
 
 # Установить общую настройку + метку времени (для синхронизации last-write-wins).
 setting_set() {   # key value [ts]
@@ -212,6 +213,53 @@ sub_token_for() {
 }
 sub_token_remove() { sed -i "/^${1}:/d" "$SUBTOKENS_DB" 2>/dev/null; }
 
+# ---- Несколько ссылок подписки на юзера (по одной на устройство/человека) ----
+# У юзера может быть несколько токенов (строк «user:token» в SUBTOKENS_DB) — все
+# отдают один и тот же набор ключей. Разные токены нужны, чтобы раздать подписку
+# нескольким людям и по логам Caddy видеть IP отдельно по каждой ссылке.
+
+# Все ЛОКАЛЬНЫЕ токены юзера (первый — основной, созданный sub_token_for).
+sub_tokens_all() { awk -F: -v u="$1" '$1==u{print $2}' "$SUBTOKENS_DB" 2>/dev/null; }
+
+# Токены юзера ПО ВСЕМУ КЛАСТЕРУ (локальные + кэш пиров), для подсчёта лимита ссылок.
+sub_tokens_cluster() {
+    { sub_tokens_all "$1"
+      [ -d "$PEERS_DIR" ] && awk -F: -v u="$1" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null; } \
+    | grep -v '^$' | sort -u
+}
+
+# Сколько ссылок разрешено юзеру = его кол-во устройств (0/∞ → без ограничения).
+sub_links_allowed() { local d; d=$(get_user_devices "$1"); echo "${d:-1}"; }
+
+# Создать новую доп. ссылку (токен). Печатает новый токен или пусто при отказе.
+# Соблюдает лимит: число ссылок по кластеру не должно превышать кол-во устройств.
+sub_link_add() {   # user -> token | ""
+    local user="$1" allowed have token
+    sub_token_for "$user" >/dev/null           # гарантируем основной токен
+    allowed=$(sub_links_allowed "$user")
+    have=$(sub_tokens_cluster "$user" | grep -c .)
+    if [ "${allowed:-0}" -gt 0 ] 2>/dev/null && [ "${have:-0}" -ge "$allowed" ]; then
+        return 1                               # лимит ссылок исчерпан
+    fi
+    token=$(pwgen -s 40 1)
+    printf '%s:%s\n' "$user" "$token" >> "$SUBTOKENS_DB"
+    secure_sub_files
+    printf '%s' "$token"
+}
+
+# Удалить конкретную ссылку (токен) юзера. Основной (первый) токен не удаляем,
+# чтобы у юзера всегда оставалась рабочая подписка.
+sub_link_remove() {   # user token
+    local user="$1" token="$2" primary
+    primary=$(sub_token_for "$user")
+    [ "$token" = "$primary" ] && return 2      # основной токен не трогаем
+    sub_tokens_all "$user" | grep -qxF "$token" || return 1
+    sed -i "/^${user}:${token}\$/d" "$SUBTOKENS_DB" 2>/dev/null
+    rm -f "$WEBROOT/sub/$token" 2>/dev/null
+    secure_sub_files
+    return 0
+}
+
 # Готовая ссылка-подписка для юзера.
 subscription_url() {
     local user="$1"
@@ -290,7 +338,8 @@ regen_subscriptions() {
             toks=$( [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null )
         else
             toks=$(
-                { sub_token_for "$user"; echo; }
+                sub_token_for "$user" >/dev/null    # гарантируем основной токен
+                sub_tokens_all "$user"              # ВСЕ локальные токены (доп. ссылки)
                 [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null
             )
         fi
@@ -350,6 +399,10 @@ setup_caddy() {
     [ -n "$domain" ] || return 1
     secret=$(cluster_secret)
     mkdir -p "$(dirname "$CADDYFILE")" "$WEBROOT/sub" "$WEBROOT/cluster"
+    # Каталог для access-лога подписки (из него collect_sub_ips берёт IP по токенам).
+    local clog_dir; clog_dir=$(dirname "$CADDY_ACCESS_LOG")
+    mkdir -p "$clog_dir" 2>/dev/null
+    id caddy >/dev/null 2>&1 && chown caddy:caddy "$clog_dir" 2>/dev/null || true
 
     # Если домен указывает на один из локальных IP — фиксируем его как NODE_IP,
     # чтобы при нескольких IP Caddy сел на нужный (свободный), а не на занятый.
@@ -380,6 +433,13 @@ setup_caddy() {
 ${domain} {
     root * ${WEBROOT}
 ${bind_line}
+    log {
+        output file ${CADDY_ACCESS_LOG} {
+            roll_size 10MiB
+            roll_keep 3
+        }
+        format json
+    }
     @cluster_noauth {
         path /cluster/*
         not header X-Cluster-Auth "${secret}"
@@ -784,15 +844,53 @@ wait_cert() {
 # Подписка = один юзер на всех нодах. Хотим считать его подключения суммарно по
 # кластеру и не давать раздать одну подписку на кучу устройств через разные ноды.
 
-# Лимит устройств на подписку (0 = выкл).
-get_device_limit() {
-    local n; n=$(cat "$SUB_LIMIT_FILE" 2>/dev/null)
-    [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    echo "$n"
+# ---- Глобальные лимиты подключений (общие для кластера, синхронны) ----
+# POOL_LIMIT — максимум одновременных подключений на подписку по ВСЕМУ кластеру
+# (0 = без лимита). NODE_LIMIT — максимум на ОДНУ ноду (0 = без лимита; страхует
+# от «размазывания» одной подписки и от багов синхронизации между нодами).
+# Оба хранятся в node.conf и разъезжаются по кластеру через SETTING_KEYS (LWW).
+# get_device_limit оставлен как псевдоним POOL_LIMIT для обратной совместимости.
+get_device_limit() { local n; n=$(node_get POOL_LIMIT); [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0; }
+get_node_limit()   { local n; n=$(node_get NODE_LIMIT); [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0; }
+set_device_limit() { local n="${1:-0}"; [[ "$n" =~ ^[0-9]+$ ]] || n=0; setting_set POOL_LIMIT "$n"; }
+set_node_limit()   { local n="${1:-0}"; [[ "$n" =~ ^[0-9]+$ ]] || n=0; setting_set NODE_LIMIT "$n"; }
+
+# Разовая миграция старого device_limit (файл SUB_LIMIT_FILE) в POOL_LIMIT.
+migrate_device_limit() {
+    [ -f "$SUB_LIMIT_FILE" ] || return 0
+    local old; old=$(cat "$SUB_LIMIT_FILE" 2>/dev/null)
+    if [[ "$old" =~ ^[0-9]+$ ]] && [ -z "$(node_get POOL_LIMIT)" ]; then
+        setting_set POOL_LIMIT "$old"
+    fi
+    rm -f "$SUB_LIMIT_FILE" 2>/dev/null
 }
-set_device_limit() {
-    local n="${1:-0}"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    echo "$n" > "$SUB_LIMIT_FILE"
+
+# ---- Эффективные лимиты КОНКРЕТНОГО пользователя ----
+# Персональное кол-во устройств приоритетнее глобальных настроек:
+#   pool_cap = devices(user), если >0; иначе глобальный POOL_LIMIT (0 = ∞).
+#   node_cap = min(NODE_LIMIT, pool_cap); при NODE_LIMIT=0 = pool_cap.
+# Значение 0 в итоге означает «без лимита» (∞).
+pool_cap() {   # user -> число (0 = ∞)
+    local d; d=$(get_user_devices "$1")
+    if [ "${d:-0}" -gt 0 ] 2>/dev/null; then echo "$d"; else get_device_limit; fi
+}
+node_cap() {   # user -> число (0 = ∞)
+    local nl pc; nl=$(get_node_limit); pc=$(pool_cap "$1")
+    if [ "${nl:-0}" -le 0 ] 2>/dev/null; then echo "$pc"; return; fi
+    if [ "${pc:-0}" -le 0 ] 2>/dev/null; then echo "$nl"; return; fi
+    [ "$nl" -lt "$pc" ] && echo "$nl" || echo "$pc"
+}
+
+# Превышен ли у юзера лимит подключений (для ⚠️ в списке и решений о кике).
+# cluster_conn/local_conn можно передать (снимок), иначе считаем сами.
+user_over_limit() {   # user [cluster_conn] [local_conn]
+    local user="$1" cc="$2" ln="$3" pc nc
+    [ -z "$cc" ] && cc=$(cluster_user_connections "$user")
+    [ -z "$ln" ] && ln=$(get_user_online_count "$user")
+    pc=$(pool_cap "$user"); nc=$(node_cap "$user")
+    { [ "${pc:-0}" -gt 0 ] && [ "${cc:-0}" -gt "$pc" ]; } 2>/dev/null && return 0
+    { [ "${nc:-0}" -gt 0 ] && [ "${ln:-0}" -gt "$nc" ]; } 2>/dev/null && return 0
+    return 1
 }
 
 # Публикует статистику ЭТОЙ ноды для других нод (за X-Cluster-Auth). По строке
@@ -825,6 +923,29 @@ publish_ips() {
     cp -f "$IPS_FILE" "$WEBROOT/cluster/ips" 2>/dev/null || : > "$WEBROOT/cluster/ips"
     chmod 640 "$WEBROOT/cluster/ips" 2>/dev/null || true
     secure_web_files
+}
+
+# Публикует IP по токенам подписки (кто скачивал /sub/<token> с ЭТОЙ ноды), чтобы
+# счётчик «IP за неделю» по ссылке учитывал скачивания со всех нод кластера.
+# Формат — как SUBIPS_FILE: «token|ip|first|last|count».
+publish_subips() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    cp -f "$SUBIPS_FILE" "$WEBROOT/cluster/subips" 2>/dev/null || : > "$WEBROOT/cluster/subips"
+    chmod 640 "$WEBROOT/cluster/subips" 2>/dev/null || true
+    secure_web_files
+}
+
+# Уникальные IP, скачавшие подписку по токену за последнюю неделю, ПО ВСЕМУ
+# кластеру (локальный SUBIPS_FILE + кэши пиров). Печатает число.
+link_week_ip_count() {   # token -> число
+    local token="$1" week_ago
+    week_ago=$(date -d '7 days ago' +%s 2>/dev/null || echo 0)
+    {
+        [ -f "$SUBIPS_FILE" ] && cat "$SUBIPS_FILE"
+        [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.subips 2>/dev/null
+    } | awk -F'|' -v t="$token" -v wa="$week_ago" \
+        'NF>=4 && $1==t && $4+0 >= wa+0 && !seen[$2]++ {c++} END{print c+0}'
 }
 
 # IP юзера по ВСЕМУ кластеру: локальные + из кэшей пиров, объединённые по IP
@@ -910,28 +1031,54 @@ cluster_user_breakdown() {
     done
 }
 
-# Применяет лимит устройств: если суммарно по кластеру у юзера больше лимита —
-# отключаем его сессии на ЭТОЙ ноде (api /kick). Так делает КАЖДАЯ нода
-# независимо по одним и тем же данным, поэтому «лишние» устройства, размазанные
-# по нодам, постоянно отваливаются — раздать одну подписку на 10 устройств не
-# выходит. Пока подключений ≤ лимита — никого не трогаем.
+# Снимок лимитов для скрипта аутентификации (жёсткая проверка). По строке на
+# активного юзера: «user|hardcheck|pool_cap|node_cap|cluster_others», где
+# cluster_others — подключения на ДРУГИХ нодах (сумма из кэшей пиров). Скрипт
+# auth читает файл и решает, пускать ли новое устройство. Права — как у users.db.
+write_authlimits() {
+    local tmp="${AUTHLIMITS_FILE}.tmp" user hc pc nc others owner group
+    : > "$tmp" 2>/dev/null || return 0
+    while IFS= read -r user; do
+        [ -n "$user" ] || continue
+        hc=$(get_user_hardcheck "$user")
+        pc=$(pool_cap "$user"); nc=$(node_cap "$user")
+        others=$(_peer_stat_sum "$user" 2)
+        printf '%s|%s|%s|%s|%s\n' "$user" "$hc" "${pc:-0}" "${nc:-0}" "${others:-0}" >> "$tmp"
+    done < <(get_active_users)
+    mv "$tmp" "$AUTHLIMITS_FILE" 2>/dev/null
+    if declare -F service_identity >/dev/null; then
+        read -r owner group < <(service_identity)
+        [ -n "$owner" ] && chown "${owner}:${group}" "$AUTHLIMITS_FILE" 2>/dev/null || true
+    fi
+    chmod 640 "$AUTHLIMITS_FILE" 2>/dev/null || true
+}
+
+# Мягкое применение лимитов: если у юзера превышен эффективный лимит — кикаем его
+# сессии на ЭТОЙ ноде (api /kick). Так делает КАЖДАЯ нода независимо по одним и
+# тем же данным. Кик включается ТОЛЬКО когда задан хотя бы один ГЛОБАЛЬНЫЙ лимит
+# (POOL_LIMIT/NODE_LIMIT); при этом действует эффективный per-user cap
+# (персональное кол-во устройств приоритетнее). Без глобальных лимитов принуди-
+# тельного кика нет — блокировка лишних устройств делается «жёсткой проверкой»
+# на этапе аутентификации. Снимок для auth пишем всегда.
 enforce_device_limits() {
-    local limit; limit=$(get_device_limit)
-    [ "$limit" -gt 0 ] 2>/dev/null || return 0
     sub_enabled || return 0
     refresh_online          # заполнит CACHED_ONLINE для get_user_online_count
     local online_json="$CACHED_ONLINE"
     [ -z "$online_json" ] && online_json='{}'
-    local user localn total
-    while IFS= read -r user; do
-        [ -n "$user" ] || continue
-        localn=$(get_user_online_count "$user")
-        [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
-        total=$(cluster_user_connections "$user")
-        if [ "$total" -gt "$limit" ] 2>/dev/null; then
-            api_post "/kick" "[\"$user\"]" &>/dev/null
-            echo "$(date '+%F %T') $user: кластер=$total > лимит=$limit — кик на $(node_name)" \
-                >> "$DATA_DIR/limit.log" 2>/dev/null
-        fi
-    done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
+    local gpool gnode; gpool=$(get_device_limit); gnode=$(get_node_limit)
+    if [ "${gpool:-0}" -gt 0 ] || [ "${gnode:-0}" -gt 0 ] 2>/dev/null; then
+        local user localn total
+        while IFS= read -r user; do
+            [ -n "$user" ] || continue
+            localn=$(get_user_online_count "$user")
+            [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
+            total=$(cluster_user_connections "$user")
+            if user_over_limit "$user" "$total" "$localn"; then
+                api_post "/kick" "[\"$user\"]" &>/dev/null
+                echo "$(date '+%F %T') $user: cluster=$total local=$localn pool_cap=$(pool_cap "$user") node_cap=$(node_cap "$user") — кик на $(node_name)" \
+                    >> "$DATA_DIR/limit.log" 2>/dev/null
+            fi
+        done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
+    fi
+    write_authlimits
 }

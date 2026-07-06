@@ -53,3 +53,47 @@ get_user_ip_count() {
 get_user_ips() {
     grep "^${1}|" "$IPS_FILE" 2>/dev/null
 }
+
+# Собирает IP, скачавшие подписку по КОНКРЕТНОМУ токену, из access-лога Caddy
+# (JSON). Нужно для счётчика «IP за неделю» по каждой доп. ссылке. Инкрементально:
+# берём только записи новее метки SUBLOG_TS. Формат SUBIPS_FILE — как IPS_FILE:
+# «token|ip|first|last|count». Пишем время в секундах (floor от .ts Caddy).
+collect_sub_ips() {
+    [ -f "$CADDY_ACCESS_LOG" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    touch "$SUBIPS_FILE" 2>/dev/null
+    local since maxts parsed ts ip uri token old first count new
+    since=$(cat "$SUBLOG_TS" 2>/dev/null); [[ "$since" =~ ^[0-9]+$ ]] || since=0
+
+    # jq: только запросы к /sub/*, новее метки. remote_ip (новые Caddy) или
+    # remote_addr «ip:port» (старые). Печатаем «секунды<TAB>ip<TAB>uri».
+    parsed=$(jq -r --argjson since "$since" '
+        select(.request?.uri != null)
+        | select(.request.uri | startswith("/sub/"))
+        | select(((.ts // 0) | floor) > $since)
+        | [ ((.ts // 0) | floor | tostring),
+            (.request.remote_ip // ((.request.remote_addr // "") | split(":")[0]) // ""),
+            (.request.uri) ] | @tsv
+    ' "$CADDY_ACCESS_LOG" 2>/dev/null)
+    [ -n "$parsed" ] || return 0
+
+    maxts="$since"
+    while IFS=$'\t' read -r ts ip uri; do
+        [ -n "$ip" ] || continue
+        [ "$ip" = "127.0.0.1" ] && continue
+        [[ "$ts" =~ ^[0-9]+$ ]] || continue
+        token="${uri#/sub/}"; token="${token%%\?*}"; token="${token%%/*}"
+        [[ "$token" =~ ^[A-Za-z0-9]+$ ]] || continue
+        if grep -q "^${token}|${ip}|" "$SUBIPS_FILE" 2>/dev/null; then
+            old=$(grep "^${token}|${ip}|" "$SUBIPS_FILE" | head -1)
+            first=$(echo "$old" | cut -d'|' -f3)
+            count=$(echo "$old" | cut -d'|' -f5)
+            new=$(( ${count:-0} + 1 ))
+            sed -i "s#^${token}|${ip}|.*#${token}|${ip}|${first}|${ts}|${new}#" "$SUBIPS_FILE"
+        else
+            echo "${token}|${ip}|${ts}|${ts}|1" >> "$SUBIPS_FILE"
+        fi
+        [ "$ts" -gt "$maxts" ] 2>/dev/null && maxts="$ts"
+    done <<< "$parsed"
+    echo "$maxts" > "$SUBLOG_TS"
+}
