@@ -409,10 +409,6 @@ setup_caddy() {
     [ -n "$domain" ] || return 1
     secret=$(cluster_secret)
     mkdir -p "$(dirname "$CADDYFILE")" "$WEBROOT/sub" "$WEBROOT/cluster"
-    # Каталог для access-лога подписки (из него collect_sub_ips берёт IP по токенам).
-    local clog_dir; clog_dir=$(dirname "$CADDY_ACCESS_LOG")
-    mkdir -p "$clog_dir" 2>/dev/null
-    id caddy >/dev/null 2>&1 && chown caddy:caddy "$clog_dir" 2>/dev/null || true
 
     # Если домен указывает на один из локальных IP — фиксируем его как NODE_IP,
     # чтобы при нескольких IP Caddy сел на нужный (свободный), а не на занятый.
@@ -444,10 +440,7 @@ ${domain} {
     root * ${WEBROOT}
 ${bind_line}
     log {
-        output file ${CADDY_ACCESS_LOG} {
-            roll_size 10MiB
-            roll_keep 3
-        }
+        output stderr
         format json
     }
     @cluster_noauth {
