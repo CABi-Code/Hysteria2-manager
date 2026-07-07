@@ -118,11 +118,36 @@ cluster_join() {   # token
     echo "   На seed-ноде один раз добавьте этот сервер: Подписка → Добавить пир → $(node_host)"
 }
 
-# Периодическая синхронизация: стянуть реестр (gossip) и манифесты пиров,
-# затем пересобрать подписки. Недоступный пир пропускаем (отдаём остальные ключи).
+# Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips"
+_section_label() {
+    case "$1" in
+        manifest)   echo "ключи" ;;
+        subtokens)  echo "токены подписки" ;;
+        roster)     echo "реестр юзеров" ;;
+        state)      echo "состояния (вкл/выкл/удал.)" ;;
+        ips)        echo "IP-адреса" ;;
+        expiry)     echo "сроки действия" ;;
+        settings)   echo "настройки/лимиты" ;;
+        userlimits) echo "устройства/жёсткая проверка" ;;
+        subips)     echo "IP по ссылкам" ;;
+        *)          echo "$1" ;;
+    esac
+}
+
+# Периодическая синхронизация: стянуть реестр (gossip) и манифесты пиров, затем
+# пересобрать подписки. Недоступный пир пропускаем (отдаём остальные ключи).
+# Первый аргумент «verbose» — подробный лог по каждой ноде и каждому действию,
+# плюс жёсткая проверка: реальная доступность каждого пира и нашего HTTPS.
+# Возвращает 0, если все пиры на связи (или их нет), иначе 1.
 cluster_sync() {
-    sub_enabled || return 0
+    local V=""; [ "$1" = "verbose" ] && V=1
+    _vp() { [ -n "$V" ] && printf '%s\n' "$*"; }
+    sub_enabled || { _vp "  ⚪ Подписка/кластер не настроены — синхронизировать нечего."; return 0; }
     mkdir -p "$PEERS_DIR"
+
+    _vp "  ── Синхронизация кластера ──────────────────────────────"
+    _vp "  📤 Публикую наши данные (ключи, токены, лимиты, состояния, IP)..."
     publish_peers_list
     publish_manifest
     publish_subtokens
@@ -134,44 +159,66 @@ cluster_sync() {
     publish_ips
     publish_subips
 
-    local host name data
+    # Жёсткая проверка НАШЕГО эндпоинта: без валидного HTTPS пиры физически не
+    # смогут забрать наши данные — синхронизация будет односторонней.
+    if [ -n "$V" ]; then
+        printf '     Проверяю наш HTTPS-эндпоинт (%s)... ' "$(node_host)"
+        if cluster_call "$(node_host)" "/cluster/userlimits" 6 >/dev/null 2>&1 || cert_ready "$(node_host)"; then
+            echo "✅ данные доступны для пиров"
+        else
+            echo "❌ НЕ отдаётся!"
+            _vp "     Пиры не смогут забрать наши изменения. Почините HTTPS (Диагностика → 8),"
+            _vp "     иначе наши правки к ним не попадут."
+        fi
+    fi
+
+    local host name data cnt total=0 okp=0 badp=0 s
     while IFS= read -r host; do
         [ -n "$host" ] || continue
-        # gossip реестра
-        cluster_call "$host" "/cluster/peers.list" | while IFS='|' read -r pn ph; do
-            [ -n "$ph" ] && cluster_add_peer "$pn" "$ph"
-        done
+        total=$((total + 1))
         name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
         [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
-        # манифест ключей пира -> локальный кэш
-        data=$(cluster_call "$host" "/cluster/manifest")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.manifest"
-        # токены подписки пира -> кэш (для единого токена по кластеру)
-        data=$(cluster_call "$host" "/cluster/subtokens")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.subtokens"
-        # список «кластерных» юзеров пира -> кэш (для заведения у себя)
-        data=$(cluster_call "$host" "/cluster/roster")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.roster"
-        # состояния (active/disabled/deleted) пира -> кэш (точка правды)
-        data=$(cluster_call "$host" "/cluster/state")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.state"
-        # IP-адреса юзеров пира -> кэш (для показа IP со всех нод)
-        data=$(cluster_call "$host" "/cluster/ips")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.ips"
-        # сроки действия кластерных юзеров пира -> кэш (для синхронизации срока)
-        data=$(cluster_call "$host" "/cluster/expiry")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.expiry"
-        # общие настройки оформления пира -> кэш
-        data=$(cluster_call "$host" "/cluster/settings")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.settings"
-        # персональные лимиты (кол-во устройств, жёсткая проверка) пира -> кэш
-        data=$(cluster_call "$host" "/cluster/userlimits")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.userlimits"
-        # IP по токенам подписки пира -> кэш (для «IP за неделю» по ссылке)
-        data=$(cluster_call "$host" "/cluster/subips")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.subips"
+
+        _vp ""
+        _vp "  🔗 Нода «$name» ($host)"
+        if [ -n "$V" ]; then printf '     Подключение... '; fi
+        # Жёсткая проверка связи с пиром (TLS + секрет кластера).
+        if ! cluster_call "$host" "/cluster/manifest" 8 >/dev/null 2>&1; then
+            [ -n "$V" ] && echo "❌ недоступна (DNS/сертификат/секрет/файрвол пира)"
+            badp=$((badp + 1))
+            continue
+        fi
+        [ -n "$V" ] && echo "✅ подключено"
+
+        # gossip реестра
+        [ -n "$V" ] && printf '     ⬇ реестр пиров (gossip)... '
+        data=$(cluster_call "$host" "/cluster/peers.list")
+        if [ -n "$data" ]; then
+            printf '%s\n' "$data" | while IFS='|' read -r pn ph; do
+                [ -n "$ph" ] && cluster_add_peer "$pn" "$ph"
+            done
+            [ -n "$V" ] && echo "ок"
+        else
+            [ -n "$V" ] && echo "пусто"
+        fi
+
+        # Тянем все разделы данных пира в кэш, с отчётом по каждому.
+        for s in $CLUSTER_SYNC_SECTIONS; do
+            [ -n "$V" ] && printf '     ⬇ %s... ' "$(_section_label "$s")"
+            data=$(cluster_call "$host" "/cluster/$s")
+            if [ -n "$data" ]; then
+                printf '%s\n' "$data" > "$PEERS_DIR/${name}.${s}"
+                if [ -n "$V" ]; then cnt=$(printf '%s\n' "$data" | grep -c .); echo "получено (${cnt} зап.)"; fi
+            else
+                [ -n "$V" ] && echo "нет данных"
+            fi
+        done
+        [ -n "$V" ] && echo "     ✅ данные ноды «$name» получены"
+        okp=$((okp + 1))
     done < <(cluster_peers)
 
+    _vp ""
+    _vp "  🔧 Применяю изменения локально..."
     cluster_apply_state      # точка правды: вкл/выкл/удаление с других нод
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
@@ -179,6 +226,21 @@ cluster_sync() {
     cluster_apply_userlimits # подтянуть персональные лимиты устройств
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
+    write_authlimits         # обновить снимок для жёсткой проверки
+    _vp "  ✅ Локально применено."
+
+    if [ -n "$V" ]; then
+        _vp ""
+        if [ "$total" -eq 0 ]; then
+            _vp "  ── Итог: пиров нет (одиночная нода). ──"
+        else
+            _vp "  ── Итог: пиров на связи $okp из $total$([ "$badp" -gt 0 ] && echo ", недоступны: $badp") ──"
+            _vp "  ℹ️  Мы забрали данные с доступных пиров. НАШИ изменения появятся на"
+            _vp "     каждом пире, когда он выполнит свою синхронизацию (авто ~1 мин по"
+            _vp "     online-sync, полная ~5 мин, или по кнопке «Синхронизировать» у него)."
+        fi
+    fi
+    [ "$badp" -gt 0 ] && return 1 || return 0
 }
 
 # ---- Кластерные пользователи (живут на ВСЕХ нодах) ----
@@ -341,15 +403,12 @@ offer_sync() {
     case "$mode" in
         auto)
             echo "  🌐 Синхронизирую со всеми нодами..."
-            cluster_sync >/dev/null 2>&1
-            echo "  ✅ Синхронизировано." ;;
+            cluster_sync verbose ;;
         cron) : ;;   # тихо, разнесётся по расписанию (каждые 5 мин)
         *)
             local a; ask a "  🌐 Синхронизировать со всеми нодами сейчас? (да/нет, по умолч. по расписанию): "
             if is_yes "$a"; then
-                echo "  ⏳ Синхронизирую..."
-                cluster_sync >/dev/null 2>&1
-                echo "  ✅ Готово."
+                cluster_sync verbose
             fi ;;
     esac
 }
@@ -449,8 +508,12 @@ cluster_apply_expiry() {
 }
 
 # ---- Синхронизация ПЕРСОНАЛЬНЫХ ЛИМИТОВ (кол-во устройств + жёсткая проверка) ----
-# Публикует «user|devices|hardcheck|ts» для кластерных юзеров (у которых имя
-# одинаково на всех нодах). Разделитель «|», значения числовые — как срок действия.
+# Публикует «user|devices|hardcheck|ts» для ВСЕХ локальных юзеров + кластерных.
+# Публикуем не только roster: одинаковое имя может быть заведено локально на
+# разных нодах — тогда лимит/жёсткая проверка всё равно должны синхронизироваться.
+# Пир применяет запись, только если у него есть юзер с таким именем (по ts, LWW).
+# Публикуем ТОЛЬКО юзеров с явно заданной записью лимита (есть в USERLIMITS_FILE),
+# чтобы дефолтная «1» с нулевым ts не затирала осмысленные значения на пирах.
 publish_cluster_userlimits() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
@@ -458,9 +521,11 @@ publish_cluster_userlimits() {
     : > "$tmp"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
-        d=$(get_user_devices "$u"); h=$(get_user_hardcheck "$u"); t=$(userlimits_get_ts "$u")
+        t=$(userlimits_get_ts "$u")
+        [ "${t:-0}" -gt 0 ] 2>/dev/null || continue   # нет явной записи — не публикуем
+        d=$(get_user_devices "$u"); h=$(get_user_hardcheck "$u")
         printf '%s|%s|%s|%s\n' "$u" "$d" "$h" "$t" >> "$tmp"
-    done < <(cluster_users_all)
+    done < <( { get_all_users; cluster_users_all; } | grep -v '^$' | sort -u )
     mv "$tmp" "$WEBROOT/cluster/userlimits"
     chmod 640 "$WEBROOT/cluster/userlimits" 2>/dev/null || true
     secure_web_files
@@ -501,6 +566,9 @@ cluster_online_sync() {
     sub_enabled || return 0
     mkdir -p "$PEERS_DIR"
     publish_stats
+    # Публикуем лимиты и здесь (раз в минуту), чтобы жёсткая проверка и кол-во
+    # устройств разъезжались по кластеру быстро, а не только по 5-минутной cluster_sync.
+    publish_cluster_userlimits
 
     local host name data
     while IFS= read -r host; do
@@ -510,7 +578,11 @@ cluster_online_sync() {
         # Свежая статистика пира; недоступен -> пусто (= 0), не залипаем на старом.
         data=$(cluster_call "$host" "/cluster/stats")
         printf '%s' "$data" > "$PEERS_DIR/${name}.stats"
+        # Персональные лимиты пира -> кэш (быстрое распространение жёсткой проверки).
+        data=$(cluster_call "$host" "/cluster/userlimits")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.userlimits"
     done < <(cluster_peers)
 
+    cluster_apply_userlimits   # применить лимиты, пришедшие с пиров
     enforce_device_limits
 }

@@ -1203,9 +1203,7 @@ subscription_menu() {
                 ;;
             6)
                 echo ""
-                echo "  ⏳ Синхронизация с пирами..."
-                cluster_sync
-                echo "  ✅ Готово."
+                cluster_sync verbose
                 pause
                 ;;
             7)
