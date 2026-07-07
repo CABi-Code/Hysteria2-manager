@@ -60,7 +60,26 @@ PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и о�
 CADDYFILE="/etc/caddy/Caddyfile"
 # Лимит одновременных подключений на ОДНУ подписку по ВСЕМУ кластеру (0 = без
 # лимита). Не даёт раздать одну подписку на десяток устройств через разные ноды.
+# Устар.: значение мигрирует в общекластерную настройку POOL_LIMIT (node.conf),
+# см. migrate_device_limit. Файл оставлен для чтения старого значения при апгрейде.
 SUB_LIMIT_FILE="$DATA_DIR/device_limit"
+
+# Персональные лимиты пользователя: «user|devices|hardcheck» (devices — кол-во
+# устройств, по умолч. 1, приоритетнее глобальных; hardcheck — 0/1, жёсткая
+# проверка на этапе аутентификации). Синхронизируются по кластеру LWW-по-ts
+# (метки — в USERLIMITS_TS_FILE, «user|ts»), как срок действия. См. lib/limits.sh.
+USERLIMITS_FILE="$DATA_DIR/userlimits.dat"
+USERLIMITS_TS_FILE="$DATA_DIR/userlimits_ts.dat"
+# Снимок для скрипта аутентификации: «user|hardcheck|pool_cap|node_cap|cluster_others».
+# Обновляется менеджером (cron --online-sync и после правок). Скрипт auth читает
+# его, чтобы отклонять лишние устройства. Права как у users.db (640, владелец — сервис).
+AUTHLIMITS_FILE="$DATA_DIR/authlimits.dat"
+# Уникальные IP, скачавшие подписку по КОНКРЕТНОМУ токену. «token|ip|first|last|count».
+# Источник — access-лог Caddy, который пишется в stderr → journald (НЕ в файл: файл
+# в /var/log/caddy процессу caddy под systemd недоступен и ломает старт Caddy).
+# collect_sub_ips читает его через journalctl -u caddy. SUBLOG_TS — метка «since».
+SUBIPS_FILE="$DATA_DIR/subips.dat"
+SUBLOG_TS="$DATA_DIR/sublog_ts"
 
 API_PORT=25580
 PAGE_SIZE=10

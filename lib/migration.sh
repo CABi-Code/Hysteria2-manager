@@ -35,18 +35,74 @@ install_auth_script() {
     {
         echo '#!/bin/bash'
         echo "DB=\"${USERS_DB}\""
+        echo "AUTHLIMITS=\"${AUTHLIMITS_FILE}\""
+        echo "CONFIG=\"${CONFIG}\""
         cat <<'AUTHEOF'
 # Внешняя аутентификация Hysteria 2 (auth.type: command).
+# Вызывается на КАЖДОЕ подключение: $1=addr, $2="user:pass", $3=tx.
+# При успехе печатает id (имя юзера) и выходит с кодом 0.
 auth="$2"
 [ -z "$auth" ] && exit 1
 user="${auth%%:*}"
 pass="${auth#*:}"
 { [ -z "$user" ] || [ "$user" = "$auth" ]; } && exit 1   # нет двоеточия — отказ
 [ -r "$DB" ] || exit 1
-exec awk -F: -v u="$user" -v p="$pass" '
-    $1==u { rest=substr($0, length($1)+2); if (rest==p) { print u; found=1; exit } }
+
+# 1) Проверка пары user:pass по базе.
+awk -F: -v u="$user" -v p="$pass" '
+    $1==u { rest=substr($0, length($1)+2); if (rest==p) { found=1; exit } }
     END { exit (found?0:1) }
-' "$DB"
+' "$DB" || exit 1
+
+# 2) Жёсткая проверка лимита устройств (только если включена у юзера).
+# FAIL-OPEN: любая ошибка (нет файла/API/утилит) => пускаем, чтобы сбой
+# мониторинга НИКОГДА не заблокировал всех клиентов.
+# Живой локальный онлайн юзера через API Hysteria (секрет/порт — из config.yaml,
+# он world-readable). Печатает число или ничего (тогда fail-open).
+auth_local_online() {
+    command -v curl >/dev/null 2>&1 || return 1
+    command -v jq   >/dev/null 2>&1 || return 1
+    [ -r "$CONFIG" ] || return 1
+    local secret port resp cnt
+    secret=$(awk '/^trafficStats:/,/^[a-zA-Z]/' "$CONFIG" 2>/dev/null | grep -oP 'secret:\s*\K\S+' | tr -d '"' | head -1)
+    port=$(awk '/^trafficStats:/,/^[a-zA-Z]/' "$CONFIG" 2>/dev/null | grep 'listen' | grep -oP '\d+' | tail -1)
+    [ -n "$secret" ] || return 1
+    [ -n "$port" ] || port=25580
+    resp=$(curl -s --max-time 2 -H "Authorization: $secret" "http://127.0.0.1:${port}/online" 2>/dev/null)
+    [ -n "$resp" ] || return 1
+    cnt=$(printf '%s' "$resp" | jq -r --arg u "$user" '.[$u] // 0' 2>/dev/null)
+    [[ "$cnt" =~ ^[0-9]+$ ]] || return 1
+    printf '%s' "$cnt"
+}
+
+if [ -r "$AUTHLIMITS" ]; then
+    row=$(awk -F'|' -v u="$user" '$1==u{print; exit}' "$AUTHLIMITS" 2>/dev/null)
+    if [ -n "$row" ]; then
+        hc=$(printf '%s' "$row" | cut -d'|' -f2)
+        pc=$(printf '%s' "$row" | cut -d'|' -f3)
+        nc=$(printf '%s' "$row" | cut -d'|' -f4)
+        others=$(printf '%s' "$row" | cut -d'|' -f5)
+        [[ "$pc" =~ ^[0-9]+$ ]] || pc=0
+        [[ "$nc" =~ ^[0-9]+$ ]] || nc=0
+        [[ "$others" =~ ^[0-9]+$ ]] || others=0
+        if [ "$hc" = "1" ]; then
+            local_online=$(auth_local_online)
+            if [[ "$local_online" =~ ^[0-9]+$ ]]; then
+                # На ноду: local_online + это подключение > node_cap ?
+                if [ "$nc" -gt 0 ] && [ $((local_online + 1)) -gt "$nc" ]; then
+                    exit 1
+                fi
+                # По кластеру: другие ноды + локально + это подключение > pool_cap ?
+                if [ "$pc" -gt 0 ] && [ $((others + local_online + 1)) -gt "$pc" ]; then
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+fi
+
+printf '%s\n' "$user"
+exit 0
 AUTHEOF
     } > "$AUTH_SCRIPT"
     # Владение/права выставляет secure_auth_files — отдаёт их пользователю

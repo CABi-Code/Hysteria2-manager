@@ -53,3 +53,48 @@ get_user_ip_count() {
 get_user_ips() {
     grep "^${1}|" "$IPS_FILE" 2>/dev/null
 }
+
+# Собирает IP, скачавшие подписку по КОНКРЕТНОМУ токену, из access-лога Caddy.
+# Caddy пишет access-лог в stderr → journald (в файл /var/log/caddy писать нельзя:
+# процессу caddy под systemd туда нет доступа, и это роняет старт Caddy). Читаем
+# журнал так же, как collect_ips читает лог hysteria. Инкрементально по метке
+# SUBLOG_TS (человекочитаемая дата --since). Формат SUBIPS_FILE — как IPS_FILE:
+# «token|ip|first|last|count». Время — момент сбора (как в collect_ips).
+collect_sub_ips() {
+    command -v jq >/dev/null 2>&1 || return 0
+    command -v journalctl >/dev/null 2>&1 || return 0
+    touch "$SUBIPS_FILE" 2>/dev/null
+    local since now ip uri token old first count
+    if [ -s "$SUBLOG_TS" ]; then
+        since=$(cat "$SUBLOG_TS")
+    else
+        since=$(date -d '7 days ago' '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "7 days ago")
+    fi
+    date '+%Y-%m-%d %H:%M:%S' > "$SUBLOG_TS"
+    now=$(date +%s)
+
+    # Одним проходом jq: из журнала Caddy берём JSON access-записи к /sub/*.
+    # fromjson? пропускает не-JSON и служебные строки Caddy. remote_ip (новые
+    # версии) или remote_addr «ip:port» (старые). Печатаем «ip<TAB>uri».
+    journalctl -u caddy --no-pager -o cat --since="$since" 2>/dev/null \
+      | grep -F '/sub/' \
+      | jq -rR 'fromjson?
+                | select(.request?.uri != null)
+                | select(.request.uri | startswith("/sub/"))
+                | [ (.request.remote_ip // ((.request.remote_addr // "") | split(":")[0]) // ""),
+                    (.request.uri) ] | @tsv' 2>/dev/null \
+      | while IFS=$'\t' read -r ip uri; do
+            [ -n "$ip" ] || continue
+            [ "$ip" = "127.0.0.1" ] && continue
+            token="${uri#/sub/}"; token="${token%%\?*}"; token="${token%%/*}"
+            [[ "$token" =~ ^[A-Za-z0-9]+$ ]] || continue
+            if grep -q "^${token}|${ip}|" "$SUBIPS_FILE" 2>/dev/null; then
+                old=$(grep "^${token}|${ip}|" "$SUBIPS_FILE" | head -1)
+                first=$(echo "$old" | cut -d'|' -f3)
+                count=$(echo "$old" | cut -d'|' -f5)
+                sed -i "s#^${token}|${ip}|.*#${token}|${ip}|${first}|${now}|$(( ${count:-0} + 1 ))#" "$SUBIPS_FILE"
+            else
+                echo "${token}|${ip}|${now}|${now}|1" >> "$SUBIPS_FILE"
+            fi
+        done
+}
