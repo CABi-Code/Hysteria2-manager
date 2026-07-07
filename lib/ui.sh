@@ -394,11 +394,12 @@ user_action_menu() {
                 else
                     echo "  ❌ Введите число дней"
                 fi
-                # Для кластерного юзера срок влияет на всю подписку — разносим сразу.
+                # Для кластерного юзера срок влияет на всю подписку — разносим сразу
+                # через ЕДИНУЮ синхронизацию (с логом по нодам).
                 if [ "$_changed" = 1 ] && sub_enabled && is_cluster_user "$user"; then
                     echo "  🌐 Юзер кластерный — синхронизирую срок на все ноды..."
-                    cluster_sync >/dev/null 2>&1
-                    echo "  ✅ Срок применён ко всей подписке (на пирах — в течение ~5 мин)."
+                    cluster_sync_now
+                    echo "  ✅ Срок применён ко всей подписке (на пирах — в течение ~1–5 мин)."
                 fi
                 pause
                 need_clear=1
@@ -538,6 +539,11 @@ user_action_menu() {
                 user_devices_menu "$user"
                 need_clear=1
                 ;;
+            13)
+                cluster_sync_now
+                pause
+                need_clear=1
+                ;;
             0) return ;;
         esac
     done
@@ -587,6 +593,7 @@ user_devices_menu() {
         if sub_enabled; then
             echo "  6. 🔗 Получить новую доп. ссылку подписки"
             echo "  7. 🗑  Удалить доп. ссылку подписки"
+            echo "  8. 🔄 Получить синхронизацию (локально)"
         fi
         echo "  0. ↩  Назад"
         echo ""
@@ -653,6 +660,7 @@ user_devices_menu() {
                     fi
                 fi
                 pause ;;
+            8) sub_enabled && cluster_sync_now; pause ;;
             0) return ;;
             *) echo "  ❌ Неверный выбор."; sleep 1 ;;
         esac
@@ -772,6 +780,7 @@ _render_user_action() {
         echo " 11. 🩺 Диагностика профиля (по кластеру)"
     fi
     echo " 12. 🔢 Устройства и ссылки подписки"
+    sub_enabled && echo " 13. 🔄 Получить синхронизацию (локально)"
     echo "  0. ↩  Назад"
     echo ""
 }
@@ -803,9 +812,9 @@ user_list_menu() {
             render_user_table "$page" "Пользователи — статистика и действия"
             echo ""
             if [ "$USER_LIST_PAGES" -gt 1 ]; then
-                echo "  [1-${USER_LIST_TOTAL}] действия  |  ←/→ страницы  |  [0] назад"
+                echo "  [1-${USER_LIST_TOTAL}] действия  |  ←/→ страницы  |  $(sub_enabled && echo '[s] синхронизация  |  ')[0] назад"
             else
-                echo "  [1-${USER_LIST_TOTAL}] действия  |  [0] назад"
+                echo "  [1-${USER_LIST_TOTAL}] действия  |  $(sub_enabled && echo '[s] синхронизация  |  ')[0] назад"
             fi
             is_restart_pending && echo "  ⚠️  Есть изменения, ожидающие перезапуска (Настройки → Перезапустить)"
         )
@@ -821,6 +830,7 @@ user_list_menu() {
             LEFT|UP)    ((page--)); [ "$page" -lt 1 ] && page=1 ;;
             RIGHT|DOWN) ((page++)); [ "$page" -gt "$USER_LIST_PAGES" ] && page=$USER_LIST_PAGES ;;
             0) return ;;
+            s|S) clear; cluster_sync_now; pause; need_clear=1 ;;
             [1-9])
                 # Первая цифра уже нажата — показываем её и дочитываем остаток номера
                 printf '%s' "$key"
@@ -944,6 +954,7 @@ settings_menu() {
         fi
         echo "  3. 🔧 Исправить / обновить данные (если статистика не сходится)"
         echo "  4. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
+        echo "  5. 🔄 Получить синхронизацию (локально)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -983,6 +994,10 @@ settings_menu() {
                 ;;
             4)
                 subscription_menu
+                ;;
+            5)
+                cluster_sync_now
+                pause
                 ;;
             0) return ;;
             *)
@@ -1042,7 +1057,7 @@ subscription_menu() {
         echo "  3. 🔌 Подключиться к кластеру по токену"
         echo "  4. ➕ Добавить пир вручную (домен ноды)"
         echo "  5. 📋 Ноды кластера (просмотр и удаление)"
-        echo "  6. 🔄 Синхронизировать сейчас"
+        echo "  6. 🔄 Получить синхронизацию (локально)"
         echo "  7. 🔢 Глобальные лимиты (пул + нода, синхронно)"
         echo "  8. 🩺 Диагностика подписки"
         echo "  9. 🛡  Домен подключения в ссылке (скрыть голый IP)"
@@ -1150,8 +1165,8 @@ subscription_menu() {
                 if [ -n "$phost" ]; then
                     cluster_add_peer "$phost" "$phost"
                     publish_peers_list
-                    cluster_sync
-                    echo "  ✅ Пир $phost добавлен и синхронизирован."
+                    cluster_sync_now
+                    echo "  ✅ Пир $phost добавлен."
                 fi
                 pause
                 ;;
@@ -1202,8 +1217,7 @@ subscription_menu() {
                 done
                 ;;
             6)
-                echo ""
-                cluster_sync verbose
+                cluster_sync_now
                 pause
                 ;;
             7)
@@ -1230,7 +1244,7 @@ subscription_menu() {
                 if [ "$changed7" = 1 ]; then
                     echo "  ✅ Лимиты: пул $(get_device_limit) · нода $(get_node_limit)."
                     publish_cluster_settings
-                    [ -n "$(cluster_peers 2>/dev/null)" ] && { echo "  🌐 Синхронизирую по кластеру..."; cluster_sync >/dev/null 2>&1; echo "  ✅ Готово."; }
+                    [ -n "$(cluster_peers 2>/dev/null)" ] && cluster_sync_now
                     echo "     Применяются в течение ~1 мин (cron --online-sync) на каждой ноде."
                 fi
                 pause
@@ -1402,7 +1416,7 @@ subscription_menu() {
                     echo "  ──────────────────────────────────────────────────────"
                     echo "  Название профиля : $(sub_title)"
                     echo "  Метка этой ноды  : $(node_label)"
-                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name})"
+                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name} {online})"
                     echo "  Интервал обновл. : каждые $(sub_update_hours) ч"
                     echo ""
                     echo "  Пример подписи ключа этой ноды: $(render_tag 'username')"
@@ -1411,6 +1425,7 @@ subscription_menu() {
                     echo "  2. Метка ноды (можно с эмодзи/флагом, напр. «🇩🇪 Германия-1»)"
                     echo "  3. Шаблон подписи ключа"
                     echo "  4. Интервал обновления (часы)"
+                    echo "  5. 🔄 Получить синхронизацию (локально)"
                     echo "  0. Назад"
                     echo "  ℹ️ Название, шаблон и интервал — ОБЩИЕ для кластера (синхронизируются)."
                     echo "     Метка ноды — своя у каждого сервера."
@@ -1418,22 +1433,27 @@ subscription_menu() {
                     case "$ed" in
                         1) local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
                         2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
-                        3) echo "    Примеры: {label}   |   {label} · {user}   |   {name} ({user})"
+                        3) echo "    Плейсхолдеры: {label} метка ноды · {user} имя · {name} имя ноды · {online} подключений к этой ноде"
+                           echo "    Примеры: {label}   |   {label} · {user}   |   {label} [{online} устр.]"
+                           echo "    ℹ️ {online} — число устройств на ЭТОЙ ноде; обновляется при пересборке подписки"
+                           echo "       (авто ~1 мин) и видно клиенту после его обновления подписки."
                            local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; setting_set SUB_TAG_TMPL "$v"; glob_changed=1 ;;
                         4) local v; ask v "  Интервал обновления, часов (напр. 12): "; if [[ "$v" =~ ^[0-9]+$ ]]; then setting_set SUB_UPDATE_HOURS "$v"; glob_changed=1; else echo "  ❌ Нужно число"; fi ;;
+                        5) cluster_sync_now; pause; continue ;;
                         0) break ;;
                         *) echo "  ❌ Неверный выбор"; sleep 1; continue ;;
                     esac
                     # Применяем: метки → пересборка подписок; заголовки → перенастройка Caddy.
                     sub_refresh
                     setup_caddy >/dev/null 2>&1
-                    # Общие настройки — публикуем и разносим по кластеру сразу.
+                    # Общие настройки — публикуем и разносим по кластеру через ЕДИНУЮ синхронизацию.
                     if [ "$glob_changed" = 1 ]; then
                         publish_cluster_settings
-                        [ -n "$(cluster_peers 2>/dev/null)" ] && { echo "  🌐 Синхронизирую оформление по кластеру..."; cluster_sync >/dev/null 2>&1; }
+                        echo "  ✅ Применено."
+                        if [ -n "$(cluster_peers 2>/dev/null)" ]; then cluster_sync_now; pause; else sleep 1; fi
+                    else
+                        echo "  ✅ Применено."; sleep 1
                     fi
-                    echo "  ✅ Применено."
-                    sleep 1
                 done
                 ;;
             13)
