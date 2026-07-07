@@ -86,8 +86,11 @@ link_host() {
 # ---- Оформление подписки (что видит пользователь в клиенте) ----
 # Метка ноды (название сервера в клиенте; можно с эмодзи/флагом). По умолчанию — имя ноды.
 node_label()       { local l; l=$(node_get NODE_LABEL); echo "${l:-$(node_name)}"; }
-# Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name}.
+# Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name} {online}.
 sub_tag_tmpl()     { local t; t=$(node_get SUB_TAG_TMPL); [ -z "$t" ] && t='{label}'; printf '%s' "$t"; }
+# Использует ли шаблон плейсхолдер {online} (число подключений к этой ноде)?
+# Если да — перед генерацией подписи нужно обновить онлайн (refresh_online).
+_tag_needs_online() { case "$(sub_tag_tmpl)" in *'{online}'*) return 0 ;; *) return 1 ;; esac; }
 # Название всего профиля подписки в клиенте.
 sub_title()        { local t; t=$(node_get SUB_TITLE); echo "${t:-VPN}"; }
 # Как часто клиент обновляет подписку (часы).
@@ -99,6 +102,9 @@ render_tag() {   # user
     t=${t//\{user\}/$u}
     t=${t//\{label\}/$(node_label)}
     t=${t//\{name\}/$(node_name)}
+    # {online} — число подключений юзера к ЭТОЙ ноде (из кэша /online). Требует
+    # предварительного refresh_online (делают publish_manifest/regen_subscriptions).
+    case "$t" in *'{online}'*) t=${t//\{online\}/$(get_user_online_count "$u")} ;; esac
     printf '%s' "$t"
 }
 
@@ -272,6 +278,8 @@ subscription_url() {
 publish_manifest() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
+    # {online} в шаблоне подписи — нужен свежий онлайн этой ноды.
+    _tag_needs_online && refresh_online
     local tmp="$WEBROOT/cluster/manifest.tmp" u p node ip port obfs sni
     node=$(node_name)
     # Параметры сервера считаем один раз (get_ip дёргает сеть) и переиспользуем.
@@ -290,6 +298,8 @@ publish_manifest() {
 regen_subscriptions() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/sub"
+    # {online} в шаблоне подписи — нужен свежий онлайн этой ноды.
+    _tag_needs_online && refresh_online
 
     local users
     users=$(

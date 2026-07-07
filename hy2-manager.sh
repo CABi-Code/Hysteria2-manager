@@ -166,6 +166,7 @@ while true; do
         echo "  2. 👥 Пользователи (статистика, IP, действия)"
         echo "  3. 🔗 Получить ссылку"
         echo "  4. ⚙  Настройки"
+        sub_enabled && echo "  5. 🔄 Получить синхронизацию (локально)"
         echo "  0. 🚪 Выход"
         echo ""
     )
@@ -281,6 +282,14 @@ while true; do
         4)
             main_need_clear=1
             settings_menu
+            ;;
+
+        5)
+            main_need_clear=1
+            if sub_enabled; then
+                cluster_sync_now
+                pause "  Enter для возврата..."
+            fi
             ;;
 
         0)

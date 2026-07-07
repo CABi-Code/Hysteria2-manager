@@ -392,23 +392,37 @@ cluster_share_user() {   # user
     cluster_sync
 }
 
+# ЕДИНАЯ точка синхронизации для всего менеджера. Любая кнопка «Получить
+# синхронизацию (локально)» и любой авто-сайенк после правок идут ЧЕРЕЗ неё.
+# Публикует наши данные, тянет данные со всех пиров, применяет локально — с
+# подробным логом по каждой ноде (см. cluster_sync verbose). Возвращает код
+# cluster_sync (0 — все пиры на связи/пиров нет, 1 — есть недоступные).
+cluster_sync_now() {
+    echo ""
+    if ! sub_enabled; then
+        echo "  ⚪ Подписка / Кластер не настроены (Настройки → 4 → пункт 1)."
+        return 0
+    fi
+    cluster_sync verbose
+}
+
 # Предложить синхронизацию после изменения. Режим (node.conf SYNC_MODE):
 #   ask  — спрашивать каждый раз (по умолчанию)
 #   auto — синхронизировать сразу, без вопроса
 #   cron — ничего не делать (разнесётся по расписанию)
+# Во всех режимах, когда синхронизируем, зовём ЕДИНУЮ cluster_sync_now.
 offer_sync() {
     sub_enabled || return 0
     [ -n "$(cluster_peers 2>/dev/null)" ] || return 0   # одиночная нода — нечего синхронизировать
     local mode; mode=$(node_get SYNC_MODE); [ -z "$mode" ] && mode=ask
     case "$mode" in
         auto)
-            echo "  🌐 Синхронизирую со всеми нодами..."
-            cluster_sync verbose ;;
+            cluster_sync_now ;;
         cron) : ;;   # тихо, разнесётся по расписанию (каждые 5 мин)
         *)
             local a; ask a "  🌐 Синхронизировать со всеми нодами сейчас? (да/нет, по умолч. по расписанию): "
             if is_yes "$a"; then
-                cluster_sync verbose
+                cluster_sync_now
             fi ;;
     esac
 }
@@ -585,4 +599,10 @@ cluster_online_sync() {
 
     cluster_apply_userlimits   # применить лимиты, пришедшие с пиров
     enforce_device_limits
+    # Если в подписи используется {online} — держим счётчик свежим (раз в минуту):
+    # перегенерируем манифест (для пиров) и локальные файлы подписки.
+    if _tag_needs_online; then
+        publish_manifest
+        regen_subscriptions
+    fi
 }
