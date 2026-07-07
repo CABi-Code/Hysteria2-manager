@@ -74,12 +74,12 @@ USERLIMITS_TS_FILE="$DATA_DIR/userlimits_ts.dat"
 # Обновляется менеджером (cron --online-sync и после правок). Скрипт auth читает
 # его, чтобы отклонять лишние устройства. Права как у users.db (640, владелец — сервис).
 AUTHLIMITS_FILE="$DATA_DIR/authlimits.dat"
-# Уникальные IP, скачавшие подписку по КОНКРЕТНОМУ токену (из access-логов Caddy):
-# «token|ip|first|last|count». SUBLOG_TS — метка последней обработанной записи лога.
+# Уникальные IP, скачавшие подписку по КОНКРЕТНОМУ токену. «token|ip|first|last|count».
+# Источник — access-лог Caddy, который пишется в stderr → journald (НЕ в файл: файл
+# в /var/log/caddy процессу caddy под systemd недоступен и ломает старт Caddy).
+# collect_sub_ips читает его через journalctl -u caddy. SUBLOG_TS — метка «since».
 SUBIPS_FILE="$DATA_DIR/subips.dat"
 SUBLOG_TS="$DATA_DIR/sublog_ts"
-# Access-лог Caddy для подписки (JSON). Из него collect_sub_ips берёт IP по токенам.
-CADDY_ACCESS_LOG="/var/log/caddy/hy2sub-access.log"
 
 API_PORT=25580
 PAGE_SIZE=10
