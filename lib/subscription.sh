@@ -57,14 +57,21 @@ autoset_node_ip() {
 
 # Записывает node.conf (домен + имя ноды).
 # Устанавливает/обновляет одно поле node.conf, не трогая остальные.
+# ВАЖНО: значение пишем БЕЗ sed. Раньше строка обновлялась через
+# `sed "s|^key=.*|key=$val|"`, и если значение содержало символы, особые для
+# правой части sed (`&`, `\`, а также разделитель `|`), подстановка ломалась —
+# настройка «не сохранялась». Частый случай — шаблон подписи с `|` или `&`.
+# Теперь просто выкидываем старую строку ключа и дописываем новую через printf.
 node_set() {   # key value
-    local key="$1" val="$2"
+    local key="$1" val="$2" tmp
     mkdir -p "$DATA_DIR"; touch "$NODE_CONF"
-    if grep -q "^${key}=" "$NODE_CONF" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$NODE_CONF"
-    else
-        echo "${key}=${val}" >> "$NODE_CONF"
-    fi
+    tmp=$(mktemp) || return 1
+    # grep -v по якорю «^key=»: ключи у нас из [A-Z_], спецсимволов regex нет.
+    # «^SUB_TAG_TMPL=» не заденет «SUB_TAG_TMPL_TS=» — после ключа требуется «=».
+    grep -v "^${key}=" "$NODE_CONF" > "$tmp" 2>/dev/null
+    printf '%s=%s\n' "$key" "$val" >> "$tmp"
+    cat "$tmp" > "$NODE_CONF"
+    rm -f "$tmp"
 }
 
 node_configure() {   # domain name
@@ -88,8 +95,9 @@ link_host() {
 node_label()       { local l; l=$(node_get NODE_LABEL); echo "${l:-$(node_name)}"; }
 # Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name} {online}.
 sub_tag_tmpl()     { local t; t=$(node_get SUB_TAG_TMPL); [ -z "$t" ] && t='{label}'; printf '%s' "$t"; }
-# Использует ли шаблон плейсхолдер {online} (число подключений к этой ноде)?
-# Если да — перед генерацией подписи нужно обновить онлайн (refresh_online).
+# Использует ли шаблон плейсхолдер {online} (число ПОДКЛЮЧЕНИЙ юзера по ВСЕМУ
+# кластеру)? Если да — перед генерацией подписи нужен свежий онлайн: локальный
+# (refresh_online) и стянутая статистика пиров (её обновляет cluster_online_sync).
 _tag_needs_online() { case "$(sub_tag_tmpl)" in *'{online}'*) return 0 ;; *) return 1 ;; esac; }
 # Название всего профиля подписки в клиенте.
 sub_title()        { local t; t=$(node_get SUB_TITLE); echo "${t:-VPN}"; }
@@ -102,9 +110,12 @@ render_tag() {   # user
     t=${t//\{user\}/$u}
     t=${t//\{label\}/$(node_label)}
     t=${t//\{name\}/$(node_name)}
-    # {online} — число подключений юзера к ЭТОЙ ноде (из кэша /online). Требует
-    # предварительного refresh_online (делают publish_manifest/regen_subscriptions).
-    case "$t" in *'{online}'*) t=${t//\{online\}/$(get_user_online_count "$u")} ;; esac
+    # {online} — суммарное число подключений юзера по ВСЕМУ кластеру: локальный
+    # онлайн (кэш /online, refresh_online) + онлайн со всех пиров (их .stats,
+    # обновляет cluster_online_sync). Так в подписке видно устройства со всех нод,
+    # а не только с текущей. Требует предварительного refresh_online (его делают
+    # publish_manifest/regen_subscriptions) и свежих кэшей пиров.
+    case "$t" in *'{online}'*) t=${t//\{online\}/$(cluster_user_connections "$u")} ;; esac
     printf '%s' "$t"
 }
 
@@ -299,7 +310,8 @@ subscription_url() {
 publish_manifest() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    # {online} в шаблоне подписи — нужен свежий онлайн этой ноды.
+    # {online} в шаблоне подписи — обновляем локальный онлайн (CACHED_ONLINE).
+    # Онлайн пиров берётся из их .stats (обновляет cluster_online_sync).
     _tag_needs_online && refresh_online
     local tmp="$WEBROOT/cluster/manifest.tmp" u p node ip port obfs sni
     node=$(node_name)
@@ -319,7 +331,8 @@ publish_manifest() {
 regen_subscriptions() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/sub"
-    # {online} в шаблоне подписи — нужен свежий онлайн этой ноды.
+    # {online} в шаблоне подписи — обновляем локальный онлайн (CACHED_ONLINE).
+    # Онлайн пиров берётся из их .stats (обновляет cluster_online_sync).
     _tag_needs_online && refresh_online
 
     local users

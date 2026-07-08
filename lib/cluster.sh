@@ -430,6 +430,26 @@ offer_sync() {
 # ---- Синхронизация ОФОРМЛЕНИЯ подписки (общее для кластера) ----
 # Название профиля, шаблон подписи, интервал обновления — одинаковые на всех
 # нодах. Значения в base64 (могут содержать пробелы/спецсимволы), last-write-wins.
+
+# Стягивает ТОЛЬКО раздел общих настроек с каждого пира в кэш (лёгкий аналог
+# полной синхронизации). Нужен ПЕРЕД ручной правкой общей настройки: тогда
+# _setting_max_seen_ts видит актуальный максимум ts по всему кластеру, и ts
+# правки (max+1) гарантированно его превысит — LWW не откатит её устаревшим,
+# но большим по ts значением пира (частая причина «шаблон не сохраняется» при
+# расхождении часов между нодами).
+cluster_pull_settings() {
+    sub_enabled || return 0
+    mkdir -p "$PEERS_DIR"
+    local host name data
+    while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
+        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        data=$(cluster_call "$host" "/cluster/settings" 5)
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.settings"
+    done < <(cluster_peers)
+}
+
 publish_cluster_settings() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
