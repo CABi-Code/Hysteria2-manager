@@ -113,13 +113,34 @@ render_tag() {   # user
 # подключений (см. ниже), синхронизируются тем же LWW-механизмом.
 SETTING_KEYS="SUB_TITLE SUB_TAG_TMPL SUB_UPDATE_HOURS POOL_LIMIT NODE_LIMIT"
 
+setting_ts() { local t; t=$(node_get "${1}_TS"); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
+
+# Наибольший известный ts настройки: локальный + опубликованный + кэши пиров.
+# Нужен, чтобы локальная правка гарантированно выигрывала LWW даже при
+# расхождении часов между нодами (ts работает как логический счётчик Лампорта).
+_setting_max_seen_ts() {   # key -> ts
+    local k="$1"
+    {
+        setting_ts "$k"
+        [ -f "$WEBROOT/cluster/settings" ] && awk -F'|' -v k="$k" '$1==k{print $3}' "$WEBROOT/cluster/settings" 2>/dev/null
+        [ -d "$PEERS_DIR" ] && awk -F'|' -v k="$k" '$1==k{print $3}' "$PEERS_DIR"/*.settings 2>/dev/null
+    } | awk 'BEGIN{m=0} /^[0-9]+$/ && $1+0>m {m=$1+0} END{print m+0}'
+}
+
 # Установить общую настройку + метку времени (для синхронизации last-write-wins).
+# Локальная правка (без явного ts): ts = max(сейчас, известный_максимум+1), чтобы
+# изменение НЕ откатывалось устаревшим, но большим по ts значением пира (частая
+# причина «настройка не сохраняется» — расхождение часов между нодами). При явном
+# ts (применение записи с ноды-пира в cluster_apply_settings) берём его как есть.
 setting_set() {   # key value [ts]
-    local k="$1" v="$2" ts="${3:-$(date +%s)}"
+    local k="$1" v="$2" ts="$3"
+    if [ -z "$ts" ]; then
+        local now maxseen; now=$(date +%s); maxseen=$(_setting_max_seen_ts "$k")
+        if [ "${maxseen:-0}" -ge "$now" ] 2>/dev/null; then ts=$((maxseen + 1)); else ts="$now"; fi
+    fi
     node_set "$k" "$v"
     node_set "${k}_TS" "$ts"
 }
-setting_ts() { local t; t=$(node_get "${1}_TS"); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
 
 # ---- Релей (фронт-сервер, реально прячет IP ноды) ----
 # Релей — отдельный дешёвый VPS. Клиенты/DNS видят IP релея, релей форвардит
