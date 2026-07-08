@@ -604,6 +604,12 @@ cluster_online_sync() {
     # устройств разъезжались по кластеру быстро, а не только по 5-минутной cluster_sync.
     publish_cluster_userlimits
 
+    # Если в подписи используется {online} — стягиваем и манифесты пиров (раз в
+    # минуту), чтобы онлайн ЧУЖИХ нод в нашей подписке был свежим, а не раз в
+    # 5 минут (как в полной cluster_sync). Каждый пир печёт свой онлайн в свой
+    # манифест, мы лишь подставляем их ключи в общую подписку.
+    local need_online=""; _tag_needs_online && need_online=1
+
     local host name data
     while IFS= read -r host; do
         [ -n "$host" ] || continue
@@ -615,13 +621,20 @@ cluster_online_sync() {
         # Персональные лимиты пира -> кэш (быстрое распространение жёсткой проверки).
         data=$(cluster_call "$host" "/cluster/userlimits")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.userlimits"
+        # Свежий манифест пира (в нём испечён онлайн той ноды). Недоступного пира
+        # НЕ трогаем — оставляем прошлый манифест, чтобы не терять его ключи.
+        if [ -n "$need_online" ]; then
+            data=$(cluster_call "$host" "/cluster/manifest")
+            [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.manifest"
+        fi
     done < <(cluster_peers)
 
     cluster_apply_userlimits   # применить лимиты, пришедшие с пиров
     enforce_device_limits
     # Если в подписи используется {online} — держим счётчик свежим (раз в минуту):
-    # перегенерируем манифест (для пиров) и локальные файлы подписки.
-    if _tag_needs_online; then
+    # перегенерируем свой манифест (для пиров) и локальные файлы подписки (в них
+    # попадут свежие манифесты пиров, стянутые выше).
+    if [ -n "$need_online" ]; then
         publish_manifest
         regen_subscriptions
     fi

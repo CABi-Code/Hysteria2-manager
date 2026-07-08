@@ -1416,7 +1416,7 @@ subscription_menu() {
                     echo "  ──────────────────────────────────────────────────────"
                     echo "  Название профиля : $(sub_title)"
                     echo "  Метка этой ноды  : $(node_label)"
-                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name} {online} — онлайн по кластеру)"
+                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name} {online} — онлайн сервера)"
                     echo "  Интервал обновл. : каждые $(sub_update_hours) ч"
                     echo ""
                     echo "  Пример подписи ключа этой ноды: $(render_tag 'username')"
@@ -1437,10 +1437,11 @@ subscription_menu() {
                     case "$ed" in
                         1) local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
                         2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
-                        3) echo "    Плейсхолдеры: {label} метка ноды · {user} имя · {name} имя ноды · {online} подключений по кластеру"
-                           echo "    Примеры: {label}   |   {label} · {user}   |   {label} [{online} устр.]"
-                           echo "    ℹ️ {online} — суммарно устройств юзера ПО ВСЕМУ кластеру; обновляется при"
-                           echo "       пересборке подписки (авто ~1 мин) и видно клиенту после обновления подписки."
+                        3) echo "    Плейсхолдеры: {label} метка ноды · {user} имя · {name} имя ноды · {online} онлайн сервера"
+                           echo "    Примеры: {label}   |   {label} · {user}   |   {label} [🟢 {online}]"
+                           echo "    ℹ️ {online} — сколько юзеров сейчас онлайн на КОНКРЕТНОМ сервере (индикатор"
+                           echo "       загрузки: клиент видит, к какому серверу лучше подключиться). У ключа каждой"
+                           echo "       ноды — онлайн своей ноды. Обновляется ~1 мин; видно после обновления подписки."
                            local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; setting_set SUB_TAG_TMPL "$v"; glob_changed=1 ;;
                         4) local v; ask v "  Интервал обновления, часов (напр. 12): "; if [[ "$v" =~ ^[0-9]+$ ]]; then setting_set SUB_UPDATE_HOURS "$v"; glob_changed=1; else echo "  ❌ Нужно число"; fi ;;
                         5) cluster_sync_now; pause; continue ;;

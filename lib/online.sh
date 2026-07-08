@@ -19,3 +19,16 @@ get_user_online_count() {
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     echo "$count"
 }
+
+# Общий онлайн ЭТОЙ ноды: сколько юзеров сейчас с активными подключениями.
+# Та же метрика, что «онлайн: N» в главном меню (hy2-manager.sh). Используется
+# как значение плейсхолдера {online} в подписи ключа — индикатор загрузки ноды.
+# Требует свежего CACHED_ONLINE (refresh_online).
+node_online_count() {
+    local json="${CACHED_ONLINE:-}"
+    [ -z "$json" ] && json='{}'
+    local count
+    count=$(echo "$json" | jq 'to_entries | map(select(.value > 0)) | length' 2>/dev/null | tr -dc '0-9')
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    echo "$count"
+}
