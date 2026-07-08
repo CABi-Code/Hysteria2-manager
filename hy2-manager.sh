@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-# Hysteria 2 Manager v2.1
+# Hysteria 2 Manager
 # Управление пользователями, статистика, IP-трекинг
 # Сроки действия, защита от утечек
 # ================================================
@@ -12,6 +12,12 @@ _self="${BASH_SOURCE[0]}"
 _resolved="$(readlink -f "$_self" 2>/dev/null || echo "$_self")"
 SCRIPT_DIR="$(cd "$(dirname "$_resolved")" && pwd)"
 unset _self _resolved
+
+# === ВЕРСИЯ МЕНЕДЖЕРА ===
+# Единый источник версии — файл VERSION в каталоге со скриптом. Так номер
+# версии задаётся в одном месте и подставляется везде через $MANAGER_VERSION.
+MANAGER_VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null | head -1 | tr -d '[:space:]')"
+MANAGER_VERSION="${MANAGER_VERSION:-unknown}"
 
 # === ЛОГИ ===
 LOG_DIR="/var/log/hy2-manager"
@@ -139,9 +145,14 @@ while true; do
         hy_autostart="❌ отключён"
     fi
 
+    _title="Hysteria 2 Manager v${MANAGER_VERSION}"
+    # Центрируем заголовок во внутренней ширине рамки (62 символа), чтобы
+    # правая граница ║ оставалась на месте при любой длине версии.
+    _inner=62; _tlen=${#_title}
+    _lpad=$(( (_inner - _tlen) / 2 )); _rpad=$(( _inner - _tlen - _lpad ))
     main_frame=$(
         echo "╔══════════════════════════════════════════════════════════════╗"
-        echo "║              Hysteria 2 Manager v2.1                       ║"
+        printf "║%*s%s%*s║\n" "$_lpad" "" "$_title" "$_rpad" ""
         echo "╠══════════════════════════════════════════════════════════════╣"
         echo "║ Статус Hysteria : $hy_status (автозапуск: $hy_autostart)"
         echo "║ IP сервера      : $CACHED_IP"
