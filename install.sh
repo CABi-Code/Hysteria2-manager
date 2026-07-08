@@ -12,6 +12,12 @@ set -euo pipefail
 #   REPO_URL=https://raw.githubusercontent.com/USER/REPO/BRANCH bash <(curl ...)
 REPO_URL="${REPO_URL:-https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main}"
 
+# === ВЕРСИЯ МЕНЕДЖЕРА ===
+# Единый источник версии — файл VERSION в репозитории. Тянем его отдельно,
+# чтобы показать актуальный номер в баннере установки и не хардкодить версию.
+MANAGER_VERSION="$(curl -fsSL --max-time 15 "$REPO_URL/VERSION" 2>/dev/null | head -1 | tr -d '[:space:]')"
+MANAGER_VERSION="${MANAGER_VERSION:-unknown}"
+
 # === ЦВЕТА ===
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,9 +47,14 @@ if [ ! -t 0 ]; then
 fi
 
 echo ""
+# Ширину рамки держим по исходной раскладке (9 пробелов слева, 18 справа для
+# версии из 3 символов). Правый отступ считаем ТОЛЬКО по длине ASCII-версии,
+# чтобы не зависеть от локали при подсчёте ширины кириллицы в заголовке.
+_rpad=$(( 21 - ${#MANAGER_VERSION} )); [ "$_rpad" -lt 1 ] && _rpad=1
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║         Установка Hysteria 2 + Manager v3.1                  ║"
+printf "║         Установка Hysteria 2 + Manager v%s%*s║\n" "$MANAGER_VERSION" "$_rpad" ""
 echo "╚══════════════════════════════════════════════════════════════╝"
+unset _rpad
 echo ""
 
 # === ОБЩИЕ КОНСТАНТЫ ===
@@ -72,6 +83,7 @@ install_manager_files() {
     info "Скачиваю менеджер из $REPO_URL ..."
     mkdir -p "$INSTALL_DIR/lib"
     download_file "$REPO_URL/hy2-manager.sh" "$INSTALL_DIR/hy2-manager.sh"
+    download_file "$REPO_URL/VERSION" "$INSTALL_DIR/VERSION"
     for f in "${MANAGER_LIBS[@]}"; do
         download_file "$REPO_URL/lib/${f}.sh" "$INSTALL_DIR/lib/${f}.sh"
     done
