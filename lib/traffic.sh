@@ -55,6 +55,81 @@ collect_traffic() {
     done
 }
 
+# ---- Учёт АКТИВНОГО трафика для жёсткой проверки (traffic-based) ----
+# Раз в минуту читаем КУМУЛЯТИВНЫЙ трафик из API БЕЗ сброса счётчиков (в отличие
+# от collect_traffic, который раз в 30 мин делает ?clear=1). По дельте с прошлым
+# снимком считаем скорость юзера за последнюю минуту. Если скорость ≥ порога —
+# юзер СЕЙЧАС реально пользуется сетью на этой ноде (не пинг/keepalive): ставим
+# active=1 и фиксируем active_since (начало активной серии) — по нему выбираем
+# «первую» активную ноду в enforce_active_node_limit. Иначе active=0.
+# FAIL-SAFE: если API недоступен/ответ пуст — файл активности НЕ трогаем, чтобы
+# сбой мониторинга не привёл к ложным обрезаниям и не терял «первенство» ноды.
+collect_activity() {
+    local response now user cum prevline prevcum prevts elapsed delta rate \
+          old_line old_active old_since active since thr
+    response=$(api_get "/traffic")   # без clear=1 — не мешаем 30-мин сбору
+    { [ -z "$response" ] || [ "$response" = "null" ]; } && return 0
+    echo "$response" | jq empty 2>/dev/null || return 0
+
+    now=$(date +%s)
+    thr="${ACTIVITY_THRESHOLD_BPS:-4096}"
+    [[ "$thr" =~ ^[0-9]+$ ]] || thr=4096
+    local newprev="${ACTIVITY_PREV_FILE}.tmp" newact="${ACTIVITY_FILE}.tmp"
+    : > "$newprev"; : > "$newact"
+
+    # Идём по кумулятиву каждого юзера из ответа API (tx+rx суммарно).
+    while IFS='|' read -r user cum; do
+        [ -n "$user" ] || continue
+        [[ "$cum" =~ ^[0-9]+$ ]] || cum=0
+
+        # Прошлый снимок кумулятива — для дельты за минуту.
+        prevline=$(grep "^${user}|" "$ACTIVITY_PREV_FILE" 2>/dev/null | head -1)
+        prevcum=$(printf '%s' "$prevline" | cut -d'|' -f2)
+        prevts=$(printf '%s' "$prevline" | cut -d'|' -f3)
+        printf '%s|%s|%s\n' "$user" "$cum" "$now" >> "$newprev"
+
+        rate=0
+        if [[ "$prevcum" =~ ^[0-9]+$ ]] && [[ "$prevts" =~ ^[0-9]+$ ]]; then
+            elapsed=$(( now - prevts )); [ "$elapsed" -lt 1 ] && elapsed=1
+            # Счётчик мог обнулиться (collect сделал ?clear=1) — тогда дельта = cum.
+            if [ "$cum" -ge "$prevcum" ]; then delta=$(( cum - prevcum )); else delta=$cum; fi
+            rate=$(( delta / elapsed ))
+        fi
+
+        # Прошлое состояние активности — чтобы НЕ сбрасывать active_since, пока
+        # активная серия непрерывна (иначе «первенство» терялось бы каждую минуту).
+        old_line=$(grep "^${user}|" "$ACTIVITY_FILE" 2>/dev/null | head -1)
+        old_active=$(printf '%s' "$old_line" | cut -d'|' -f2)
+        old_since=$(printf '%s' "$old_line" | cut -d'|' -f3)
+
+        if [ "$rate" -ge "$thr" ] 2>/dev/null; then
+            active=1
+            if [ "$old_active" = "1" ] && [[ "$old_since" =~ ^[0-9]+$ ]] && [ "$old_since" -gt 0 ]; then
+                since=$old_since        # серия продолжается — «первенство» сохраняем
+            else
+                since=$now              # новая активная серия
+            fi
+        else
+            active=0; since=0
+        fi
+        printf '%s|%s|%s|%s\n' "$user" "$active" "$since" "$rate" >> "$newact"
+    done < <(echo "$response" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null)
+
+    mv "$newprev" "$ACTIVITY_PREV_FILE" 2>/dev/null
+    mv "$newact" "$ACTIVITY_FILE" 2>/dev/null
+}
+
+# Активен ли юзер на ЭТОЙ ноде прямо сейчас (0/1) — по трафику за последнюю минуту.
+get_user_active() {
+    local v; v=$(grep "^${1}|" "$ACTIVITY_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    [ "$v" = "1" ] && echo 1 || echo 0
+}
+# С какого момента идёт текущая активная серия (unix ts; 0 — не активен).
+get_user_active_since() {
+    local v; v=$(grep "^${1}|" "$ACTIVITY_FILE" 2>/dev/null | head -1 | cut -d'|' -f3)
+    [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
+}
+
 # Текущая скорость пользователя: "user|tx_rate|rx_rate" в байт/сек
 get_user_speed() {
     local line

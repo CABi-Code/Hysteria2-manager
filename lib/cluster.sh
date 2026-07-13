@@ -119,7 +119,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips abuse"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -131,6 +131,7 @@ _section_label() {
         settings)   echo "настройки/лимиты" ;;
         userlimits) echo "устройства/жёсткая проверка" ;;
         subips)     echo "IP по ссылкам" ;;
+        abuse)      echo "анти-абуз (балл/окно)" ;;
         *)          echo "$1" ;;
     esac
 }
@@ -156,6 +157,7 @@ cluster_sync() {
     publish_cluster_expiry
     publish_cluster_settings
     publish_cluster_userlimits
+    publish_cluster_abuse
     publish_ips
     publish_subips
 
@@ -224,6 +226,7 @@ cluster_sync() {
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
     cluster_apply_settings   # подтянуть общее оформление подписки
     cluster_apply_userlimits # подтянуть персональные лимиты устройств
+    abuse_apply              # подтянуть состояние анти-абуза (балл/окно авто-HC)
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
     write_authlimits         # обновить снимок для жёсткой проверки
@@ -599,10 +602,13 @@ cluster_apply_userlimits() {
 cluster_online_sync() {
     sub_enabled || return 0
     mkdir -p "$PEERS_DIR"
+    collect_activity        # свежий active/active_since (трафик за последнюю минуту)
     publish_stats
-    # Публикуем лимиты и здесь (раз в минуту), чтобы жёсткая проверка и кол-во
-    # устройств разъезжались по кластеру быстро, а не только по 5-минутной cluster_sync.
+    # Публикуем лимиты и состояние анти-абуза и здесь (раз в минуту), чтобы жёсткая
+    # проверка, кол-во устройств и окно авто-жёсткой проверки разъезжались по
+    # кластеру быстро, а не только по 5-минутной cluster_sync.
     publish_cluster_userlimits
+    publish_cluster_abuse
 
     # Если в подписи используется {online} — стягиваем и манифесты пиров (раз в
     # минуту), чтобы онлайн ЧУЖИХ нод в нашей подписке был свежим, а не раз в
@@ -621,6 +627,10 @@ cluster_online_sync() {
         # Персональные лимиты пира -> кэш (быстрое распространение жёсткой проверки).
         data=$(cluster_call "$host" "/cluster/userlimits")
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.userlimits"
+        # Состояние анти-абуза пира -> кэш (быстрое распространение окна авто-жёсткой
+        # проверки и балла шаринга).
+        data=$(cluster_call "$host" "/cluster/abuse")
+        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.abuse"
         # Свежий манифест пира (в нём испечён онлайн той ноды). Недоступного пира
         # НЕ трогаем — оставляем прошлый манифест, чтобы не терять его ключи.
         if [ -n "$need_online" ]; then
@@ -630,7 +640,9 @@ cluster_online_sync() {
     done < <(cluster_peers)
 
     cluster_apply_userlimits   # применить лимиты, пришедшие с пиров
-    enforce_device_limits
+    abuse_apply                # слить состояние анти-абуза с пирами (окно авто-HC)
+    enforce_device_limits      # внутри: refresh_online + traffic-based жёсткая проверка
+    abuse_observe              # наблюдение минуты: одновременная активность по нодам
     # Если в подписи используется {online} — держим счётчик свежим (раз в минуту):
     # перегенерируем свой манифест (для пиров) и локальные файлы подписки (в них
     # попадут свежие манифесты пиров, стянутые выше).
