@@ -1,4 +1,4 @@
-# Hysteria 2 Manager v3.2
+# Hysteria 2 Manager v3.4
 
 Интерактивный менеджер пользователей для [Hysteria 2](https://hysteria.network/) VPN-сервера.
 
