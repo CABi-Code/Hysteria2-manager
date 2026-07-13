@@ -933,13 +933,17 @@ user_over_limit() {   # user [cluster_conn] [local_conn]
     return 1
 }
 
-# Публикует статистику ЭТОЙ ноды для других нод (за X-Cluster-Auth). По строке
-# на юзера: «user<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx». Эти данные пиры
-# подмешивают в общекластерные онлайн/трафик/скорость и в разбивку по нодам.
+# Публикует статистику ЭТОЙ ноды для других нод (за X-Cluster-Auth). По строке на
+# юзера: «user<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx<TAB>active<TAB>active_since».
+# Первые 6 колонок пиры подмешивают в общекластерные онлайн/трафик/скорость и в
+# разбивку по нодам; active/active_since (кол. 7-8) — для traffic-based жёсткой
+# проверки (enforce_active_node_limit): активен ли юзер по трафику на этой ноде и
+# с какого момента. Доп. колонки в конце — обратно совместимо: старые парсеры
+# читают кол. 2-6, а старые ноды (6 колонок) отдают пустой active (= неактивен).
 publish_stats() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx
+    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx ac asince
     online=$(api_get "/online")
     echo "$online" | jq empty 2>/dev/null || online='{}'
     : > "$tmp"
@@ -948,7 +952,8 @@ publish_stats() {
         oc=$(echo "$online" | jq -r --arg x "$u" '.[$x]//0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
         tl=$(get_user_traffic "$u"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
         sp=$(get_user_speed "$u");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" >> "$tmp"
+        ac=$(get_user_active "$u");  asince=$(get_user_active_since "$u")
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" >> "$tmp"
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/stats"
     secure_web_files
@@ -1071,10 +1076,11 @@ cluster_user_breakdown() {
     done
 }
 
-# Снимок лимитов для скрипта аутентификации (жёсткая проверка). По строке на
-# активного юзера: «user|hardcheck|pool_cap|node_cap|cluster_others», где
-# cluster_others — подключения на ДРУГИХ нодах (сумма из кэшей пиров). Скрипт
-# auth читает файл и решает, пускать ли новое устройство. Права — как у users.db.
+# Снимок лимитов «user|hardcheck|pool_cap|node_cap|cluster_others».
+# УСТАРЕЛО как вход для auth: скрипт аутентификации больше НЕ режет по числу
+# сессий (это ломало переподключения и смену ноды), а лимит устройств держится
+# по реальному трафику (enforce_active_node_limit + анти-абуз). Файл оставлен для
+# совместимости/диагностики и как дешёвый снимок; на решение о пуске он не влияет.
 write_authlimits() {
     local tmp="${AUTHLIMITS_FILE}.tmp" user hc pc nc others owner group
     : > "$tmp" 2>/dev/null || return 0
@@ -1097,9 +1103,11 @@ write_authlimits() {
 # сессии на ЭТОЙ ноде (api /kick). Так делает КАЖДАЯ нода независимо по одним и
 # тем же данным. Кик включается ТОЛЬКО когда задан хотя бы один ГЛОБАЛЬНЫЙ лимит
 # (POOL_LIMIT/NODE_LIMIT); при этом действует эффективный per-user cap
-# (персональное кол-во устройств приоритетнее). Без глобальных лимитов принуди-
-# тельного кика нет — блокировка лишних устройств делается «жёсткой проверкой»
-# на этапе аутентификации. Снимок для auth пишем всегда.
+# (персональное кол-во устройств приоритетнее). Юзеров с ВКЛючённой жёсткой
+# проверкой этот счётчиковый кик НЕ трогает — их ведёт traffic-based
+# enforce_active_node_limit (кик по реальному трафику, а не по числу сессий),
+# иначе счёт «залипших»/переключающихся коннектов ломал бы смену ноды.
+# Снимок для auth пишем всегда.
 enforce_device_limits() {
     sub_enabled || return 0
     refresh_online          # заполнит CACHED_ONLINE для get_user_online_count
@@ -1110,6 +1118,7 @@ enforce_device_limits() {
         local user localn total
         while IFS= read -r user; do
             [ -n "$user" ] || continue
+            [ "$(get_user_hardcheck_effective "$user")" = "1" ] && continue   # ведёт traffic-based энфорсер
             localn=$(get_user_online_count "$user")
             [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
             total=$(cluster_user_connections "$user")
@@ -1120,5 +1129,59 @@ enforce_device_limits() {
             fi
         done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
     fi
+    enforce_active_node_limit
     write_authlimits
+}
+
+# Traffic-based ЖЁСТКАЯ ПРОВЕРКА: держим АКТИВНЫЙ трафик подписки не более чем на
+# pool_cap нодах одновременно. «Активная» нода — та, где скорость юзера за
+# последнюю минуту ≥ порога (реальное использование сети, а не пинг/keepalive).
+# Если активных нод больше лимита — оставляем те, что стали активны РАНЬШЕ (по
+# active_since), а на «лишних» (более поздних) кикаем сессии ЭТОЙ ноды. Так
+# «первая» активная нода остаётся рабочей, а параллельная активность на других
+# обрезается. Переключение на другую ноду работает само: как только старая нода
+# перестаёт гнать трафик (уходит в неактив), новая становится единственной
+# активной и остаётся. Решение принимает КАЖДАЯ нода независимо по одним и тем же
+# данным (свой active_since + active_since пиров из их stats-кэша, кол. 7-8).
+# Кикаем ТОЛЬКО свои сессии и ТОЛЬКО если сами сейчас активны и оказались «лишними».
+enforce_active_node_limit() {
+    sub_enabled || return 0
+    local self; self=$(node_name)
+    local user my_since cap active_list total keep f name
+    while IFS= read -r user; do
+        [ -n "$user" ] || continue
+        [ "$(get_user_hardcheck_effective "$user")" = "1" ] || continue
+        # Мы сами сейчас активны по трафику? Если нет — нам некого обрезать.
+        [ "$(get_user_active "$user")" = "1" ] || continue
+        my_since=$(get_user_active_since "$user")
+        [ "${my_since:-0}" -gt 0 ] 2>/dev/null || continue
+
+        cap=$(pool_cap "$user"); [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+        [ "$cap" -le 0 ] && continue    # 0 = без лимита
+
+        # Список активных нод «active_since|node»: эта нода + пиры (кол. 7=active,
+        # 8=active_since в их stats-кэше). Старые ноды (6 колонок) сюда не попадут.
+        active_list=$(
+            printf '%s|%s\n' "$my_since" "$self"
+            if [ -d "$PEERS_DIR" ]; then
+                for f in "$PEERS_DIR"/*.stats; do
+                    [ -f "$f" ] || continue
+                    name=$(basename "$f" .stats)
+                    awk -F'\t' -v u="$user" -v n="$name" \
+                        'NF>=8 && $1==u && $7==1 && ($8+0)>0 {print $8"|"n}' "$f"
+                done
+            fi
+        )
+        total=$(printf '%s\n' "$active_list" | grep -c '|')
+        [ "${total:-0}" -gt "$cap" ] 2>/dev/null || continue   # в пределах лимита
+
+        # Оставляем cap самых ранних (по active_since, tie-break по имени ноды).
+        # Если МЫ не среди «оставленных» — кикаем свои сессии на этой ноде.
+        keep=$(printf '%s\n' "$active_list" | sort -t'|' -k1,1n -k2,2 | head -n "$cap")
+        if ! printf '%s\n' "$keep" | grep -qx "${my_since}|${self}"; then
+            api_post "/kick" "[\"$user\"]" &>/dev/null
+            echo "$(date '+%F %T') $user: активных нод=$total > cap=$cap — обрезаю $self (active_since=$my_since), оставляю ранние" \
+                >> "$DATA_DIR/limit.log" 2>/dev/null
+        fi
+    done < <(get_active_users)
 }

@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription cluster ui)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse cluster ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -91,6 +91,13 @@ if [ "$1" = "--online-sync" ]; then
     migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
     cluster_online_sync
     write_authlimits    # снимок для жёсткой проверки (работает и на одиночной ноде)
+    exit 0
+fi
+
+if [ "$1" = "--antiabuse" ]; then
+    # Часовая коррекция балла анти-абуза + авто-жёсткая проверка (cron, 1 час).
+    setup_stats_api
+    abuse_correct
     exit 0
 fi
 
