@@ -133,7 +133,7 @@ delete_user() {
         sub_token_remove "$user"
     fi
     db_remove_user "$user"
-    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" 2>/dev/null
+    sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" "$ACTIVITY_FILE" "$ACTIVITY_PREV_FILE" "$ABUSE_FILE" "$ABUSE_OBS_FILE" 2>/dev/null
     declare -F roster_remove >/dev/null && roster_remove "$user"   # снять метку «кластерный»
     api_post "/kick" "[\"$user\"]" &>/dev/null
     sub_refresh

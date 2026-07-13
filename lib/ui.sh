@@ -432,15 +432,16 @@ user_action_menu() {
                     echo ""
                     echo "  📊 Всего уникальных IP: $total_ips"
                     echo "  📊 Активных за 7 дней: $recent_ips"
-
-                    if [ "$total_ips" -gt 5 ]; then
+                    echo "  ℹ️  Много разных IP — это НЕ признак шаринга: телефон в роуминге"
+                    echo "     меняет IP постоянно, а дома у семьи несколько устройств."
+                    # Реальное подозрение — ОДНОВРЕМЕННЫЙ активный трафик на разных нодах.
+                    if sub_enabled; then
                         echo ""
-                        echo "  🚨 ВНИМАНИЕ: $total_ips уникальных IP!"
-                        echo "  Высокая вероятность шаринга аккаунта."
-                    elif [ "$total_ips" -gt 3 ]; then
-                        echo ""
-                        echo "  ⚠️  Обнаружено $total_ips уникальных IP."
-                        echo "  Возможна утечка учётных данных."
+                        echo "  🕵️  Анти-абуз (по одновременной активности): $(abuse_status_line "$user")"
+                        if abuse_auto_hc_active "$user"; then
+                            echo "  🚨 Похоже на шаринг: подписку активно использовали сразу на нескольких нодах —"
+                            echo "     на время включена жёсткая проверка (активной остаётся одна нода)."
+                        fi
                     fi
                 fi
                 echo ""
@@ -570,7 +571,14 @@ user_devices_menu() {
         echo "  Эффективно: pool $([ "$pc" -gt 0 ] && echo "$pc" || echo "∞") · node $([ "$nc" -gt 0 ] && echo "$nc" || echo "∞")"
         echo "  Подключений сейчас: $cc$(sub_enabled && echo " (кластер)")$([ "$oc" != "$cc" ] && echo " · $oc на этой ноде")"
         user_over_limit "$user" "$cc" "$oc" && echo "  ⚠️  ПРЕВЫШЕНИЕ ЛИМИТА ПОДКЛЮЧЕНИЙ!"
-        echo "  Жёсткая проверка: $([ "$hc" = "1" ] && echo "🛡 ВКЛючена (лишние устройства не подключатся)" || echo "выключена")"
+        if [ "$hc" = "1" ]; then
+            echo "  Жёсткая проверка: 🛡 ВКЛючена вручную (активный трафик — только на 1 ноде за раз)"
+        elif sub_enabled && abuse_auto_hc_active "$user"; then
+            echo "  Жёсткая проверка: 🛡 АВТО-ВКЛ (анти-абуз: замечен шаринг)"
+        else
+            echo "  Жёсткая проверка: выключена"
+        fi
+        sub_enabled && echo "  Анти-абуз: $(abuse_status_line "$user")"
         echo ""
         if sub_enabled; then
             echo "  🔗 Ссылки подписки (IP за 7 дней — уникальные скачивания):"
@@ -621,7 +629,7 @@ user_devices_menu() {
                 pause ;;
             4)
                 if [ "$hc" = "1" ]; then set_user_hardcheck "$user" 0; echo "  ✅ Жёсткая проверка выключена."
-                else set_user_hardcheck "$user" 1; echo "  ✅ Жёсткая проверка включена — новые устройства сверх лимита не подключатся."; fi
+                else set_user_hardcheck "$user" 1; echo "  ✅ Жёсткая проверка включена — активный трафик подписки допускается только на $([ "$(pool_cap "$user")" -gt 0 ] && pool_cap "$user" || echo 1) ноде(-ах) одновременно (по реальной скорости, не по пингам)."; fi
                 write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
                 pause ;;
             5)
@@ -697,13 +705,15 @@ _render_user_action() {
         else
             echo "  Статус кластера: ⚫ оффлайн во всём кластере"
         fi
-        local dev pc nc hc
+        local dev pc nc hc hce
         dev=$(get_user_devices "$user"); pc=$(pool_cap "$user"); nc=$(node_cap "$user")
-        hc=$(get_user_hardcheck "$user")
+        hc=$(get_user_hardcheck "$user"); hce=$(get_user_hardcheck_effective "$user")
         user_over_limit "$user" "$cc" "$oc" && warn="  ⚠️ превышение!"
         echo "  Устройств (лимит): $dev$([ "$dev" = "0" ] && echo " → глоб.")"
         echo "  Подключений: $cc / pool $([ "$pc" -gt 0 ] && echo "$pc" || echo "∞") · node $([ "$nc" -gt 0 ] && echo "$nc" || echo "∞")$warn"
-        echo "  Жёсткая проверка: $([ "$hc" = "1" ] && echo "🛡 ВКЛ" || echo "выкл")"
+        if [ "$hc" = "1" ]; then echo "  Жёсткая проверка: 🛡 ВКЛ (вручную)"
+        elif [ "$hce" = "1" ]; then echo "  Жёсткая проверка: 🛡 ВКЛ (авто, анти-абуз)"
+        else echo "  Жёсткая проверка: выкл"; fi
         echo "  Ссылок подписки: $(sub_tokens_cluster "$user" | grep -c .)"
 
         # Трафик и скорость — суммарно по кластеру.
@@ -737,9 +747,15 @@ _render_user_action() {
 
     local ipc
     ipc=$(get_user_ip_count "$user")
-    echo "  Уникальных IP: $ipc"
-    if [ "$ipc" -gt 3 ] 2>/dev/null; then
-        echo "  ⚠️  Подозрительно много IP — возможна утечка!"
+    echo "  Уникальных IP: $ipc  (роуминг/смена IP — это норма, не признак шаринга)"
+    # Подозрение на шаринг теперь считается по ОДНОВРЕМЕННОМУ активному трафику на
+    # разных нодах (балл анти-абуза), а не по числу IP (оно ложно срабатывало у
+    # роуминга и семьи). См. lib/antiabuse.sh.
+    if sub_enabled; then
+        echo "  Анти-абуз: $(abuse_status_line "$user")"
+        if abuse_auto_hc_active "$user"; then
+            echo "  🚨 Похоже на шаринг: активный трафик подписки шёл сразу на нескольких нодах."
+        fi
     fi
 
     local exp rem
@@ -916,6 +932,116 @@ repair_data() {
 
 # ====================== НАСТРОЙКИ ======================
 
+# ====================== ПРОИЗВОДИТЕЛЬНОСТЬ / ЛИМИТ СКОРОСТИ ======================
+# Глобальный ограничитель скорости на клиента + защита слабого сервера (QUIC-окна,
+# режим управления перегрузкой). Пишет в config.yaml ЭТОЙ ноды (см. lib/perf.sh),
+# применяется разовым перезапуском Hysteria. Параметры зависят от железа ноды и по
+# кластеру НЕ синхронизируются.
+perf_menu() {
+    local changed=0
+    while true; do
+        clear
+        local bu bd icb
+        bu=$(bw_up_get); bd=$(bw_down_get); icb=$(icbw_get)
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  ⚡ Производительность / лимит скорости — нода «$(node_name 2>/dev/null || echo local)»"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Лимит скорости НА КЛИЕНТА:"
+        echo "     ↓ скачивание: ${bu:-без лимита}"
+        echo "     ↑ отдача:     ${bd:-без лимита}"
+        if [ "$icb" = "true" ]; then
+            echo "  Режим перегрузки: BBR — честное деление канала (ignoreClientBandwidth=on)"
+            echo "     ⓘ жёсткий потолок п.1 при этом НЕ действует (клиенты делят канал поровну)"
+        else
+            echo "  Режим перегрузки: Brutal/по клиенту (ignoreClientBandwidth=off)"
+            echo "     ⓘ действует жёсткий потолок из лимита выше (если задан)"
+        fi
+        echo "  QUIC recv-окна:"
+        echo "     stream init/max: $(format_bytes "$(quic_get initStreamReceiveWindow)") / $(format_bytes "$(quic_get maxStreamReceiveWindow)")"
+        echo "     conn   init/max: $(format_bytes "$(quic_get initConnReceiveWindow)") / $(format_bytes "$(quic_get maxConnReceiveWindow)")"
+        echo "     idle / keepalive: $(quic_get maxIdleTimeout) / $(quic_get keepAlivePeriod)"
+        is_restart_pending && echo "  ⚠️  изменения ожидают перезапуска Hysteria"
+        echo ""
+        echo "  1. 🚦 Задать лимит скорости на клиента (Мбит/с)"
+        echo "  2. ♾  Снять лимит скорости (без ограничения)"
+        echo "  3. ⚖  Режим перегрузки: $([ "$icb" = "true" ] && echo "→ Brutal/по клиенту (жёсткий потолок)" || echo "→ BBR честное деление")"
+        echo "  4. 🛡 Профиль «Слабый сервер» (щадящие QUIC-окна + предложит лимит)"
+        echo "  5. 🚀 Профиль «Обычный сервер» (большие QUIC-окна, максимум throughput)"
+        echo "  6. 🔧 Тонкая настройка QUIC-окон вручную"
+        echo "  7. 🔄 Применить сейчас (перезапустить Hysteria)"
+        echo "  0. ↩  Назад"
+        echo ""
+        local ch; ask ch "  Выберите: "
+        case "$ch" in
+            1)
+                local d u
+                ask d "  ↓ скорость СКАЧИВАНИЯ клиента, Мбит/с (0 = без лимита): "
+                ask u "  ↑ скорость ОТДАЧИ клиента, Мбит/с (0 = без лимита): "
+                if [[ "$d" =~ ^[0-9]+$ ]] && [[ "$u" =~ ^[0-9]+$ ]]; then
+                    local sup sdn=""
+                    [ "$d" -gt 0 ] && sup="${d} mbps" || sup=""    # up сервера = скачивание клиента
+                    [ "$u" -gt 0 ] && sdn="${u} mbps" || sdn=""    # down сервера = отдача клиента
+                    if set_bandwidth "$sup" "$sdn"; then
+                        changed=1
+                        if [ -z "$sup" ] && [ -z "$sdn" ]; then echo "  ✅ Лимит снят (без ограничения)."
+                        else echo "  ✅ Лимит: ↓ ${sup:-без лимита} · ↑ ${sdn:-без лимита}"; fi
+                        [ "$icb" = "true" ] && echo "  ⚠️  Сейчас включён BBR (ignoreClientBandwidth=on) — жёсткий потолок не действует. Выключите режим BBR (п.3), чтобы лимит работал как потолок."
+                    else echo "  ❌ Ошибка записи конфига — откат из бэкапа."; fi
+                else
+                    echo "  ❌ Нужны целые числа (Мбит/с)."
+                fi
+                pause ;;
+            2)
+                if set_bandwidth "" ""; then changed=1; echo "  ✅ Лимит скорости снят."; else echo "  ❌ Ошибка."; fi
+                pause ;;
+            3)
+                if [ "$icb" = "true" ]; then set_ignore_client_bw false; echo "  ✅ Режим: Brutal/по клиенту (жёсткий потолок из лимита действует)."
+                else set_ignore_client_bw true;  echo "  ✅ Режим: BBR — честное деление канала между клиентами."; fi
+                changed=1; pause ;;
+            4)
+                apply_quic_profile weak && changed=1
+                echo "  ✅ QUIC-окна: профиль «Слабый сервер» (щадящие буферы)."
+                local sc
+                ask sc "  Также задать лимит скорости на клиента, Мбит/с (Enter — пропустить, 30 — рекомендую): "
+                if [[ "$sc" =~ ^[0-9]+$ ]] && [ "$sc" -gt 0 ]; then
+                    set_bandwidth "${sc} mbps" "${sc} mbps" && changed=1
+                    set_ignore_client_bw false   # потолок работает в режиме Brutal
+                    echo "  ✅ Лимит на клиента: ${sc} Мбит/с (↓/↑), режим Brutal (жёсткий потолок)."
+                fi
+                pause ;;
+            5)
+                apply_quic_profile normal && changed=1
+                echo "  ✅ QUIC-окна: профиль «Обычный сервер» (максимальный throughput)."
+                pause ;;
+            6)
+                echo "  Enter — оставить текущее значение. Размеры окон — в БАЙТАХ (напр. 33554432 = 32 MiB)."
+                local a b c e f g cur
+                cur=$(quic_get initStreamReceiveWindow); ask a "  initStreamReceiveWindow [${cur:-${QUIC_NORMAL[0]}}]: "; [ -z "$a" ] && a="${cur:-${QUIC_NORMAL[0]}}"
+                cur=$(quic_get maxStreamReceiveWindow);  ask b "  maxStreamReceiveWindow  [${cur:-${QUIC_NORMAL[1]}}]: "; [ -z "$b" ] && b="${cur:-${QUIC_NORMAL[1]}}"
+                cur=$(quic_get initConnReceiveWindow);   ask c "  initConnReceiveWindow   [${cur:-${QUIC_NORMAL[2]}}]: "; [ -z "$c" ] && c="${cur:-${QUIC_NORMAL[2]}}"
+                cur=$(quic_get maxConnReceiveWindow);    ask e "  maxConnReceiveWindow    [${cur:-${QUIC_NORMAL[3]}}]: "; [ -z "$e" ] && e="${cur:-${QUIC_NORMAL[3]}}"
+                cur=$(quic_get maxIdleTimeout);          ask f "  maxIdleTimeout          [${cur:-${QUIC_NORMAL[4]}}]: "; [ -z "$f" ] && f="${cur:-${QUIC_NORMAL[4]}}"
+                cur=$(quic_get keepAlivePeriod);         ask g "  keepAlivePeriod         [${cur:-${QUIC_NORMAL[5]}}]: "; [ -z "$g" ] && g="${cur:-${QUIC_NORMAL[5]}}"
+                if [[ "$a" =~ ^[0-9]+$ ]] && [[ "$b" =~ ^[0-9]+$ ]] && [[ "$c" =~ ^[0-9]+$ ]] && [[ "$e" =~ ^[0-9]+$ ]]; then
+                    if set_quic "$a" "$b" "$c" "$e" "$f" "$g"; then changed=1; echo "  ✅ QUIC-окна обновлены."; else echo "  ❌ Ошибка записи — откат."; fi
+                else
+                    echo "  ❌ Размеры окон должны быть целыми числами (байты)."
+                fi
+                pause ;;
+            7)
+                restart_hysteria; changed=0; pause ;;
+            0)
+                if [ "$changed" = 1 ] && is_restart_pending; then
+                    echo ""
+                    local ans; ask ans "  Есть изменения. Перезапустить Hysteria сейчас? (да/нет): "
+                    is_yes "$ans" && restart_hysteria
+                fi
+                return ;;
+            *) echo "  ❌ Неверный выбор!"; sleep 1 ;;
+        esac
+    done
+}
+
 settings_menu() {
     while true; do
         clear
@@ -952,9 +1078,10 @@ settings_menu() {
         else
             echo "  2. 🔄 Перезапустить Hysteria"
         fi
-        echo "  3. 🔧 Исправить / обновить данные (если статистика не сходится)"
-        echo "  4. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
-        echo "  5. 🔄 Получить синхронизацию (локально)"
+        echo "  3. ⚡ Производительность / лимит скорости (защита слабого сервера)"
+        echo "  4. 🔧 Исправить / обновить данные (если статистика не сходится)"
+        echo "  5. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
+        echo "  6. 🔄 Получить синхронизацию (локально)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -989,13 +1116,16 @@ settings_menu() {
                 pause
                 ;;
             3)
+                perf_menu
+                ;;
+            4)
                 repair_data
                 pause
                 ;;
-            4)
+            5)
                 subscription_menu
                 ;;
-            5)
+            6)
                 cluster_sync_now
                 pause
                 ;;
