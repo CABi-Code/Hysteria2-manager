@@ -64,7 +64,9 @@ CONFIG="/etc/hysteria/config.yaml"
 CERT_DIR="/etc/hysteria/certs"
 LOG_DIR="/var/log/hy2-manager"
 SERVICE="hysteria-server.service"
-MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration subscription cluster ui)
+# ВАЖНО: держать список в синхроне с _required_libs в hy2-manager.sh — иначе после
+# обновления менеджер упадёт с «Модуль не найден» (файл не скачался).
+MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster ui)
 
 # === УТИЛИТА: скачивание файлов менеджера ===
 download_file() {
@@ -84,7 +86,14 @@ install_manager_files() {
     mkdir -p "$INSTALL_DIR/lib"
     download_file "$REPO_URL/hy2-manager.sh" "$INSTALL_DIR/hy2-manager.sh"
     download_file "$REPO_URL/VERSION" "$INSTALL_DIR/VERSION"
-    for f in "${MANAGER_LIBS[@]}"; do
+    # Список модулей берём ИЗ скачанного hy2-manager.sh (единый источник правды),
+    # чтобы install.sh не рассинхронился при добавлении новых модулей. Fallback —
+    # MANAGER_LIBS (если парсинг не удался).
+    local libs
+    libs=$(grep -oP '_required_libs=\(\K[^)]*' "$INSTALL_DIR/hy2-manager.sh" 2>/dev/null)
+    [ -n "$libs" ] || libs="${MANAGER_LIBS[*]}"
+    local f
+    for f in $libs; do
         download_file "$REPO_URL/lib/${f}.sh" "$INSTALL_DIR/lib/${f}.sh"
     done
     chmod +x "$INSTALL_DIR/hy2-manager.sh"

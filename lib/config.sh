@@ -28,6 +28,39 @@ API_SECRET_FILE="$DATA_DIR/api_secret"
 # Текущая скорость (B/s) за последний интервал сбора и метка времени этого интервала
 SPEED_FILE="$DATA_DIR/speed.dat"
 SPEED_TS_FILE="$DATA_DIR/speed_ts"
+# Учёт АКТИВНОГО трафика для жёсткой проверки (см. collect_activity в traffic.sh).
+# ACTIVITY_FILE «user|active|active_since|rate»: активен ли юзер на ЭТОЙ ноде
+# ПРЯМО СЕЙЧАС (скорость за последнюю минуту ≥ порога — реальное использование,
+# а не пинг/keepalive) и с какого момента идёт активная серия (active_since — по
+# нему выбираем «первую» активную ноду). ACTIVITY_PREV_FILE «user|cum|ts» —
+# прошлый снимок кумулятивного трафика (для расчёта скорости за минуту).
+ACTIVITY_FILE="$DATA_DIR/activity.dat"
+ACTIVITY_PREV_FILE="$DATA_DIR/activity_prev.dat"
+# Порог «активного» трафика (байт/сек, усреднённо за последнюю минуту). Всё, что
+# НИЖЕ порога, считаем фоном (пинги/keepalive/health-check) и НЕ обрезаем жёсткой
+# проверкой. 4096 B/s ≈ 240 KiB за минуту — этого не набрать пингами, но легко
+# набирает реальный сёрфинг/стриминг. Тюнится через env ACTIVITY_THRESHOLD_BPS.
+ACTIVITY_THRESHOLD_BPS="${ACTIVITY_THRESHOLD_BPS:-4096}"
+# ---- Анти-абуз: авто-жёсткая проверка по ОДНОВРЕМЕННОМУ активному трафику ----
+# Копим «балл абуза» (0..100), когда подписка РЕАЛЬНО используется (скорость за
+# минуту ≥ порога) сразу на БОЛЬШЕМ числе нод, чем разрешено устройств. Балл сам
+# угасает; при превышении порога на время включается жёсткая проверка. См.
+# lib/antiabuse.sh. ABUSE_FILE (синхронизируется по кластеру):
+#   «user|score|updated_ts|auto_hc_until|peak_active|viol_minutes».
+# ABUSE_OBS_FILE — локальные наблюдения текущего часа (сброс при коррекции):
+#   «user|viol_minutes|samples|excess_sum|peak_active|peak_conn».
+ABUSE_FILE="$DATA_DIR/abuse.dat"
+ABUSE_OBS_FILE="$DATA_DIR/abuse_obs.dat"
+# Пороги/веса анти-абуза (тюнятся через env). HIGH — балл, с которого включается
+# авто-жёсткая проверка; DECAY_PER_HOUR — на сколько балл угасает за час без
+# нарушений; VIOL_WEIGHT/HOURLY_CAP — вклад нарушений за час (макс. за час);
+# AUTO_HC_HOURS — на сколько часов взводится авто-жёсткая проверка при превышении.
+ABUSE_SCORE_HIGH="${ABUSE_SCORE_HIGH:-60}"
+ABUSE_SCORE_LOW="${ABUSE_SCORE_LOW:-25}"
+ABUSE_DECAY_PER_HOUR="${ABUSE_DECAY_PER_HOUR:-10}"
+ABUSE_VIOL_WEIGHT="${ABUSE_VIOL_WEIGHT:-40}"
+ABUSE_HOURLY_CAP="${ABUSE_HOURLY_CAP:-35}"
+ABUSE_AUTO_HC_HOURS="${ABUSE_AUTO_HC_HOURS:-6}"
 # Маркер «есть изменения конфига, ожидающие перезапуска Hysteria».
 # Используется только для правок, которые реально требуют рестарта (порт,
 # SNI и т.п.). Управление пользователями работает БЕЗ перезапуска — см. ниже.
