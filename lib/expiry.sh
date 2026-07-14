@@ -89,6 +89,8 @@ check_expired_users() {
             if ! is_user_disabled "$user" && db_user_exists "$user"; then
                 disable_user "$user" silent
                 echo "⏰ Автоотключение: $user (срок: $exp_date)"
+                # Если настроен Telegram-бот — предупредить клиента и админов.
+                declare -F bot_notify_expired >/dev/null && bot_notify_expired "$user"
             fi
         fi
     done < "$EXPIRY_FILE"

@@ -193,6 +193,16 @@ generate_user_config() {
     local tmpfile
     tmpfile=$(mktemp "/tmp/sb-${user}.XXXXXX.json") || return 1
 
+    # Если на сервере задан лимит скорости — прописываем его и в клиентский
+    # конфиг (up/down_mbps): клиент включит Brutal на этой скорости, и лимит
+    # будет соблюдаться «мягко» на уровне протокола (без дропов в ядре).
+    # Маппинг: серверный up = скачивание клиента (down_mbps), и наоборот.
+    local cl_down_mbps=0 cl_up_mbps=0
+    if declare -F bw_to_mbps >/dev/null; then
+        cl_down_mbps=$(bw_to_mbps "$(bw_up_get)")
+        cl_up_mbps=$(bw_to_mbps "$(bw_down_get)")
+    fi
+
     local jq_filter
     if [ "$mode" = "socks" ]; then
         jq_filter='{
@@ -211,7 +221,9 @@ generate_user_config() {
                     server_port: $port,
                     password: $auth,
                     tls: { enabled: true, server_name: $sni, insecure: true }
-                } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)),
+                } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)
+                  + (if $dmb > 0 then { down_mbps: $dmb } else {} end)
+                  + (if $umb > 0 then { up_mbps: $umb } else {} end)),
                 { type: "direct", tag: "direct_out" }
             ],
             route: {
@@ -249,7 +261,9 @@ generate_user_config() {
                     server_port: $port,
                     password: $auth,
                     tls: { enabled: true, server_name: $sni, insecure: true }
-                } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)),
+                } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)
+                  + (if $dmb > 0 then { down_mbps: $dmb } else {} end)
+                  + (if $umb > 0 then { up_mbps: $umb } else {} end)),
                 { type: "direct", tag: "direct_out" }
             ],
             route: {
@@ -266,12 +280,20 @@ generate_user_config() {
         }'
     fi
 
+    # Адрес сервера — через link_host (домен подключения/релей, если настроен),
+    # а не голый IP: иначе конфиг раскрывал бы IP скрытой за релеем ноды.
+    local srv="${CACHED_IP:-}"
+    declare -F link_host >/dev/null && srv=$(link_host)
+    [ -z "$srv" ] && srv="$CACHED_IP"
+
     jq -n \
-        --arg server "$CACHED_IP" \
-        --argjson port "${CACHED_PORT:-443}" \
+        --arg server "$srv" \
+        --argjson port "${CACHED_PORT:-$(get_port)}" \
         --arg auth "${user}:${pass}" \
-        --arg sni "$CACHED_SNI" \
-        --arg obfs "$CACHED_OBFS" \
+        --arg sni "${CACHED_SNI:-$(get_sni)}" \
+        --arg obfs "${CACHED_OBFS:-$(get_obfs_pass)}" \
+        --argjson dmb "${cl_down_mbps:-0}" \
+        --argjson umb "${cl_up_mbps:-0}" \
         "$jq_filter" > "$tmpfile" || { rm -f "$tmpfile"; return 1; }
 
     echo "$tmpfile"

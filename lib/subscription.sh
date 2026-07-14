@@ -603,7 +603,7 @@ caddy_start_report() {
         return 1
     fi
     if ! caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null; then
-        echo "  ❌ Caddyfile невалиден — пересоберите (Подписка → 1 или Настройки → 3)"
+        echo "  ❌ Caddyfile невалиден — пересоберите (Подписка → 1)"
     else
         echo "  ✅ Caddyfile валиден"
     fi
