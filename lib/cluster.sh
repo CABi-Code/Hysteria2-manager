@@ -403,7 +403,7 @@ cluster_share_user() {   # user
 cluster_sync_now() {
     echo ""
     if ! sub_enabled; then
-        echo "  ⚪ Подписка / Кластер не настроены (Настройки → 4 → пункт 1)."
+        echo "  ⚪ Подписка / Кластер не настроены (Настройки → 5 → пункт 1)."
         return 0
     fi
     cluster_sync verbose
