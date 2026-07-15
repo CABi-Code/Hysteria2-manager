@@ -253,9 +253,19 @@ detect_dev() {
 }
 
 # Есть ли рабочий tc с htb + fq_codel (пробуем на реальном DEV и сразу убираем).
+# ВАЖНО: fq_codel вешаем на КЛАСС, а не на qdisc напрямую — поэтому класс 1:9999
+# надо создать перед пробой (как это делает shape()). Без него tc отвечает
+# "Specified class not found", проба падала → лимит уходил в дроп-фолбэк (nft),
+# а дроп для QUIC = обрывы и socket error в спидтесте.
 tc_ok() {
     command -v tc >/dev/null 2>&1 || return 1
+    # Идемпотентность: если от прошлого apply остался root-qdisc, `add root` упал бы
+    # ("Exclusivity flag on"), проба вернула бы ошибку и весь лимит сорвался бы в
+    # дроп-фолбэк, хотя tc исправен. Сносим остаток перед пробой (tc_apply всё равно
+    # чистит и пересобирает заново).
+    tc qdisc del dev "$DEV" root 2>/dev/null
     tc qdisc add dev "$DEV" root handle 1: htb default 9999 2>/dev/null || return 1
+    tc class add dev "$DEV" parent 1: classid 1:9999 htb rate 10000mbit ceil 10000mbit 2>/dev/null
     tc qdisc add dev "$DEV" parent 1:9999 fq_codel 2>/dev/null; local rc=$?
     tc qdisc del dev "$DEV" root 2>/dev/null
     return $rc
@@ -263,6 +273,11 @@ tc_ok() {
 
 # Пер-IP шейпер на устройстве $1: rate=$2 Мбит/с, селектор порта $3 ($4=значение),
 # ключ IP $5 (dst|src). 256 корзин по последнему октету IP, лист — fq_codel.
+# Хеш-таблицу держим на handle 2: — НЕ 800:, т.к. u32 резервирует 800: под свою
+# корневую таблицу и авто-создаёт её при первом фильтре. Явное `handle 800:` на
+# ядре 6.x падает с "Filter already exists", таблица остаётся дефолтной (divisor 1),
+# и дальше корзины 1..255 ловят "buckets exceed configured value" → весь tc-шейпинг
+# срывался в дроп-фолбэк (nft), а дроп для QUIC = обрывы/socket error в спидтесте.
 shape() {   # dev rate portsel port ipkey
     local D="$1" R="$2" PSEL="$3" PV="$4" IPK="$5" off i hx
     [ "$IPK" = dst ] && off=16 || off=12          # смещение IP в заголовке IPv4
@@ -270,20 +285,20 @@ shape() {   # dev rate portsel port ipkey
     tc class add dev "$D" parent 1:  classid 1:1    htb rate 10000mbit ceil 10000mbit || return 1
     tc class add dev "$D" parent 1:  classid 1:9999 htb rate 10000mbit ceil 10000mbit || return 1
     tc qdisc add dev "$D" parent 1:9999 fq_codel
-    tc filter add dev "$D" parent 1: prio 1 handle 800: protocol ip u32 divisor 256 || return 1
+    tc filter add dev "$D" parent 1: prio 1 handle 2: protocol ip u32 divisor 256 || return 1
     i=0
     while [ "$i" -lt 256 ]; do
         hx=$(printf '%x' "$i")
         tc class  add dev "$D" parent 1:1 classid "1:1$hx" htb rate "${R}mbit" ceil "${R}mbit" || return 1
         tc qdisc  add dev "$D" parent "1:1$hx" fq_codel
-        tc filter add dev "$D" parent 1: prio 1 protocol ip u32 ht "800:$hx:" \
+        tc filter add dev "$D" parent 1: prio 1 protocol ip u32 ht "2:$hx:" \
             match ip "$PSEL" "$PV" 0xffff flowid "1:1$hx" || return 1
         i=$((i+1))
     done
     # Заворачиваем только udp/PORT в хеш-таблицу; всё остальное -> дефолт (не режем).
     tc filter add dev "$D" parent 1: prio 1 protocol ip u32 \
         match ip protocol 17 0xff match ip "$PSEL" "$PV" 0xffff \
-        hashkey mask 0x000000ff at "$off" link 800: || return 1
+        hashkey mask 0x000000ff at "$off" link 2: || return 1
 }
 
 # Ingress реального DEV зеркалим на IFB, чтобы ШЕЙПИТЬ отдачу (иначе только дроп).
