@@ -560,8 +560,9 @@ user_devices_menu() {
     while true; do
         clear
         refresh_online
-        local dev hc oc cc pc nc
+        local dev hc oc cc pc nc rate
         dev=$(get_user_devices "$user"); hc=$(get_user_hardcheck "$user")
+        rate=$(get_user_rate "$user")
         oc=$(get_user_online_count "$user")
         pc=$(pool_cap "$user"); nc=$(node_cap "$user")
         if sub_enabled; then cc=$(cluster_user_connections "$user"); else cc=$oc; fi
@@ -581,6 +582,11 @@ user_devices_menu() {
             echo "  Жёсткая проверка: выключена"
         fi
         sub_enabled && echo "  Анти-абуз: $(abuse_status_line "$user")"
+        if [ "$rate" -gt 0 ] 2>/dev/null; then
+            echo "  Тариф скорости: 🚀 ${rate} Мбит/с (на IP клиента, обе стороны)"
+        else
+            echo "  Тариф скорости: — (без тарифа → глобальный лимит)"
+        fi
         echo ""
         if sub_enabled; then
             echo "  🔗 Ссылки подписки (IP за 7 дней — уникальные скачивания):"
@@ -600,6 +606,7 @@ user_devices_menu() {
         echo "  3. #  Задать кол-во устройств числом"
         echo "  4. 🛡 $([ "$hc" = "1" ] && echo "Выключить" || echo "Включить") жёсткую проверку"
         echo "  5. ✂  Прервать сессию на ЭТОЙ ноде (кик)"
+        echo "  9. 🚀 Тариф скорости (100 / 200 / 500 / свой / выкл)"
         if sub_enabled; then
             echo "  6. 🔗 Получить новую доп. ссылку подписки"
             echo "  7. 🗑  Удалить доп. ссылку подписки"
@@ -671,6 +678,25 @@ user_devices_menu() {
                 fi
                 pause ;;
             8) sub_enabled && cluster_sync_now; pause ;;
+            9)
+                echo ""
+                echo "  Текущий тариф: $([ "$rate" -gt 0 ] 2>/dev/null && echo "${rate} Мбит/с" || echo "нет (глобальный лимит)")"
+                echo "  Пресеты: 100 · 200 · 500 Мбит/с. Можно ввести своё число."
+                local nt; ask nt "  Скорость Мбит/с (0 = снять тариф, Enter — не менять): "
+                if [ -z "$nt" ]; then :
+                elif [[ "$nt" =~ ^[0-9]+$ ]]; then
+                    set_user_rate "$user" "$nt"
+                    # Гарантируем HTB-класс под назначенную скорость + мгновенная раскладка IP.
+                    klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1
+                    if [ "$nt" -gt 0 ]; then
+                        echo "  ✅ Тариф: ${nt} Мбит/с — применится к активным IP клиента (обе стороны)."
+                        echo "     Синхронизируется по всему кластеру как атрибут подписки."
+                    else
+                        echo "  ✅ Тариф снят — действует глобальный лимит."
+                    fi
+                    write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
+                else echo "  ❌ Нужно число (Мбит/с)."; fi
+                pause ;;
             0) return ;;
             *) echo "  ❌ Неверный выбор."; sleep 1 ;;
         esac
@@ -745,6 +771,12 @@ _render_user_action() {
         user_over_limit "$user" "$oc" "$oc" && warn="  ⚠️ превышение!"
         echo "  Устройств (лимит): $dev · подключений $oc / $([ "$nc" -gt 0 ] && echo "$nc" || echo "∞")$warn"
         echo "  Жёсткая проверка: $([ "$hc" = "1" ] && echo "🛡 ВКЛ" || echo "выкл")"
+    fi
+
+    local urate
+    urate=$(get_user_rate "$user")
+    if [ "$urate" -gt 0 ] 2>/dev/null; then
+        echo "  Тариф скорости: 🚀 ${urate} Мбит/с (на IP клиента)"
     fi
 
     local ipc

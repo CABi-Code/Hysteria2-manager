@@ -107,6 +107,11 @@ USERLIMITS_TS_FILE="$DATA_DIR/userlimits_ts.dat"
 # Обновляется менеджером (cron --online-sync и после правок). Скрипт auth читает
 # его, чтобы отклонять лишние устройства. Права как у users.db (640, владелец — сервис).
 AUTHLIMITS_FILE="$DATA_DIR/authlimits.dat"
+# Живой маппинг «user|ip|ts» — пишет auth-скрипт на КАЖДОМ подключении (см.
+# install_auth_script в lib/migration.sh). По нему klimit_reconcile раскладывает
+# активные IP по тарифным классам скорости в реальном времени (см. lib/perf.sh).
+# Пишет процесс hysteria (владелец — сервис), читает менеджер (root).
+AUTHMAP_FILE="$DATA_DIR/authmap.dat"
 # Уникальные IP, скачавшие подписку по КОНКРЕТНОМУ токену. «token|ip|first|last|count».
 # Источник — access-лог Caddy, который пишется в stderr → journald (НЕ в файл: файл
 # в /var/log/caddy процессу caddy под systemd недоступен и ломает старт Caddy).

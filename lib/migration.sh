@@ -49,6 +49,7 @@ install_auth_script() {
     {
         echo '#!/bin/bash'
         echo "DB=\"${USERS_DB}\""
+        echo "MAP=\"${AUTHMAP_FILE}\""
         cat <<'AUTHEOF'
 # Внешняя аутентификация Hysteria 2 (auth.type: command).
 # Вызывается на КАЖДОЕ подключение: $1=addr, $2="user:pass", $3=tx.
@@ -67,6 +68,14 @@ awk -F: -v u="$user" -v p="$pass" '
     $1==u { rest=substr($0, length($1)+2); if (rest==p) { found=1; exit } }
     END { exit (found?0:1) }
 ' "$DB" || exit 1
+
+# Живой маппинг user→IP для тарифного шейпинга скорости (klimit_reconcile в perf.sh).
+# Один короткий append на подключение (строка < PIPE_BUF → атомарна), файл создаётся
+# под пользователем сервиса в DATA_DIR. Ошибки записи глушим — на auth не влияют.
+if [ -n "$MAP" ]; then
+    addr="$1"; ip="${addr%:*}"; ip="${ip#[}"; ip="${ip%]}"   # убрать :port и скобки IPv6
+    [ -n "$ip" ] && printf '%s|%s|%s\n' "$user" "$ip" "$(date +%s)" >> "$MAP" 2>/dev/null
+fi
 
 printf '%s\n' "$user"
 exit 0
