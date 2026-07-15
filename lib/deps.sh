@@ -17,6 +17,10 @@ init_data_dir() {
     for f in "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$EXPIRY_TS_FILE" "$DISABLED_FILE" "$SPEED_FILE" "$USERS_DB" "$SUBTOKENS_DB" "$CLUSTER_STATE_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" "$SUBIPS_FILE"; do
         [ -f "$f" ] || touch "$f"
     done
+    # Файлы Telegram-бота: содержат приватное (привязки, коды) — закрываем права.
+    for f in "$DATA_DIR/tgusers.dat" "$DATA_DIR/botcodes.dat" "$DATA_DIR/tariffs.conf"; do
+        [ -f "$f" ] || { touch "$f"; chmod 600 "$f" 2>/dev/null; }
+    done
 }
 
 # Установка Caddy (нужен только для подписки — ставим при её настройке, а не на
