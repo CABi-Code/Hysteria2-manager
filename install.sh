@@ -146,7 +146,8 @@ if [ "$MODE" = "manager_only" ]; then
     # Минимальные зависимости для работы менеджера
     export DEBIAN_FRONTEND=noninteractive
     apt update -qq >/dev/null 2>&1 || true
-    apt install -y -qq curl jq pwgen >/dev/null 2>&1 || true
+    # iproute2 (tc) — для kernel-лимита скорости через шейпинг без потерь пакетов.
+    apt install -y -qq curl jq pwgen iproute2 >/dev/null 2>&1 || true
 
     # Каталоги
     setup_log_dir
