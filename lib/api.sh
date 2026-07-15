@@ -21,6 +21,9 @@ setup_stats_api() {
         } >> "$CONFIG"
         systemctl restart "$SERVICE" 2>/dev/null
         sleep 2
+        # Полный рестарт применил ВСЕ накопленные правки конфига — маркер
+        # «ожидает перезапуска» больше не актуален.
+        clear_restart_pending
     else
         local secret port
         secret=$(awk '/^trafficStats:/,/^[a-zA-Z]/' "$CONFIG" | grep -oP 'secret:\s*\K\S+' | tr -d '"' | head -1)

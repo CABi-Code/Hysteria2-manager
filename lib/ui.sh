@@ -457,8 +457,10 @@ user_action_menu() {
                     pass=$(get_user_password "$user")
                 fi
                 if [ -n "$pass" ]; then
+                    # link_host, а не CACHED_IP: если настроен домен подключения или
+                    # релей — в ссылке должен быть он, иначе утекает реальный IP ноды.
                     local link
-                    link=$(build_user_link "$user" "$pass" "$CACHED_IP" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
+                    link=$(build_user_link "$user" "$pass" "$(link_host)" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
                     echo ""
                     echo "  🔗 ССЫЛКА:"
                     echo "  $link"
@@ -933,86 +935,148 @@ repair_data() {
 # ====================== НАСТРОЙКИ ======================
 
 # ====================== ПРОИЗВОДИТЕЛЬНОСТЬ / ЛИМИТ СКОРОСТИ ======================
-# Глобальный ограничитель скорости на клиента + защита слабого сервера (QUIC-окна,
-# режим управления перегрузкой). Пишет в config.yaml ЭТОЙ ноды (см. lib/perf.sh),
-# применяется разовым перезапуском Hysteria. Параметры зависят от железа ноды и по
-# кластеру НЕ синхронизируются.
+# Двухуровневый лимит скорости на клиента + защита слабого сервера. См. lib/perf.sh:
+#   уровень 1 — bandwidth в config.yaml (для Brutal-клиентов, нужен рестарт);
+#   уровень 2 — kernel-лимит nftables на IP клиента (для ВСЕХ, работает сразу).
+# Параметры зависят от железа ноды и по кластеру НЕ синхронизируются.
+
+# Задать лимит (общая часть для пунктов меню): пишет конфиг + kernel-правила.
+_perf_set_limit() {   # down_mbit up_mbit -> 0 если что-то применилось
+    local d="$1" u="$2" ok=0
+    local sup="" sdn=""
+    [ "$d" -gt 0 ] 2>/dev/null && sup="${d} mbps"    # up сервера = скачивание клиента
+    [ "$u" -gt 0 ] 2>/dev/null && sdn="${u} mbps"    # down сервера = отдача клиента
+    if set_bandwidth "$sup" "$sdn"; then
+        ok=1
+        if [ -n "$sup" ] || [ -n "$sdn" ]; then
+            echo "  ✅ Конфиг Hysteria: лимит ↓ ${sup:-∞} · ↑ ${sdn:-∞}, режим Brutal (после перезапуска)."
+        else
+            echo "  ✅ Конфиг Hysteria: лимит снят (после перезапуска)."
+        fi
+    else
+        echo "  ❌ Ошибка записи config.yaml — откат из бэкапа (лимит в конфиге не изменён)."
+    fi
+    klimit_apply "$d" "$u"; local krc=$?
+    if [ "$d" -eq 0 ] && [ "$u" -eq 0 ]; then
+        echo "  ✅ Kernel-лимит снят."
+        ok=1
+    elif [ "$krc" -eq 0 ]; then
+        echo "  ✅ Kernel-лимит АКТИВЕН ПРЯМО СЕЙЧАС: ↓ ${d} · ↑ ${u} Мбит/с на IP клиента."
+        echo "     Это реальный потолок для всех клиентов (включая BBR) + автозагрузка после ребута."
+        ok=1
+    elif [ "$krc" -eq 2 ]; then
+        echo "  ⚠️  В системе нет ни nft, ни iptables — kernel-потолок поставить нечем."
+        echo "     Работает только лимит уровня Hysteria (для клиентов с Brutal)."
+    else
+        echo "  ⚠️  Не удалось загрузить kernel-правила — journalctl -u hy2-limit -e"
+    fi
+    [ "$ok" = 1 ]
+}
+
 perf_menu() {
     local changed=0
     while true; do
         clear
-        local bu bd icb
+        local bu bd icb kd ku
         bu=$(bw_up_get); bd=$(bw_down_get); icb=$(icbw_get)
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        kd=$(klimit_down); ku=$(klimit_up)
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  ⚡ Производительность / лимит скорости — нода «$(node_name 2>/dev/null || echo local)»"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "  Лимит скорости НА КЛИЕНТА:"
-        echo "     ↓ скачивание: ${bu:-без лимита}"
-        echo "     ↑ отдача:     ${bd:-без лимита}"
-        if [ "$icb" = "true" ]; then
-            echo "  Режим перегрузки: BBR — честное деление канала (ignoreClientBandwidth=on)"
-            echo "     ⓘ жёсткий потолок п.1 при этом НЕ действует (клиенты делят канал поровну)"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Лимит НА КЛИЕНТА (два уровня, задаются вместе пунктом 1):"
+        if [ "${kd:-0}" -gt 0 ] || [ "${ku:-0}" -gt 0 ]; then
+            if klimit_active; then
+                echo "   • Kernel (все клиенты):  🟢 ↓ ${kd} · ↑ ${ku} Мбит/с на IP — работает сейчас"
+            else
+                echo "   • Kernel (все клиенты):  🔴 настроен ↓ ${kd} · ↑ ${ku}, но правила НЕ загружены (пункт 7)"
+            fi
         else
-            echo "  Режим перегрузки: Brutal/по клиенту (ignoreClientBandwidth=off)"
-            echo "     ⓘ действует жёсткий потолок из лимита выше (если задан)"
+            echo "   • Kernel (все клиенты):  ⚪ выключен"
         fi
-        echo "  QUIC recv-окна:"
-        echo "     stream init/max: $(format_bytes "$(quic_get initStreamReceiveWindow)") / $(format_bytes "$(quic_get maxStreamReceiveWindow)")"
-        echo "     conn   init/max: $(format_bytes "$(quic_get initConnReceiveWindow)") / $(format_bytes "$(quic_get maxConnReceiveWindow)")"
-        echo "     idle / keepalive: $(quic_get maxIdleTimeout) / $(quic_get keepAlivePeriod)"
-        is_restart_pending && echo "  ⚠️  изменения ожидают перезапуска Hysteria"
+        if [ -n "$bu" ] || [ -n "$bd" ]; then
+            echo "   • Hysteria (Brutal):     🟢 ↓ ${bu:-∞} · ↑ ${bd:-∞}"
+        else
+            echo "   • Hysteria (Brutal):     ⚪ не задан"
+        fi
+        if [ "$icb" = "true" ]; then
+            echo "  Режим перегрузки: BBR — деление канала поровну (лимит Hysteria в этом режиме НЕ действует)"
+        else
+            echo "  Режим перегрузки: Brutal / по заявке клиента (лимит Hysteria действует)"
+        fi
+        echo "  QUIC recv-окна: stream $(format_bytes "$(quic_get initStreamReceiveWindow)")/$(format_bytes "$(quic_get maxStreamReceiveWindow)") · conn $(format_bytes "$(quic_get initConnReceiveWindow)")/$(format_bytes "$(quic_get maxConnReceiveWindow)")"
+        if perf_tune_active; then
+            echo "  Системный тюнинг: 🛡 «Слабый сервер» ($(grep -oP 'CPUQuota=\K\S+' "$PERF_DROPIN" 2>/dev/null), GOMEMLIMIT $(grep -oP 'GOMEMLIMIT=\K\S+' "$PERF_DROPIN" 2>/dev/null))"
+        else
+            echo "  Системный тюнинг: обычный (без ограничений CPU/RAM)"
+        fi
+        is_restart_pending && echo "  ⚠️  изменения конфига ожидают перезапуска Hysteria (пункт 8)"
         echo ""
-        echo "  1. 🚦 Задать лимит скорости на клиента (Мбит/с)"
-        echo "  2. ♾  Снять лимит скорости (без ограничения)"
-        echo "  3. ⚖  Режим перегрузки: $([ "$icb" = "true" ] && echo "→ Brutal/по клиенту (жёсткий потолок)" || echo "→ BBR честное деление")"
-        echo "  4. 🛡 Профиль «Слабый сервер» (щадящие QUIC-окна + предложит лимит)"
-        echo "  5. 🚀 Профиль «Обычный сервер» (большие QUIC-окна, максимум throughput)"
+        echo "  1. 🚦 Задать лимит скорости на клиента (kernel + Hysteria)"
+        echo "  2. ♾  Снять лимит скорости полностью"
+        echo "  3. ⚖  Режим перегрузки: $([ "$icb" = "true" ] && echo "переключить на Brutal (потолок)" || echo "переключить на BBR (честное деление)")"
+        echo "  4. 🛡 Профиль «Слабый сервер» (QUIC-окна + CPUQuota/GOMEMLIMIT + лимит)"
+        echo "  5. 🚀 Профиль «Обычный сервер» (снять системные ограничения)"
         echo "  6. 🔧 Тонкая настройка QUIC-окон вручную"
-        echo "  7. 🔄 Применить сейчас (перезапустить Hysteria)"
+        echo "  7. 🩺 Проверить, применились ли лимиты (диагностика)"
+        echo "  8. 🔄 Перезапустить Hysteria (применить конфиг)"
         echo "  0. ↩  Назад"
         echo ""
         local ch; ask ch "  Выберите: "
         case "$ch" in
             1)
+                echo ""
+                echo "  Лимит применяется НА КАЖДОГО клиента (по IP). 0 = сторона без лимита."
                 local d u
-                ask d "  ↓ скорость СКАЧИВАНИЯ клиента, Мбит/с (0 = без лимита): "
-                ask u "  ↑ скорость ОТДАЧИ клиента, Мбит/с (0 = без лимита): "
+                ask d "  ↓ скачивание клиента, Мбит/с: "
+                ask u "  ↑ отдача клиента, Мбит/с (Enter = как скачивание): "
+                [ -z "$u" ] && u="$d"
                 if [[ "$d" =~ ^[0-9]+$ ]] && [[ "$u" =~ ^[0-9]+$ ]]; then
-                    local sup sdn=""
-                    [ "$d" -gt 0 ] && sup="${d} mbps" || sup=""    # up сервера = скачивание клиента
-                    [ "$u" -gt 0 ] && sdn="${u} mbps" || sdn=""    # down сервера = отдача клиента
-                    if set_bandwidth "$sup" "$sdn"; then
-                        changed=1
-                        if [ -z "$sup" ] && [ -z "$sdn" ]; then echo "  ✅ Лимит снят (без ограничения)."
-                        else echo "  ✅ Лимит: ↓ ${sup:-без лимита} · ↑ ${sdn:-без лимита}"; fi
-                        [ "$icb" = "true" ] && echo "  ⚠️  Сейчас включён BBR (ignoreClientBandwidth=on) — жёсткий потолок не действует. Выключите режим BBR (п.3), чтобы лимит работал как потолок."
-                    else echo "  ❌ Ошибка записи конфига — откат из бэкапа."; fi
+                    _perf_set_limit "$d" "$u" && changed=1
                 else
                     echo "  ❌ Нужны целые числа (Мбит/с)."
                 fi
                 pause ;;
             2)
-                if set_bandwidth "" ""; then changed=1; echo "  ✅ Лимит скорости снят."; else echo "  ❌ Ошибка."; fi
+                _perf_set_limit 0 0 && changed=1
                 pause ;;
             3)
-                if [ "$icb" = "true" ]; then set_ignore_client_bw false; echo "  ✅ Режим: Brutal/по клиенту (жёсткий потолок из лимита действует)."
-                else set_ignore_client_bw true;  echo "  ✅ Режим: BBR — честное деление канала между клиентами."; fi
+                if [ "$icb" = "true" ]; then
+                    if set_ignore_client_bw false; then
+                        echo "  ✅ Режим: Brutal/по клиенту — лимит из конфига снова действует."
+                    else echo "  ❌ Ошибка записи конфига."; fi
+                else
+                    if set_ignore_client_bw true; then
+                        echo "  ✅ Режим: BBR — канал делится честно между клиентами."
+                        [ -n "$bu$bd" ] && echo "  ⓘ Лимит Hysteria в BBR-режиме не действует, но kernel-лимит (если включён) продолжает работать."
+                    else echo "  ❌ Ошибка записи конфига."; fi
+                fi
                 changed=1; pause ;;
             4)
-                apply_quic_profile weak && changed=1
-                echo "  ✅ QUIC-окна: профиль «Слабый сервер» (щадящие буферы)."
+                echo ""
+                if apply_quic_profile weak; then
+                    echo "  ✅ QUIC-окна: профиль «Слабый сервер» (щадящие буферы)."
+                else
+                    echo "  ❌ Не удалось записать QUIC-окна — откат."
+                fi
+                perf_tune_weak
+                echo "  ✅ Системный тюнинг: CPUQuota $(grep -oP 'CPUQuota=\K\S+' "$PERF_DROPIN" 2>/dev/null) + GOMEMLIMIT $(grep -oP 'GOMEMLIMIT=\K\S+' "$PERF_DROPIN" 2>/dev/null) + UDP-буферы."
+                echo "     Hysteria больше не сможет съесть 100% CPU и повесить сервер."
+                changed=1
                 local sc
-                ask sc "  Также задать лимит скорости на клиента, Мбит/с (Enter — пропустить, 30 — рекомендую): "
+                ask sc "  Задать лимит скорости на клиента, Мбит/с (Enter — пропустить, рекомендую 20–50): "
                 if [[ "$sc" =~ ^[0-9]+$ ]] && [ "$sc" -gt 0 ]; then
-                    set_bandwidth "${sc} mbps" "${sc} mbps" && changed=1
-                    set_ignore_client_bw false   # потолок работает в режиме Brutal
-                    echo "  ✅ Лимит на клиента: ${sc} Мбит/с (↓/↑), режим Brutal (жёсткий потолок)."
+                    _perf_set_limit "$sc" "$sc"
                 fi
                 pause ;;
             5)
-                apply_quic_profile normal && changed=1
-                echo "  ✅ QUIC-окна: профиль «Обычный сервер» (максимальный throughput)."
-                pause ;;
+                if apply_quic_profile normal; then
+                    echo "  ✅ QUIC-окна: профиль «Обычный сервер»."
+                else
+                    echo "  ❌ Не удалось записать QUIC-окна — откат."
+                fi
+                perf_tune_normal
+                echo "  ✅ Системные ограничения CPU/RAM сняты."
+                changed=1; pause ;;
             6)
                 echo "  Enter — оставить текущее значение. Размеры окон — в БАЙТАХ (напр. 33554432 = 32 MiB)."
                 local a b c e f g cur
@@ -1029,11 +1093,18 @@ perf_menu() {
                 fi
                 pause ;;
             7)
-                restart_hysteria; changed=0; pause ;;
+                clear
+                perf_report
+                pause ;;
+            8)
+                restart_hysteria; changed=0
+                echo ""
+                perf_report
+                pause ;;
             0)
                 if [ "$changed" = 1 ] && is_restart_pending; then
                     echo ""
-                    local ans; ask ans "  Есть изменения. Перезапустить Hysteria сейчас? (да/нет): "
+                    local ans; ask ans "  Есть изменения конфига. Перезапустить Hysteria сейчас? (да/нет): "
                     is_yes "$ans" && restart_hysteria
                 fi
                 return ;;
@@ -1081,7 +1152,9 @@ settings_menu() {
         echo "  3. ⚡ Производительность / лимит скорости (защита слабого сервера)"
         echo "  4. 🔧 Исправить / обновить данные (если статистика не сходится)"
         echo "  5. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
-        echo "  6. 🔄 Получить синхронизацию (локально)"
+        echo "  6. 🤖 Telegram-бот (управление и продажа доступа)"
+        echo "  7. 🔄 Получить синхронизацию (локально)"
+        echo "  8. ⬆  Обновить менеджер (до последней версии с GitHub)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -1126,7 +1199,32 @@ settings_menu() {
                 subscription_menu
                 ;;
             6)
+                bot_menu
+                ;;
+            7)
                 cluster_sync_now
+                pause
+                ;;
+            8)
+                echo ""
+                echo "  Обновление скачает свежие файлы менеджера с GitHub и заменит текущие."
+                echo "  Hysteria, пользователи и настройки НЕ трогаются (режим «только менеджер»)."
+                local confirm
+                ask confirm "  Обновить сейчас? (да/нет): "
+                if is_yes "$confirm"; then
+                    local up_tmp
+                    up_tmp=$(mktemp)
+                    if curl -fsSL --max-time 30 "https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh" -o "$up_tmp"; then
+                        echo "  ⏳ Запускаю установщик (выберите пункт 1 — обновить только менеджер)..."
+                        # stderr менеджера уходит в лог-файл — вернём его на терминал,
+                        # чтобы сообщения установщика были видны. exec заменяет процесс.
+                        exec 2>/dev/tty
+                        exec bash "$up_tmp"
+                    else
+                        rm -f "$up_tmp"
+                        echo "  ❌ Не удалось скачать install.sh (проверьте сеть)."
+                    fi
+                fi
                 pause
                 ;;
             0) return ;;
@@ -1675,7 +1773,9 @@ get_link_menu() {
                         pass=$(get_user_password "$sel_user")
                     fi
                     if [ -n "$pass" ]; then
-                        local link="hysteria2://${sel_user}:${pass}@${CACHED_IP}:${CACHED_PORT}/?obfs=salamander&obfs-password=${CACHED_OBFS}&sni=${CACHED_SNI}&insecure=1#${sel_user}"
+                        # Единый генератор ссылки (учитывает домен подключения/релей).
+                        local link
+                        link=$(build_user_link "$sel_user" "$pass" "$(link_host)" "$CACHED_PORT" "$CACHED_OBFS" "$CACHED_SNI")
                         echo ""
                         echo "  🔗 ССЫЛКА для $sel_user:"
                         echo "  $link"

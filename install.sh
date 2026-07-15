@@ -66,7 +66,7 @@ LOG_DIR="/var/log/hy2-manager"
 SERVICE="hysteria-server.service"
 # ВАЖНО: держать список в синхроне с _required_libs в hy2-manager.sh — иначе после
 # обновления менеджер упадёт с «Модуль не найден» (файл не скачался).
-MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster ui)
+MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster tgbot ui)
 
 # === УТИЛИТА: скачивание файлов менеджера ===
 download_file() {
@@ -203,6 +203,14 @@ if [ "$MODE" = "full_reinstall" ]; then
     systemctl daemon-reload 2>/dev/null || true
 
     info "Удаляю конфиги, сертификаты и данные менеджера..."
+    # Сервисы менеджера (бот, kernel-лимит) и системный тюнинг Hysteria
+    systemctl disable --now hy2-bot.service 2>/dev/null || true
+    systemctl disable --now hy2-limit.service 2>/dev/null || true
+    rm -f /etc/systemd/system/hy2-bot.service /etc/systemd/system/hy2-limit.service
+    rm -rf /etc/systemd/system/hysteria-server.service.d
+    rm -f /etc/sysctl.d/99-hy2-quic.conf
+    nft delete table inet hy2limit 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
     rm -rf /etc/hysteria
     rm -rf "$INSTALL_DIR"
     rm -rf "$LOG_DIR"
@@ -228,7 +236,7 @@ apt install -y -qq curl wget unzip sudo ufw openssl pwgen jq ca-certificates cro
 ok "Пакеты установлены"
 
 # ================================================================
-# 2. BBR (ускорение TCP)
+# 2. BBR (ускорение TCP) + UDP-буферы для QUIC
 # ================================================================
 if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
     info "Включаю BBR..."
@@ -239,6 +247,16 @@ if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
 else
     ok "BBR уже активен"
 fi
+
+# quic-go требует большие UDP-буферы (иначе warning «failed to set receive
+# buffer size» в журнале и потери пакетов на бурстах).
+cat > /etc/sysctl.d/99-hy2-quic.conf <<'EOF'
+# hy2-manager: буферы UDP для QUIC (Hysteria 2)
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+EOF
+sysctl -p /etc/sysctl.d/99-hy2-quic.conf >/dev/null 2>&1 || true
+ok "UDP-буферы для QUIC настроены (rmem/wmem 16 МБ)"
 
 # ================================================================
 # 3. ПАРАМЕТРЫ УСТАНОВКИ (интерактивно)
@@ -453,11 +471,14 @@ obfs:
   salamander:
     password: "${HY_OBFS}"
 
+# QUIC recv-окна: большие, но ОГРАНИЧЕННЫЕ сверху (раньше max был 1 GiB —
+# пара быстрых клиентов могла раздуть память процесса на всю ОЗУ).
+# Профили «Слабый/Обычный сервер» меняются в менеджере: Настройки → 3.
 quic:
-  initStreamReceiveWindow: 16777216
-  maxStreamReceiveWindow: 1073741824
-  initConnReceiveWindow: 33554432
-  maxConnReceiveWindow: 1073741824
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 33554432
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 67108864
   maxIdleTimeout: 30s
   keepAlivePeriod: 10s
 
