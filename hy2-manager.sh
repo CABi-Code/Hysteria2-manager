@@ -92,6 +92,7 @@ if [ "$1" = "--online-sync" ]; then
     migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
     cluster_online_sync
     write_authlimits    # снимок для жёсткой проверки (работает и на одиночной ноде)
+    klimit_reconcile    # разложить активные IP по тарифным классам скорости (tc)
     exit 0
 fi
 

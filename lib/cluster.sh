@@ -554,14 +554,15 @@ cluster_apply_expiry() {
 publish_cluster_userlimits() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local tmp="$WEBROOT/cluster/userlimits.tmp" u d h t
+    local tmp="$WEBROOT/cluster/userlimits.tmp" u d h t r
     : > "$tmp"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         t=$(userlimits_get_ts "$u")
         [ "${t:-0}" -gt 0 ] 2>/dev/null || continue   # нет явной записи — не публикуем
-        d=$(get_user_devices "$u"); h=$(get_user_hardcheck "$u")
-        printf '%s|%s|%s|%s\n' "$u" "$d" "$h" "$t" >> "$tmp"
+        d=$(get_user_devices "$u"); h=$(get_user_hardcheck "$u"); r=$(get_user_rate "$u")
+        # rate — поле 5 (ts остаётся полем 4 ради обратной совместимости старых нод).
+        printf '%s|%s|%s|%s|%s\n' "$u" "$d" "$h" "$t" "$r" >> "$tmp"
     done < <( { get_all_users; cluster_users_all; } | grep -v '^$' | sort -u )
     mv "$tmp" "$WEBROOT/cluster/userlimits"
     chmod 640 "$WEBROOT/cluster/userlimits" 2>/dev/null || true
@@ -577,17 +578,17 @@ cluster_apply_userlimits() {
     merged=$(
         { [ -f "$WEBROOT/cluster/userlimits" ] && cat "$WEBROOT/cluster/userlimits"
           [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.userlimits 2>/dev/null; } \
-        | awk -F'|' 'NF>=4 && $1!="" { if (($4+0) > (ts[$1]+0)) { ts[$1]=$4; d[$1]=$2; h[$1]=$3 } }
-                     END { for (u in ts) printf "%s|%s|%s|%s\n", u, d[u], h[u], ts[u] }'
+        | awk -F'|' 'NF>=4 && $1!="" { if (($4+0) > (ts[$1]+0)) { ts[$1]=$4; d[$1]=$2; h[$1]=$3; r[$1]=($5==""?0:$5) } }
+                     END { for (u in ts) printf "%s|%s|%s|%s|%s\n", u, d[u], h[u], ts[u], r[u] }'
     )
     [ -n "$merged" ] || return 0
-    local u d h t localts changed=0
-    while IFS='|' read -r u d h t; do
+    local u d h t r localts changed=0
+    while IFS='|' read -r u d h t r; do
         [ -n "$u" ] || continue
         [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
         localts=$(userlimits_get_ts "$u")
         [ "${t:-0}" -gt "${localts:-0}" ] 2>/dev/null || continue
-        set_user_limits "$u" "$d" "$h" "$t"
+        set_user_limits "$u" "$d" "$h" "$t" "$r"
         changed=1
     done <<< "$merged"
     if [ "$changed" = 1 ]; then
