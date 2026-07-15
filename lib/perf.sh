@@ -13,11 +13,13 @@
 # Поэтому лимит теперь ДВУХУРОВНЕВЫЙ:
 #   1) Hysteria bandwidth + ignoreClientBandwidth:false — вежливый потолок для
 #      клиентов с Brutal (пишется в config.yaml, применяется после рестарта).
-#   2) Kernel-лимит (nftables per-IP token bucket) — РЕАЛЬНЫЙ потолок для всех,
-#      включая BBR-клиентов. Каждому IP клиента — свой бакет. Работает сразу,
-#      без рестарта Hysteria, переживает ребут (systemd-юнит hy2-limit).
-#      Ставится с запасом ~18% над лимитом, чтобы не душить Brutal-клиентов,
-#      которые уже ограничены на уровне протокола (без двойного урезания).
+#   2) Kernel-лимит — РЕАЛЬНЫЙ потолок для всех, включая BBR-клиентов, на каждый
+#      IP клиента. Работает сразу, без рестарта Hysteria, переживает ребут
+#      (systemd-юнит hy2-limit). Реализован через tc (HTB + fq_codel) — это
+#      ШЕЙПИНГ: пакеты сверх скорости придерживаются в очереди и выдаются ровно
+#      на заданной полосе, БЕЗ потери пакетов. (Раньше был дроп-полисинг nftables:
+#      он резал пакеты сверх лимита, а для QUIC это = потеря пакетов, обрывы,
+#      socket error в спидтесте. Дроп оставлен только фолбэком, если нет tc/HTB.)
 #
 # Плюс защита слабого сервера:
 #   - щадящие QUIC recv-окна (меньше памяти на поток);
@@ -191,22 +193,40 @@ klimit_get() {   # key -> value
 klimit_down() { local v; v=$(klimit_get DOWN_MBIT); [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 klimit_up()   { local v; v=$(klimit_get UP_MBIT);   [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 
-# Активен ли kernel-лимит прямо сейчас (таблица nftables загружена)?
+# Активен ли kernel-лимит прямо сейчас? Основной сигнал — oneshot-юнит hy2-limit
+# успешно применился (RemainAfterExit); плюс прямые проверки tc/nft/iptables на
+# случай запуска вне systemd.
 klimit_active() {
+    systemctl is-active --quiet hy2-limit.service 2>/dev/null && return 0
+    if command -v tc >/dev/null 2>&1 && command -v ip >/dev/null 2>&1; then
+        local d; d=$(ip -o route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+        [ -n "$d" ] && tc qdisc show dev "$d" 2>/dev/null | grep -q 'htb 1:' && return 0
+    fi
     command -v nft >/dev/null 2>&1 && nft list table inet hy2limit &>/dev/null && return 0
     command -v iptables >/dev/null 2>&1 && iptables -S HY2LIMIT_OUT &>/dev/null && return 0
     return 1
 }
 
-# Генерирует скрипт применения лимита (nft, fallback iptables+hashlimit) и
-# systemd-юнит для восстановления после ребута.
+# Генерирует скрипт применения лимита и systemd-юнит для восстановления после ребута.
+#
+# ГЛАВНОЕ: лимит теперь ШЕЙПИТ (tc HTB + fq_codel), а не ДРОПАЕТ. Раньше kernel-лимит
+# резал пакеты сверх скорости (nft/iptables ... drop) — для UDP/QUIC это прямая потеря
+# пакетов: спидтест писал socket error, страницы «то грузят, то нет». tc вместо дропа
+# ставит пакеты в очередь и выдаёт их РОВНО на заданной скорости (fq_codel держит
+# задержку низкой) — данные идут БЕЗ потерь. Дроп-полисинг (nft/iptables) оставлен
+# только фолбэком, если в системе нет tc/HTB.
+#   • Скачивание (сервер->клиент): шейпим egress реального интерфейса, класс на IP клиента.
+#   • Отдача (клиент->сервер): ingress нельзя шейпить напрямую — заворачиваем на IFB и
+#     шейпим там. Если IFB недоступен — на отдачу падаем в дроп-фолбэк.
+#   • Класс на КАЖДЫЙ IP: хешируем последний октет IP в 256 корзин (htb rate=ceil=лимит,
+#     листовой fq_codel). Не-туннельный трафик (SSH, сайт-маскировка) идёт в дефолт-класс
+#     на полной скорости — ничего лишнего не режем.
+#   • IPv4 шейпится через tc; IPv6-клиентов (редко) добираем лёгким nft-дропом, чтобы
+#     они не проходили мимо лимита.
 # down_mbit — скачивание клиента (сервер -> клиент), up_mbit — отдача клиента.
 _klimit_write_script() {   # down_mbit up_mbit port
     local down="$1" up="$2" port="$3"
-    # Перевод Мбит/с -> KiB/s (nft меряет kbytes = 1024 B на проводе):
-    #   1 Мбит/с = 122 KiB/s полезной нагрузки. Берём 138 (~13% запас): nft
-    #   считает и UDP/QUIC-заголовки, а Brutal-клиент уже ограничен протоколом
-    #   и не должен упираться ещё и в дропы ядра. Потолок держим близко к цели.
+    # Для дроп-фолбэка (nft/iptables): Мбит/с -> KiB/s (~13% запас на заголовки).
     local dkb=$(( down * 138 ))
     local ukb=$(( up * 138 ))
     local dburst=$(( dkb / 4 )); [ "$dburst" -lt 256 ] && dburst=256
@@ -214,24 +234,102 @@ _klimit_write_script() {   # down_mbit up_mbit port
 
     {
         echo '#!/bin/bash'
-        echo "# Сгенерировано hy2-manager. Пер-IP потолок скорости для порта Hysteria ${port}/udp."
+        echo "# Сгенерировано hy2-manager. Пер-IP ПОТОЛОК скорости (шейпинг, без потерь) для порта ${port}/udp."
         echo "# apply — включить, clear — выключить. Идемпотентно."
         echo "PORT=${port}"
-        echo "DKB=${dkb}      # KiB/s на IP: скачивание клиента (0 = без лимита)"
-        echo "UKB=${ukb}      # KiB/s на IP: отдача клиента (0 = без лимита)"
-        echo "DBURST=${dburst}"
-        echo "UBURST=${uburst}"
+        echo "DMBIT=${down}    # Мбит/с на IP: скачивание клиента (0 = без лимита)"
+        echo "UMBIT=${up}      # Мбит/с на IP: отдача клиента   (0 = без лимита)"
+        echo "DKB=${dkb} UKB=${ukb} DBURST=${dburst} UBURST=${uburst}   # для дроп-фолбэка"
+        echo "IFB=ifb-hy2"
         # Дальше — статичное тело (ничего не подставляем: 'KEOF' в кавычках).
         cat <<'KEOF'
 
-nft_apply() {
-    local dl_rules="" ul_rules=""
-    if [ "$DKB" -gt 0 ]; then
-        dl_rules="udp sport $PORT meter hy2dl4 size 65535 { ip daddr timeout 2m limit rate over $DKB kbytes/second burst $DBURST kbytes } counter drop
+# ---- Основной путь: tc-ШЕЙПИНГ (очередь, без дропов) --------------------------
+
+detect_dev() {
+    command -v ip >/dev/null 2>&1 || return 1
+    DEV=$(ip -o route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+    [ -n "$DEV" ]
+}
+
+# Есть ли рабочий tc с htb + fq_codel (пробуем на реальном DEV и сразу убираем).
+tc_ok() {
+    command -v tc >/dev/null 2>&1 || return 1
+    tc qdisc add dev "$DEV" root handle 1: htb default 9999 2>/dev/null || return 1
+    tc qdisc add dev "$DEV" parent 1:9999 fq_codel 2>/dev/null; local rc=$?
+    tc qdisc del dev "$DEV" root 2>/dev/null
+    return $rc
+}
+
+# Пер-IP шейпер на устройстве $1: rate=$2 Мбит/с, селектор порта $3 ($4=значение),
+# ключ IP $5 (dst|src). 256 корзин по последнему октету IP, лист — fq_codel.
+shape() {   # dev rate portsel port ipkey
+    local D="$1" R="$2" PSEL="$3" PV="$4" IPK="$5" off i hx
+    [ "$IPK" = dst ] && off=16 || off=12          # смещение IP в заголовке IPv4
+    tc qdisc add dev "$D" root handle 1: htb default 9999 || return 1
+    tc class add dev "$D" parent 1:  classid 1:1    htb rate 10000mbit ceil 10000mbit || return 1
+    tc class add dev "$D" parent 1:  classid 1:9999 htb rate 10000mbit ceil 10000mbit || return 1
+    tc qdisc add dev "$D" parent 1:9999 fq_codel
+    tc filter add dev "$D" parent 1: prio 1 handle 800: protocol ip u32 divisor 256 || return 1
+    i=0
+    while [ "$i" -lt 256 ]; do
+        hx=$(printf '%x' "$i")
+        tc class  add dev "$D" parent 1:1 classid "1:1$hx" htb rate "${R}mbit" ceil "${R}mbit" || return 1
+        tc qdisc  add dev "$D" parent "1:1$hx" fq_codel
+        tc filter add dev "$D" parent 1: prio 1 protocol ip u32 ht "800:$hx:" \
+            match ip "$PSEL" "$PV" 0xffff flowid "1:1$hx" || return 1
+        i=$((i+1))
+    done
+    # Заворачиваем только udp/PORT в хеш-таблицу; всё остальное -> дефолт (не режем).
+    tc filter add dev "$D" parent 1: prio 1 protocol ip u32 \
+        match ip protocol 17 0xff match ip "$PSEL" "$PV" 0xffff \
+        hashkey mask 0x000000ff at "$off" link 800: || return 1
+}
+
+# Ingress реального DEV зеркалим на IFB, чтобы ШЕЙПИТЬ отдачу (иначе только дроп).
+setup_ifb() {
+    command -v ip >/dev/null 2>&1 || return 1
+    modprobe ifb numifbs=0 2>/dev/null
+    ip link show "$IFB" >/dev/null 2>&1 || ip link add "$IFB" type ifb 2>/dev/null || return 1
+    ip link set "$IFB" up 2>/dev/null || return 1
+    tc qdisc add dev "$DEV" handle ffff: ingress 2>/dev/null
+    tc filter add dev "$DEV" parent ffff: protocol ip prio 1 u32 \
+        match ip protocol 17 0xff match ip dport "$PORT" 0xffff \
+        action mirred egress redirect dev "$IFB" 2>/dev/null || return 1
+}
+
+tc_clear() {
+    if command -v tc >/dev/null 2>&1; then
+        [ -n "$DEV" ] && { tc qdisc del dev "$DEV" root 2>/dev/null; tc qdisc del dev "$DEV" ingress 2>/dev/null; }
+        tc qdisc del dev "$IFB" root 2>/dev/null
+    fi
+    command -v ip >/dev/null 2>&1 && ip link del "$IFB" 2>/dev/null
+}
+
+tc_apply() {   # -> 0 ок; 1 не смогли (нужен фолбэк); 2 отдача без шейпинга (нужен дроп на up)
+    tc_clear
+    if [ "$DMBIT" -gt 0 ]; then shape "$DEV" "$DMBIT" sport "$PORT" dst || { tc_clear; return 1; }; fi
+    if [ "$UMBIT" -gt 0 ]; then
+        if setup_ifb && shape "$IFB" "$UMBIT" dport "$PORT" src; then :; else return 2; fi
+    fi
+    return 0
+}
+
+# ---- Фолбэк: ДРОП-полисинг (nft, затем iptables+hashlimit) --------------------
+# Хуже шейпинга (режет пакеты), но лучше, чем совсем без лимита. Семейство на каждую
+# сторону задаётся отдельно: skip = без правил, v6 = только IPv6 (добор к tc-шейпингу
+# IPv4), all = IPv4+IPv6 (полный дроп там, где tc не сработал).
+
+nft_apply() {   # dlfam ulfam ; fam = skip|v6|all
+    local dlf="$1" ulf="$2" dl_rules="" ul_rules=""
+    if [ "$DMBIT" -gt 0 ]; then
+        [ "$dlf" = all ] && dl_rules="udp sport $PORT meter hy2dl4 size 65535 { ip daddr timeout 2m limit rate over $DKB kbytes/second burst $DBURST kbytes } counter drop"
+        [ "$dlf" = skip ] || dl_rules="$dl_rules
         udp sport $PORT meter hy2dl6 size 65535 { ip6 daddr timeout 2m limit rate over $DKB kbytes/second burst $DBURST kbytes } counter drop"
     fi
-    if [ "$UKB" -gt 0 ]; then
-        ul_rules="udp dport $PORT meter hy2ul4 size 65535 { ip saddr timeout 2m limit rate over $UKB kbytes/second burst $UBURST kbytes } counter drop
+    if [ "$UMBIT" -gt 0 ]; then
+        [ "$ulf" = all ] && ul_rules="udp dport $PORT meter hy2ul4 size 65535 { ip saddr timeout 2m limit rate over $UKB kbytes/second burst $UBURST kbytes } counter drop"
+        [ "$ulf" = skip ] || ul_rules="$ul_rules
         udp dport $PORT meter hy2ul6 size 65535 { ip6 saddr timeout 2m limit rate over $UKB kbytes/second burst $UBURST kbytes } counter drop"
     fi
     nft -f - <<NFT
@@ -275,8 +373,27 @@ ipt_apply() {
 
 case "$1" in
     apply)
-        if command -v nft >/dev/null 2>&1; then nft_apply; else ipt_apply; fi ;;
+        DEV=""
+        if detect_dev && tc_ok; then
+            tc_apply; rc=$?
+            if [ "$rc" = 0 ]; then
+                # IPv4 (обе стороны) шейпится tc; IPv6-клиентов добираем дропом (если есть nft).
+                command -v nft >/dev/null 2>&1 && nft_apply v6 v6 2>/dev/null
+                exit 0
+            elif [ "$rc" = 2 ]; then
+                # Скачивание шейпится tc (IPv4); отдачу шейпить не вышло — её дропаем.
+                if command -v nft >/dev/null 2>&1; then nft_apply v6 all 2>/dev/null
+                else ipt_apply 2>/dev/null; fi   # ipt-порог выше tc-скорости -> скачивание не режет
+                exit 0
+            else
+                tc_clear   # tc не смог — полный дроп-фолбэк ниже
+            fi
+        fi
+        # Полный дроп-фолбэк: tc недоступен/не сработал.
+        if command -v nft >/dev/null 2>&1; then nft_apply all all; else ipt_apply; fi ;;
     clear)
+        DEV=""; detect_dev 2>/dev/null
+        command -v tc >/dev/null 2>&1 && tc_clear
         command -v nft >/dev/null 2>&1 && nft delete table inet hy2limit 2>/dev/null
         command -v iptables >/dev/null 2>&1 && ipt_clear
         exit 0 ;;
@@ -309,8 +426,8 @@ klimit_apply() {   # down_mbit up_mbit
     [[ "$down" =~ ^[0-9]+$ ]] || down=0
     [[ "$up"   =~ ^[0-9]+$ ]] || up=0
     if [ "$down" -eq 0 ] && [ "$up" -eq 0 ]; then klimit_clear; return 0; fi
-    if ! command -v nft >/dev/null 2>&1 && ! command -v iptables >/dev/null 2>&1; then
-        return 2   # нечем ограничивать на уровне ядра
+    if ! command -v tc >/dev/null 2>&1 && ! command -v nft >/dev/null 2>&1 && ! command -v iptables >/dev/null 2>&1; then
+        return 2   # нечем ограничивать на уровне ядра (нет tc/nft/iptables)
     fi
     port=$(get_port)
     {   echo "DOWN_MBIT=$down"
