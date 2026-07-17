@@ -161,10 +161,14 @@ proto_gen_reality_keys() {
     [ -n "$(proto_reality_pubkey)" ] && [ -n "$(proto_reality_privkey)" ] && return 0
     local out priv pub
     out=$("$XRAY_BIN" x25519 2>/dev/null) || { echo "  ❌ xray x25519 не сработал"; return 1; }
-    # Формат вывода менялся: "Private key:"/"Password:" и "Public key:".
-    priv=$(printf '%s\n' "$out" | grep -iE 'private key|password' | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
-    pub=$(printf '%s\n' "$out"  | grep -iE 'public key'          | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
-    [ -n "$priv" ] && [ -n "$pub" ] || { echo "  ❌ Не разобрал ключи REALITY"; return 1; }
+    # Метки менялись между версиями Xray. Приватный ключ — строго по слову
+    # "private"; публичный — по "public", а если такой строки нет (новые версии
+    # печатают его как "Password") — берём "password". Порядок важен, чтобы НЕ
+    # перепутать ключи: сначала пробуем однозначные метки.
+    priv=$(printf '%s\n' "$out" | grep -iE 'private' | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
+    pub=$(printf '%s\n'  "$out" | grep -iE 'public'  | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
+    [ -n "$pub" ] || pub=$(printf '%s\n' "$out" | grep -iE 'password' | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
+    [ -n "$priv" ] && [ -n "$pub" ] || { echo "  ❌ Не разобрал ключи REALITY (вывод: $out)"; return 1; }
     proto_set PROTO_REALITY_PRIVKEY "$priv"
     proto_set PROTO_REALITY_PUBKEY  "$pub"
     [ -n "$(proto_reality_shortid)" ] || proto_set PROTO_REALITY_SHORTID "$(openssl rand -hex 8)"
