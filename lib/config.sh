@@ -13,9 +13,12 @@ if [ -z "${LC_ALL:-}" ] || ! printf '%s' "$LC_ALL" | grep -qi 'utf-\?8'; then
     fi
 fi
 
-CONFIG="/etc/hysteria/config.yaml"
+# HY2M_CONFIG / HY2M_DATA_DIR / HY2M_WEBROOT позволяют запустить менеджер и его
+# инструменты (webapi/dispatch.sh, тесты) на фикстурном наборе данных, не трогая
+# боевые файлы. В обычной работе env не заданы — пути прежние.
+CONFIG="${HY2M_CONFIG:-/etc/hysteria/config.yaml}"
 SERVICE="hysteria-server.service"
-DATA_DIR="/etc/hysteria/manager"
+DATA_DIR="${HY2M_DATA_DIR:-/etc/hysteria/manager}"
 STATS_FILE="$DATA_DIR/stats.dat"
 IPS_FILE="$DATA_DIR/ips.dat"
 EXPIRY_FILE="$DATA_DIR/expiry.dat"
@@ -87,10 +90,15 @@ CLUSTER_USERS_FILE="$DATA_DIR/cluster_users"    # имена «кластерн�
 # произошло действие, бампает ts=now и публикует — остальные применяют у себя.
 # deleted — это tombstone: не даёт roster/манифесту пира воскресить удалённого.
 CLUSTER_STATE_FILE="$DATA_DIR/cluster_state.dat"
-WEBROOT="/var/www/hy2sub"                   # корень статики Caddy (sub/ и cluster/)
+WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
 CADDYFILE="/etc/caddy/Caddyfile"
+# Заголовок profile-title для /sub/* — отдельным сниппетом, который Caddyfile
+# импортирует. Когда в названии профиля есть плейсхолдеры ({user} и др.), название
+# у каждого юзера своё, и сниппет держит map «токен → название». Его перепекает
+# regen_subscriptions при изменении состава юзеров/токенов, не трогая Caddyfile.
+CADDY_SUBTITLES="/etc/caddy/hy2-sub-titles.conf"
 # Лимит одновременных подключений на ОДНУ подписку по ВСЕМУ кластеру (0 = без
 # лимита). Не даёт раздать одну подписку на десяток устройств через разные ноды.
 # Устар.: значение мигрирует в общекластерную настройку POOL_LIMIT (node.conf),
