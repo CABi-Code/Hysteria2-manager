@@ -336,7 +336,10 @@ def run_dispatch(verb, *args):
     except subprocess.TimeoutExpired:
         return None, (504, "dispatch_timeout", "менеджер не ответил за 60 секунд")
     except OSError as e:
-        return None, (500, "dispatch_unavailable", str(e))
+        # Детали (путь, errno) — только в лог: наружу они раскрывают устройство
+        # сервера и бесполезны клиенту.
+        sys.stderr.write(f"dispatch {verb}: запуск не удался: {e!r}\n")
+        return None, (500, "dispatch_unavailable", "менеджер недоступен")
     out = {}
     for line in proc.stdout.splitlines():
         if "=" in line:
@@ -348,6 +351,11 @@ def run_dispatch(verb, *args):
         return None, (404, out.get("error", "not_found"), out.get("message", "объект не найден"))
     if proc.returncode == 3:
         return None, (409, out.get("error", "conflict"), out.get("message", "конфликт состояния"))
+    if proc.returncode == 75:
+        # flock -w в dispatch.sh не дождался блокировки: менеджер занят другой
+        # мутацией. Это не ошибка менеджера, а «попробуйте позже» — 503 + Retry-After.
+        return None, (503, "busy", "менеджер занят, повторите позже",
+                      {"Retry-After": "15"})
     sys.stderr.write(f"dispatch {verb} rc={proc.returncode}: {proc.stderr.strip()}\n")
     return None, (502, "manager_error", "внутренняя ошибка менеджера")
 
@@ -463,8 +471,9 @@ ROUTES = [
 
 
 class ApiError(Exception):
-    def __init__(self, status, code, message):
+    def __init__(self, status, code, message, headers=None):
         self.status, self.code, self.message = status, code, message
+        self.headers = headers or {}  # доп. заголовки ответа (Retry-After и т.п.)
 
 
 def need_username(value):
@@ -477,6 +486,13 @@ def need_tg_id(value):
     if not RE_TG_ID.fullmatch(str(value or "")):
         raise ApiError(400, "invalid_tg_id", "tg_id: только цифры")
     return str(value)
+
+
+def is_int(value):
+    # bool — подкласс int (isinstance(True, int) == True), но str(True) = "True"
+    # ломает контракт dispatch.sh (rc 64 → 502). Отвергаем bool явно, чтобы
+    # клиент получил честный 400.
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -544,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
     def h_extend(self, name):
         user = need_username(name)
         days = self.body.get("days")
-        if not (isinstance(days, int) and 1 <= days <= 3650):
+        if not (is_int(days) and 1 <= days <= 3650):
             raise ApiError(400, "invalid_days", "days: целое 1..3650")
         res = self.dispatch("extend", user, str(days))
         return {"username": user, "expiry": res.get("expiry"),
@@ -565,9 +581,9 @@ class Handler(BaseHTTPRequestHandler):
         current = user_limits(user)
         devices = self.body.get("devices", current["devices"])
         rate = self.body.get("rate_mbps", current["rate_mbps"])
-        if not (isinstance(devices, int) and 0 <= devices <= 1000):
+        if not (is_int(devices) and 0 <= devices <= 1000):
             raise ApiError(400, "invalid_devices", "devices: целое 0..1000")
-        if not (isinstance(rate, int) and 0 <= rate <= 100000):
+        if not (is_int(rate) and 0 <= rate <= 100000):
             raise ApiError(400, "invalid_rate", "rate_mbps: целое 0..100000")
         self.dispatch("set-limits", user, str(devices), str(rate))
         return {"username": user, "limits": user_limits(user)}
@@ -608,6 +624,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.query[k] = urllib.parse.unquote(v)
         key = None
         status = 500
+        # Соединение keep-alive (HTTP/1.1): пока тело запроса не вычитано из
+        # rfile, отвечать нельзя — невычитанные байты распарсятся как следующий
+        # запрос. Флаг сбрасывается на каждый запрос (Handler живёт всё соединение).
+        self._body_consumed = False
         try:
             matched = None
             for m, rx, scope, handler in ROUTES:
@@ -625,12 +645,8 @@ class Handler(BaseHTTPRequestHandler):
                 if key is None:
                     raise ApiError(401, "unauthorized", "нужен заголовок Authorization: Bearer <ключ>")
                 if not rate_ok(key["name"], conf()["rate_rpm"]):
-                    self.send_response(429)
-                    self.send_header("Retry-After", "10")
-                    self.finish_json({"ok": False, "error": {"code": "rate_limited",
-                                     "message": "слишком много запросов"}})
-                    status = 429
-                    return
+                    raise ApiError(429, "rate_limited", "слишком много запросов",
+                                   {"Retry-After": "10"})
                 if not has_scope(key, scope):
                     raise ApiError(403, "forbidden", f"ключу не выдан scope «{scope}»")
             if method == "POST":
@@ -638,6 +654,7 @@ class Handler(BaseHTTPRequestHandler):
                 if length > 65536:
                     raise ApiError(413, "payload_too_large", "тело запроса больше 64 КБ")
                 raw = self.rfile.read(length) if length else b""
+                self._body_consumed = True
                 if raw:
                     try:
                         self.body = json.loads(raw.decode("utf-8"))
@@ -649,27 +666,69 @@ class Handler(BaseHTTPRequestHandler):
                     self.body = {}
             data = getattr(self, handler)(*match.groups())
             status = 200
-            self.send_response(200)
-            self.finish_json({"ok": True, "data": data})
+            self.respond(200, {"ok": True, "data": data})
         except ApiError as e:
             status = e.status
-            self.send_response(e.status)
-            self.finish_json({"ok": False, "error": {"code": e.code, "message": e.message}})
+            self.respond(e.status, {"ok": False, "error": {"code": e.code, "message": e.message}},
+                         e.headers)
         except Exception as e:  # не роняем демон из-за одного запроса
             sys.stderr.write(f"unhandled {method} {path}: {e!r}\n")
             status = 500
             try:
-                self.send_response(500)
-                self.finish_json({"ok": False, "error": {"code": "internal",
-                                 "message": "внутренняя ошибка"}})
+                self.respond(500, {"ok": False, "error": {"code": "internal",
+                             "message": "внутренняя ошибка"}})
             except Exception:
                 pass
         finally:
             ms = int((time.monotonic() - started) * 1000)
             audit(key["name"] if key else "-", method, path, status, ms)
 
-    def finish_json(self, obj):
+    # Потолок дренажа невычитанного тела. Валидные тела ограничены 64 КБ (413);
+    # всё, что больше, дешевле не дочитывать, а закрыть соединение.
+    MAX_DRAIN = 1 << 20
+
+    def drain_body(self):
+        """Дочитывает невычитанное тело запроса перед отправкой ответа.
+
+        Ранние ответы (401/403/404/405/413/429) уходят ДО чтения тела POST; в
+        keep-alive-соединении оставшиеся байты иначе были бы распарсены как
+        следующий запрос (клиент за Caddy/Guzzle получил бы битые ответы).
+        Если дочитать нельзя (слишком большое или битый Content-Length) —
+        закрываем соединение, respond() добавит Connection: close."""
+        if self._body_consumed:
+            return
+        self._body_consumed = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0:
+            if length < 0:
+                self.close_connection = True
+            return
+        if length > self.MAX_DRAIN:
+            self.close_connection = True
+            return
+        try:
+            while length > 0:
+                chunk = self.rfile.read(min(length, 65536))
+                if not chunk:      # клиент недослал тело — соединение мёртвое
+                    self.close_connection = True
+                    break
+                length -= len(chunk)
+        except OSError:
+            self.close_connection = True
+
+    def respond(self, status, obj, headers=None):
+        self.drain_body()
         payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        if self.close_connection:
+            # Дренаж не удался: честно предупреждаем клиента, что соединение
+            # закрывается, — иначе он ждал бы следующий keep-alive-ответ.
+            self.send_header("Connection", "close")
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
