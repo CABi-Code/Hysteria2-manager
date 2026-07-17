@@ -257,9 +257,9 @@ render_user_table() {
         if snap_disabled "$user"; then
             status="🔴 ВЫКЛ"; status_wide=1
         elif [ "$over" = 1 ]; then
-            status="⚠️ ON(${oc})"; status_wide=0   # ⚠️ = база+VS16: ${#} уже учитывает ширину
+            status="⚠️  ON(${oc})"; status_wide=0   # ⚠️ = база+VS16: ${#} уже учитывает ширину
         elif [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
-            status="🟢 ON(${oc})"; status_wide=1
+            status="💚 ON(${oc})"; status_wide=1
         else
             status="⚫ OFF"; status_wide=1
         fi
@@ -268,7 +268,7 @@ render_user_table() {
         local cstatus cstatus_wide tx rx sp_tx sp_rx
         if [ "$_sub" = 1 ]; then
             if [ "$over" = 1 ]; then
-                cstatus="⚠️  ${cc}"; cstatus_wide=0   # ⚠️ = база+VS16: ширина уже учтена
+                cstatus="⚠️ ${cc}"; cstatus_wide=0   # ⚠️ = база+VS16: ширина уже учтена
             elif [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
                 cstatus="💚 ${cc}"; cstatus_wide=1
             else
