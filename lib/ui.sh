@@ -1676,11 +1676,12 @@ subscription_menu() {
                     clear
                     echo "  🎨 Оформление подписки (что видит пользователь)"
                     echo "  ──────────────────────────────────────────────────────"
-                    echo "  Название профиля : $(sub_title)"
+                    echo "  Название профиля : $(sub_title)   (плейсхолдеры: {label} {user} {name} {online})"
                     echo "  Метка этой ноды  : $(node_label)"
                     echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name} {online} — онлайн сервера)"
                     echo "  Интервал обновл. : каждые $(sub_update_hours) ч"
                     echo ""
+                    echo "  Пример названия профиля      : $(render_title 'username')"
                     echo "  Пример подписи ключа этой ноды: $(render_tag 'username')"
                     echo ""
                     echo "  1. Название профиля"
@@ -1697,7 +1698,10 @@ subscription_menu() {
                     # кластеру и синхронизация не откатила её (LWW при разных часах).
                     case "$ed" in 1|3|4) cluster_pull_settings ;; esac
                     case "$ed" in
-                        1) local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
+                        1) echo "    Плейсхолдеры: {user} имя юзера · {label} метка ноды · {name} имя ноды · {online} онлайн сервера"
+                           echo "    Примеры: VPN   |   VPN · {user}   |   {user} — {label}"
+                           echo "    ℹ️ С {user} название профиля у каждого юзера своё."
+                           local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
                         2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
                         3) echo "    Плейсхолдеры: {label} метка ноды · {user} имя · {name} имя ноды · {online} онлайн сервера"
                            echo "    Примеры: {label}   |   {label} · {user}   |   {label} [🟢 {online}]"

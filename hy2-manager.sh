@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster tgbot ui)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster tgbot webapi ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -287,6 +287,7 @@ while true; do
         echo "  3. 🔗 Получить ссылку"
         echo "  4. ⚙  Настройки"
         sub_enabled && echo "  5. 🔄 Получить синхронизацию (локально)"
+        echo "  6. 🌐 Web API для приложений $(webapi_enabled && echo '🟢' || echo '⚪')"
         echo "  0. 🚪 Выход"
         echo ""
     )
@@ -295,7 +296,7 @@ while true; do
 
     # Одна клавиша = действие (без Enter). Нет нажатия за REFRESH_INTERVAL сек —
     # перерисовываем экран (обновление статуса/онлайна).
-    printf '  Клавиша 1-5, 0 — выход (экран обновляется каждые %sс): ' "$REFRESH_INTERVAL"
+    printf '  Клавиша 1-6, 0 — выход (экран обновляется каждые %sс): ' "$REFRESH_INTERVAL"
     choice=$(read_key "$REFRESH_INTERVAL")
 
     case $choice in
@@ -327,6 +328,11 @@ while true; do
                 cluster_sync_now
                 pause "  Enter для возврата..."
             fi
+            ;;
+
+        6)
+            main_need_clear=1
+            webapi_menu
             ;;
 
         0|q|Q)
