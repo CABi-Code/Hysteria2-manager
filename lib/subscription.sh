@@ -330,9 +330,21 @@ publish_manifest() {
     # Параметры сервера считаем один раз (get_ip дёргает сеть) и переиспользуем.
     ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
     : > "$tmp"
+    local _proto_on=0
+    declare -F proto_any_enabled >/dev/null 2>&1 && proto_any_enabled && _proto_on=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
         printf '%s\t%s\n' "$u" "$(build_user_link "$u" "$p" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$u")")" >> "$tmp"
+        # Доп. протоколы (VLESS/SS2022/TUIC) — по строке на протокол, тем же
+        # форматом «user<TAB>uri», чтобы пиры подмешали их в подписку так же, как
+        # hysteria2://. Адрес/подпись — те же, что у основного ключа.
+        if [ "$_proto_on" = 1 ]; then
+            local _puri
+            while IFS= read -r _puri; do
+                [ -n "$_puri" ] || continue
+                printf '%s\t%s\n' "$u" "$_puri" >> "$tmp"
+            done < <(proto_user_uris "$u" "$p" "$ip" "$(render_tag "$u")")
+        fi
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/manifest"
     secure_web_files
@@ -378,6 +390,9 @@ regen_subscriptions() {
             content=$(
                 {
                     [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
+                    # Локальные ссылки доп. протоколов этого юзера (VLESS/SS2022/TUIC).
+                    [ -n "$lp" ] && declare -F proto_user_uris >/dev/null 2>&1 && \
+                        proto_user_uris "$user" "$lp" "$ip" "$(render_tag "$user")"
                     [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
                         | awk -F'\t' -v u="$user" '$1==u{print $2}'
                 } | grep -v '^$' | awk '
@@ -453,6 +468,10 @@ merge_subtokens() { return 0; }
 # Удобный хук: обновить манифест/токены и подписки после изменения пользователей.
 sub_refresh() {
     sub_enabled || return 0
+    # Синхронизируем серверы доп. протоколов из users.db (Xray hot/restart-on-change,
+    # sing-box restart-on-change). Делаем ПЕРВЫМ, до публикации манифеста/подписки,
+    # чтобы новые ключи начинали работать не позже, чем появятся в подписке.
+    declare -F proto_sync_users >/dev/null 2>&1 && proto_sync_users
     publish_manifest
     publish_subtokens
     publish_stats

@@ -135,6 +135,13 @@ if sub_enabled; then
     fi
 fi
 
+# Самовосстановление доп. протоколов: если что-то включено, но сервис лежит или
+# конфиг устарел — переустановим/пересоберём и поднимем (идемпотентно, быстро,
+# если движки уже стоят). При выключенных протоколах — no-op.
+if declare -F proto_any_enabled >/dev/null 2>&1 && proto_any_enabled; then
+    proto_bootstrap >/dev/null 2>&1 || true
+fi
+
 CACHED_IP=$(get_ip)
 CACHED_PORT=$(get_port)
 CACHED_OBFS=$(get_obfs_pass)
