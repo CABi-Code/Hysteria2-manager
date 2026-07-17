@@ -102,7 +102,7 @@ render_frame() {
 }
 
 # ====================== ШИРИНА И ЯЧЕЙКИ ТАБЛИЦЫ ======================
-# Эмодзи (🟢🔴⚫ …) занимают 2 колонки терминала, но ${#s} в UTF-8 локали
+# Эмодзи (💚🔴⚫ …) занимают 2 колонки терминала, но ${#s} в UTF-8 локали
 # считает их за 1 символ — из-за этого printf "%-Ns" «кривил» столбцы.
 # print_cell кладёт текст в колонку фиксированной ВИДИМОЙ ширины, зная,
 # сколько в нём «широких» символов (wide).
@@ -1153,7 +1153,7 @@ perf_menu() {
 # и клиент (Throne/Hiddify) выбирает тот, что проходит в его сети. См.
 # lib/protocols.sh и docs/08-multiprotocol.md.
 _proto_svc_state() {   # service -> строка со статусом
-    if systemctl is-active --quiet "$1" 2>/dev/null; then echo "🟢 работает"
+    if systemctl is-active --quiet "$1" 2>/dev/null; then echo "💚 работает"
     elif systemctl list-unit-files 2>/dev/null | grep -q "^$1"; then echo "🔴 остановлен"
     else echo "⚪ не установлен"; fi
 }
@@ -1170,9 +1170,9 @@ protocols_menu() {
             echo ""
         fi
         local vs ss ts
-        proto_vless_enabled && vs="🟢 вкл" || vs="⚪ выкл"
-        proto_ss_enabled    && ss="🟢 вкл" || ss="⚪ выкл"
-        proto_tuic_enabled  && ts="🟢 вкл" || ts="⚪ выкл"
+        proto_vless_enabled && vs="💚 вкл" || vs="⚪ выкл"
+        proto_ss_enabled    && ss="💚 вкл" || ss="⚪ выкл"
+        proto_tuic_enabled  && ts="💚 вкл" || ts="⚪ выкл"
         echo "  1. VLESS + REALITY + XHTTP   : $vs   (TCP $(proto_vless_port))"
         echo "  2. Shadowsocks-2022          : $ss   (TCP $(proto_ss_port), $(proto_ss_method))"
         echo "  3. TUIC v5                   : $ts   (UDP $(proto_tuic_port))"
@@ -1233,7 +1233,7 @@ _proto_toggle() {   # name human
         if is_yes "$c"; then
             echo "  ⏳ Устанавливаю и настраиваю..."
             if proto_enable_protocol "$name"; then
-                echo "  🟢 $human включён. Ключи появятся в подписках всех юзеров."
+                echo "  💚 $human включён. Ключи появятся в подписках всех юзеров."
                 sub_refresh
             else
                 echo "  ❌ Не удалось включить (см. вывод/лог). Флаг оставлен, повторите bootstrap."
@@ -1298,11 +1298,11 @@ proto_diagnose_menu() {
     local p
     for p in $(proto_vless_port) $(proto_ss_port); do
         proto_vless_enabled || proto_ss_enabled || break
-        if ss -ltn 2>/dev/null | grep -q ":$p "; then echo "    TCP $p : 🟢 слушается"; else echo "    TCP $p : 🔴 нет"; fi
+        if ss -ltn 2>/dev/null | grep -q ":$p "; then echo "    TCP $p : 💚 слушается"; else echo "    TCP $p : 🔴 нет"; fi
     done
     if proto_tuic_enabled; then
         p=$(proto_tuic_port)
-        if ss -lun 2>/dev/null | grep -q ":$p "; then echo "    UDP $p : 🟢 слушается"; else echo "    UDP $p : 🔴 нет"; fi
+        if ss -lun 2>/dev/null | grep -q ":$p "; then echo "    UDP $p : 💚 слушается"; else echo "    UDP $p : 🔴 нет"; fi
     fi
     echo ""
     echo "  Логи сервисов: journalctl -u $XRAY_SERVICE -e   |   journalctl -u $SINGBOX_SERVICE -e"

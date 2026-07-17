@@ -251,7 +251,7 @@ while true; do
     online_count=${online_count:-?}; [ -z "$online_count" ] && online_count="?"
 
     if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
-        hy_status="🟢 Работает"
+        hy_status="💚 Работает"
     else
         hy_status="🔴 Остановлен"
     fi
@@ -272,18 +272,18 @@ while true; do
         echo "  SNI/маскировка: $CACHED_SNI · OBFS: $(echo "$CACHED_OBFS" | cut -c1-10)…"
         echo "  Пользователи  : $total_count (активных $active_count · онлайн $online_count)"
         if declare -F klimit_down >/dev/null && { [ "$(klimit_down)" -gt 0 ] || [ "$(klimit_up)" -gt 0 ]; } 2>/dev/null; then
-            echo "  Лимит скорости: ↓$(klimit_down)/↑$(klimit_up) Мбит на клиента $(klimit_active && echo '🟢' || echo '🔴 (не загружен!)')"
+            echo "  Лимит скорости: ↓$(klimit_down)/↑$(klimit_up) Мбит на клиента $(klimit_active && echo '💚' || echo '🔴 (не загружен!)')"
         fi
         if sub_enabled; then
             cluster_nodes=$(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9'); cluster_nodes=${cluster_nodes:-1}
             dev_limit=$(get_device_limit)
             [ "$dev_limit" -gt 0 ] 2>/dev/null && limit_str=" · лимит устройств $dev_limit" || limit_str=""
-            echo "  Подписка      : 🟢 нода «$(node_name)» · нод в кластере: $cluster_nodes$limit_str"
+            echo "  Подписка      : 💚 нода «$(node_name)» · нод в кластере: $cluster_nodes$limit_str"
         else
             echo "  Подписка      : ⚪ не настроена (Настройки → 5)"
         fi
         if declare -F bot_enabled >/dev/null && bot_enabled; then
-            echo "  Telegram-бот  : $(bot_running && echo '🟢 работает' || echo '🔴 остановлен (Настройки → 6)')"
+            echo "  Telegram-бот  : $(bot_running && echo '💚 работает' || echo '🔴 остановлен (Настройки → 6)')"
         fi
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         if is_restart_pending; then
@@ -295,7 +295,7 @@ while true; do
         echo "  3. 🔗 Получить ссылку"
         echo "  4. ⚙  Настройки"
         sub_enabled && echo "  5. 🔄 Получить синхронизацию (локально)"
-        echo "  6. 🌐 Web API для приложений $(webapi_enabled && echo '🟢' || echo '⚪')"
+        echo "  6. 🌐 Web API для приложений $(webapi_enabled && echo '💚' || echo '⚪')"
         echo "  0. 🚪 Выход"
         echo ""
     )

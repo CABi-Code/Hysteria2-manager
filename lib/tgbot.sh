@@ -381,7 +381,7 @@ bot_admin_users() {   # chat_id page [message_id]
         if is_user_disabled "$u"; then icon="🔴"
         else
             oc=$(echo "$online" | jq -r --arg x "$u" '.[$x] // 0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
-            [ "$oc" -gt 0 ] && icon="🟢" || icon="⚫"
+            [ "$oc" -gt 0 ] && icon="💚" || icon="⚫"
         fi
         jq -nc --arg t "$icon $u" --arg d "a:u:$u" '[{text:$t,callback_data:$d}]'
     done | jq -sc '.')
@@ -435,10 +435,10 @@ bot_admin_server_status() {   # chat_id
     online=$(api_get "/online" | jq 'to_entries | map(select(.value>0)) | length' 2>/dev/null); [[ "$online" =~ ^[0-9]+$ ]] || online=0
     total=$(get_all_users | grep -c .)
     local hyst="🔴 остановлена"
-    systemctl is-active --quiet "$SERVICE" 2>/dev/null && hyst="🟢 работает"
+    systemctl is-active --quiet "$SERVICE" 2>/dev/null && hyst="💚 работает"
     local kl="⚪ выкл"
     if declare -F klimit_down >/dev/null && { [ "$(klimit_down)" -gt 0 ] || [ "$(klimit_up)" -gt 0 ]; } 2>/dev/null; then
-        klimit_active && kl="🟢 ↓$(klimit_down)/↑$(klimit_up) Мбит" || kl="🔴 настроен, но не загружен"
+        klimit_active && kl="💚 ↓$(klimit_down)/↑$(klimit_up) Мбит" || kl="🔴 настроен, но не загружен"
     fi
     tg_send "$chat" "📈 <b>Сервер «$(tg_esc "$(node_name 2>/dev/null || hostname -s)")»</b>
 Hysteria: $hyst · онлайн: $online из $total
@@ -799,7 +799,7 @@ bot_menu() {
         local tok admins st getme un prov cur
         tok=$(bot_token); admins=$(bot_get ADMIN_IDS)
         prov=$(bot_get PAY_PROVIDER_TOKEN); cur=$(bot_get PAY_CURRENCY); [ -z "$cur" ] && cur=RUB
-        if bot_running; then st="🟢 работает"; elif bot_enabled; then st="🔴 остановлен"; else st="⚪ не настроен"; fi
+        if bot_running; then st="💚 работает"; elif bot_enabled; then st="🔴 остановлен"; else st="⚪ не настроен"; fi
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  🤖 Telegram-бот"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

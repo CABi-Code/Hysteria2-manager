@@ -621,11 +621,11 @@ proto_kick() {   # user
     return 0
 }
 
-# Статус для меню/диагностики: строка «vless:🟢 ss:🔴 tuic:🟢».
+# Статус для меню/диагностики: строка «vless:💚 ss:🔴 tuic:💚».
 proto_status_line() {
     local s=""
-    proto_vless_enabled && s+="VLESS 🟢 " || s+="VLESS ⚪ "
-    proto_ss_enabled    && s+="SS2022 🟢 " || s+="SS2022 ⚪ "
-    proto_tuic_enabled  && s+="TUIC 🟢"    || s+="TUIC ⚪"
+    proto_vless_enabled && s+="VLESS 💚 " || s+="VLESS ⚪ "
+    proto_ss_enabled    && s+="SS2022 💚 " || s+="SS2022 ⚪ "
+    proto_tuic_enabled  && s+="TUIC 💚"    || s+="TUIC ⚪"
     printf '%s' "$s"
 }
