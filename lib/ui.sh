@@ -257,7 +257,7 @@ render_user_table() {
         if snap_disabled "$user"; then
             status="🔴 ВЫКЛ"; status_wide=1
         elif [ "$over" = 1 ]; then
-            status="⚠️  ON(${oc})"; status_wide=0   # ⚠️ = база+VS16: ${#} уже учитывает ширину
+            status="⚠️ ON(${oc})"; status_wide=0   # ⚠️ = база+VS16: ${#} уже учитывает ширину
         elif [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
             status="💚 ON(${oc})"; status_wide=1
         else
