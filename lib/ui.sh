@@ -257,9 +257,9 @@ render_user_table() {
         if snap_disabled "$user"; then
             status="🔴 ВЫКЛ"; status_wide=1
         elif [ "$over" = 1 ]; then
-            status="⚠️ ON(${oc})"; status_wide=0   # ⚠️ = база+VS16: ${#} уже учитывает ширину
+            status="⚑  ON(${oc})"; status_wide=0   # ⚠️ = база+VS16: ${#} уже учитывает ширину
         elif [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
-            status="🟢 ON(${oc})"; status_wide=1
+            status="💚 ON(${oc})"; status_wide=1
         else
             status="⚫ OFF"; status_wide=1
         fi
@@ -268,9 +268,9 @@ render_user_table() {
         local cstatus cstatus_wide tx rx sp_tx sp_rx
         if [ "$_sub" = 1 ]; then
             if [ "$over" = 1 ]; then
-                cstatus="⚠️ ${cc}"; cstatus_wide=0   # ⚠️ = база+VS16: ширина уже учтена
+                cstatus="⚑  ${cc}"; cstatus_wide=0   # ⚠️ = база+VS16: ширина уже учтена
             elif [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
-                cstatus="🟢 ${cc}"; cstatus_wide=1
+                cstatus="💚 ${cc}"; cstatus_wide=1
             else
                 cstatus="⚫ —"; cstatus_wide=1
             fi
@@ -717,7 +717,7 @@ _render_user_action() {
     else
         oc=$(get_user_online_count "$user")
         if [ "${oc:-0}" -gt 0 ] 2>/dev/null; then
-            echo "  Статус:        🟢 ОНЛАЙН ($oc на этой ноде)"
+            echo "  Статус:        💚 ОНЛАЙН ($oc на этой ноде)"
         else
             echo "  Статус:        ⚫ ОФФЛАЙН (на этой ноде)"
         fi
@@ -729,7 +729,7 @@ _render_user_action() {
         cc=$(cluster_user_connections "$user")
         nodes_online=$(cluster_user_breakdown "$user" | awk -F'\t' '$2>0' | wc -l | tr -dc '0-9')
         if [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
-            echo "  Статус кластера: 🟢 ОНЛАЙН — $cc подключений на ${nodes_online:-0} нод(ах)"
+            echo "  Статус кластера: 💚 ОНЛАЙН — $cc подключений на ${nodes_online:-0} нод(ах)"
         else
             echo "  Статус кластера: ⚫ оффлайн во всём кластере"
         fi
@@ -1020,7 +1020,7 @@ perf_menu() {
         echo "  Лимит НА КЛИЕНТА (два уровня, задаются вместе пунктом 1):"
         if [ "${kd:-0}" -gt 0 ] || [ "${ku:-0}" -gt 0 ]; then
             if klimit_active; then
-                echo "   • Kernel (все клиенты):  🟢 ↓ ${kd} · ↑ ${ku} Мбит/с на IP — работает сейчас"
+                echo "   • Kernel (все клиенты):  💚 ↓ ${kd} · ↑ ${ku} Мбит/с на IP — работает сейчас"
             else
                 echo "   • Kernel (все клиенты):  🔴 настроен ↓ ${kd} · ↑ ${ku}, но правила НЕ загружены (пункт 7)"
             fi
@@ -1028,7 +1028,7 @@ perf_menu() {
             echo "   • Kernel (все клиенты):  ⚪ выключен"
         fi
         if [ -n "$bu" ] || [ -n "$bd" ]; then
-            echo "   • Hysteria (Brutal):     🟢 ↓ ${bu:-∞} · ↑ ${bd:-∞}"
+            echo "   • Hysteria (Brutal):     💚 ↓ ${bu:-∞} · ↑ ${bd:-∞}"
         else
             echo "   • Hysteria (Brutal):     ⚪ не задан"
         fi
@@ -1161,7 +1161,7 @@ settings_menu() {
 
         local hy_status
         if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
-            hy_status="🟢 Работает"
+            hy_status="💚 Работает"
         else
             hy_status="🔴 Остановлен"
         fi
@@ -1281,7 +1281,7 @@ subscription_menu() {
         if ! command -v caddy &>/dev/null; then
             caddy_st="не установлен"
         elif systemctl is-active --quiet caddy 2>/dev/null; then
-            caddy_st="🟢 работает$(systemctl is-enabled --quiet caddy 2>/dev/null && echo ', автозапуск вкл')"
+            caddy_st="💚 работает$(systemctl is-enabled --quiet caddy 2>/dev/null && echo ', автозапуск вкл')"
         else
             caddy_st="🔴 остановлен"
         fi
@@ -1290,11 +1290,11 @@ subscription_menu() {
         echo "  🌐 Подписка / Кластер"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         if sub_enabled; then
-            echo "  Состояние : 🟢 включена"
+            echo "  Состояние : 💚 включена"
             echo "  Нода      : $(node_name)  ($host)"
             # Живой статус сертификата — подтверждает, что домен реально привязан.
             if cert_ready "$host"; then
-                cert_st="🟢 валиден до $(cert_expiry "$host") (автопродление)"
+                cert_st="💚 валиден до $(cert_expiry "$host") (автопродление)"
             else
                 cert_st="🔴 не подтверждён (HTTPS не работает — см. пункт 1)"
             fi
@@ -1448,7 +1448,7 @@ subscription_menu() {
                             if [ "$ph" = "$self" ]; then
                                 st="(эта нода)"
                             elif cluster_call "$ph" "/cluster/manifest" >/dev/null 2>&1; then
-                                st="🟢 на связи"
+                                st="💚 на связи"
                             else
                                 st="🔴 недоступна"
                             fi
@@ -1704,7 +1704,7 @@ subscription_menu() {
                            local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
                         2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
                         3) echo "    Плейсхолдеры: {label} метка ноды · {user} имя · {name} имя ноды · {online} онлайн сервера"
-                           echo "    Примеры: {label}   |   {label} · {user}   |   {label} [🟢 {online}]"
+                           echo "    Примеры: {label}   |   {label} · {user}   |   {label} [💚 {online}]"
                            echo "    ℹ️ {online} — сколько юзеров сейчас онлайн на КОНКРЕТНОМ сервере (индикатор"
                            echo "       загрузки: клиент видит, к какому серверу лучше подключиться). У ключа каждой"
                            echo "       ноды — онлайн своей ноды. Обновляется ~1 мин; видно после обновления подписки."
