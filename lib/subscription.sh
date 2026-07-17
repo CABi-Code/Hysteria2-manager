@@ -100,14 +100,19 @@ sub_tag_tmpl()     { local t; t=$(node_get SUB_TAG_TMPL); [ -z "$t" ] && t='{lab
 # нода печёт СВОЙ онлайн в свой манифест; ключи чужих нод в подписке несут онлайн
 # тех нод (их манифесты стягиваются периодически, см. cluster_online_sync).
 _tag_needs_online() { case "$(sub_tag_tmpl)" in *'{online}'*) return 0 ;; *) return 1 ;; esac; }
-# Название всего профиля подписки в клиенте.
+# Название всего профиля подписки в клиенте. Поддерживает те же плейсхолдеры,
+# что и подпись ключа: {label} {user} {name} {online} (см. render_title).
 sub_title()        { local t; t=$(node_get SUB_TITLE); echo "${t:-VPN}"; }
+# Есть ли в названии профиля плейсхолдеры? Если да — название у каждого юзера своё,
+# и заголовок profile-title приходится раздавать по токенам (см. write_sub_titles).
+_title_has_ph()    { case "$(sub_title)" in *'{user}'*|*'{label}'*|*'{name}'*|*'{online}'*) return 0 ;; *) return 1 ;; esac; }
+_title_needs_online() { case "$(sub_title)" in *'{online}'*) return 0 ;; *) return 1 ;; esac; }
 # Как часто клиент обновляет подписку (часы).
 sub_update_hours() { local h; h=$(node_get SUB_UPDATE_HOURS); [[ "$h" =~ ^[0-9]+$ ]] || h=12; echo "$h"; }
 
-# Подпись ключа по шаблону для конкретного юзера.
-render_tag() {   # user
-    local u="$1" t; t=$(sub_tag_tmpl)
+# Подстановка плейсхолдеров в шаблон для конкретного юзера.
+_render_ph() {   # tmpl user
+    local t="$1" u="$2"
     t=${t//\{user\}/$u}
     t=${t//\{label\}/$(node_label)}
     t=${t//\{name\}/$(node_name)}
@@ -119,6 +124,11 @@ render_tag() {   # user
     case "$t" in *'{online}'*) t=${t//\{online\}/$(node_online_count)} ;; esac
     printf '%s' "$t"
 }
+
+# Подпись ключа по шаблону для конкретного юзера.
+render_tag()   { _render_ph "$(sub_tag_tmpl)" "$1"; }
+# Название профиля по шаблону для конкретного юзера.
+render_title() { _render_ph "$(sub_title)" "$1"; }
 
 # Глобальные (общие для всего кластера) настройки. Метка ноды (NODE_LABEL) сюда
 # НЕ входит — она у каждой ноды своя. POOL_LIMIT/NODE_LIMIT — глобальные лимиты
@@ -330,20 +340,24 @@ publish_manifest() {
 
 # Пересобирает файлы подписки для всех известных юзеров: локальные ключи +
 # ключи из кэшированных манифестов пиров. Дедуп по host:port.
+# Все юзеры, которым положена подписка: наши + пришедшие из манифестов пиров.
+sub_all_users() {
+    {
+        cut -d: -f1 "$USERS_DB" 2>/dev/null
+        [ -d "$PEERS_DIR" ] && awk -F'\t' '{print $1}' "$PEERS_DIR"/*.manifest 2>/dev/null
+    } | grep -v '^$' | sort -u
+}
+
 regen_subscriptions() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/sub"
-    # {online} в шаблоне подписи — обновляем онлайн ЭТОЙ ноды (CACHED_ONLINE),
-    # его печём в свои ключи. Онлайн чужих нод приходит уже испечённым в их
-    # манифестах (их обновляет cluster_online_sync).
-    _tag_needs_online && refresh_online
+    # {online} в шаблоне подписи/названия — обновляем онлайн ЭТОЙ ноды
+    # (CACHED_ONLINE), его печём в свои ключи. Онлайн чужих нод приходит уже
+    # испечённым в их манифестах (их обновляет cluster_online_sync).
+    { _tag_needs_online || _title_needs_online; } && refresh_online
 
     local users
-    users=$(
-        cut -d: -f1 "$USERS_DB" 2>/dev/null
-        [ -d "$PEERS_DIR" ] && awk -F'\t' '{print $1}' "$PEERS_DIR"/*.manifest 2>/dev/null
-    )
-    users=$(printf '%s\n' "$users" | grep -v '^$' | sort -u)
+    users=$(sub_all_users)
 
     local user lp node ip port obfs sni content tok toks cst
     node=$(node_name)
@@ -413,6 +427,13 @@ regen_subscriptions() {
         done
     fi
     secure_web_files
+
+    # Название профиля с плейсхолдерами живёт в map «токен → название»: состав
+    # токенов только что мог поменяться. Перечитываем Caddy ТОЛЬКО если сниппет
+    # реально изменился — regen вызывается по крону, лишний reload ни к чему.
+    if write_sub_titles && [ -f "$CADDYFILE" ]; then
+        systemctl reload caddy 2>/dev/null || true
+    fi
 }
 
 # Публикует токены подписки для остальных нод (за X-Cluster-Auth).
@@ -438,6 +459,43 @@ sub_refresh() {
     regen_subscriptions
 }
 
+# Пишет сниппет с заголовком profile-title для /sub/* (его импортирует Caddyfile).
+# Без плейсхолдеров название одно на всех — хватает статического заголовка.
+# С плейсхолдерами название у каждого юзера своё: раскладываем «токен → название»
+# в map по {path}; default — название с пустым {user} (на случай чужого токена).
+# Печатает ничего; код возврата: 0 — файл изменился (нужен reload caddy), 1 — нет.
+write_sub_titles() {
+    local tmp; tmp=$(mktemp) || return 1
+    mkdir -p "$(dirname "$CADDY_SUBTITLES")"
+    if ! _title_has_ph; then
+        printf '\theader profile-title "base64:%s"\n' \
+            "$(printf '%s' "$(sub_title)" | base64 -w0 2>/dev/null)" > "$tmp"
+    else
+        # {online} в названии — тот же онлайн ЭТОЙ ноды, что и в подписи ключа.
+        local user tok
+        {
+            printf '\tmap {path} {sub_title} {\n'
+            while IFS= read -r user; do
+                [ -n "$user" ] || continue
+                while IFS= read -r tok; do
+                    [ -n "$tok" ] || continue
+                    printf '\t\t/sub/%s "base64:%s"\n' \
+                        "$tok" "$(printf '%s' "$(render_title "$user")" | base64 -w0 2>/dev/null)"
+                done <<< "$(sub_tokens_cluster "$user")"
+            done <<< "$(sub_all_users)"
+            printf '\t\tdefault "base64:%s"\n' \
+                "$(printf '%s' "$(render_title '')" | base64 -w0 2>/dev/null)"
+            printf '\t}\n'
+            printf '\theader profile-title "{sub_title}"\n'
+        } > "$tmp"
+    fi
+    if [ -f "$CADDY_SUBTITLES" ] && cmp -s "$tmp" "$CADDY_SUBTITLES"; then
+        rm -f "$tmp"; return 1
+    fi
+    cat "$tmp" > "$CADDY_SUBTITLES"; chmod 644 "$CADDY_SUBTITLES" 2>/dev/null
+    rm -f "$tmp"; return 0
+}
+
 # Пишет Caddyfile под домен ноды и перезагружает Caddy. Идемпотентно.
 # /sub/* — публично; /cluster/* — только при заголовке X-Cluster-Auth.
 setup_caddy() {
@@ -459,11 +517,23 @@ setup_caddy() {
         bind_line="    bind ${bind_ip}"
     fi
 
-    # Оформление подписки: название профиля (base64) и интервал обновления —
-    # клиенты (Hiddify и др.) читают эти заголовки и показывают их пользователю.
-    local title_b64 upd
-    title_b64=$(printf '%s' "$(sub_title)" | base64 -w0 2>/dev/null)
+    # Оформление подписки: название профиля и интервал обновления — клиенты
+    # (Hiddify и др.) читают эти заголовки и показывают их пользователю. Название
+    # вынесено в импортируемый сниппет: с плейсхолдерами оно у каждого юзера своё,
+    # и его перепекает regen_subscriptions без переписывания Caddyfile.
+    local upd
+    write_sub_titles >/dev/null
     upd=$(sub_update_hours)
+
+    # Web API для внешних приложений (lib/webapi.sh): когда включён — проксируем
+    # /api/* на локальный демон. Блок генерируется здесь, а не дописывается извне:
+    # setup_caddy полностью перезаписывает Caddyfile, и внешняя правка потерялась бы.
+    local api_block=""
+    if type -t webapi_enabled >/dev/null 2>&1 && webapi_enabled; then
+        api_block="    handle /api/* {
+        reverse_proxy 127.0.0.1:$(webapi_port)
+    }"
+    fi
 
     # Бэкап текущего конфига — чтобы при ошибке не уронить уже работающий Caddy.
     bak=""
@@ -495,9 +565,10 @@ ${bind_line}
     handle @cluster_auth {
         file_server
     }
+${api_block}
     handle /sub/* {
         header Content-Type "text/plain; charset=utf-8"
-        header profile-title "base64:${title_b64}"
+        import ${CADDY_SUBTITLES}
         header profile-update-interval "${upd}"
         header profile-web-page-url "https://${domain}/"
         file_server

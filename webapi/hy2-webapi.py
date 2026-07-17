@@ -1,0 +1,697 @@
+#!/usr/bin/env python3
+# ================================================
+# hy2-webapi — HTTP JSON API менеджера Hysteria2 для внешних приложений
+# (Telegram mini-app, биллинги, боты сторонних разработчиков).
+#
+# Только stdlib (python3 ≥ 3.9): демон обязан работать на голом Debian/Ubuntu
+# без pip. Слушает localhost; наружу выставляется через Caddy (handle /api/* →
+# reverse_proxy), см. lib/webapi.sh и setup_caddy в lib/subscription.sh.
+#
+# Аутентификация: Authorization: Bearer hyk_<40 симв.>. В webapi.keys хранится
+# ТОЛЬКО sha256 ключа — утечка файла не раскрывает ключи. Scopes ограничивают,
+# что каждому приложению можно (read/users/payments/telegram или *).
+#
+# Чтения парсят файлы DATA_DIR напрямую (форматы — точка правды в lib/config.sh);
+# файлы менеджер правит через sed -i/tmp+cat, поэтому каждый файл читается одним
+# read(), битые строки пропускаются — согласованность eventually (как и весь
+# кластерный обмен). Мутации идут ТОЛЬКО через webapi/dispatch.sh: он сорсит
+# lib/*.sh и вызывает те же функции, что меню/бот, — кластерная публикация,
+# метки времени и пересборка подписок не дублируются здесь.
+#
+# Документация API для разработчиков: docs/API.md.
+# ================================================
+import hashlib
+import hmac
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+MANAGER_DIR = os.environ.get("HY2M_MANAGER_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.environ.get("HY2M_DATA_DIR", "/etc/hysteria/manager")
+CONFIG_YAML = os.environ.get("HY2M_CONFIG", "/etc/hysteria/config.yaml")
+DISPATCH = os.path.join(MANAGER_DIR, "webapi", "dispatch.sh")
+
+CONF_FILE = os.path.join(DATA_DIR, "webapi.conf")
+KEYS_FILE = os.path.join(DATA_DIR, "webapi.keys")
+ACCESS_LOG = os.path.join(DATA_DIR, "webapi_access.log")
+PEERS_DIR = os.path.join(DATA_DIR, "peers")
+
+RE_USERNAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+RE_TG_ID = re.compile(r"^\d{1,20}$")
+RE_CODE = re.compile(r"^[A-Za-z0-9]{4,64}$")
+RE_CHARGE = re.compile(r"^[A-Za-z0-9_\-.:]{1,128}$")
+
+_log_lock = threading.Lock()
+_rate_lock = threading.Lock()
+_rate_buckets = {}  # key_name -> [tokens, last_ts]
+
+
+# ---------- конфиг и ключи ----------
+
+def read_kv(path):
+    """KEY=VALUE файлы менеджера (node.conf/bot.conf/webapi.conf)."""
+    out = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            data = f.read()
+    except OSError:
+        return out
+    for line in data.splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
+def conf():
+    c = read_kv(CONF_FILE)
+    port = c.get("PORT", "8787")
+    return {
+        "bind": c.get("BIND", "127.0.0.1"),
+        "port": int(port) if port.isdigit() else 8787,
+        "rate_rpm": int(c["RATE_RPM"]) if c.get("RATE_RPM", "").isdigit() else 120,
+    }
+
+
+def load_keys():
+    """webapi.keys: name|sha256hex|scopes|created_ts (scopes через запятую, * = все)."""
+    keys = {}
+    try:
+        with open(KEYS_FILE, encoding="utf-8", errors="replace") as f:
+            data = f.read()
+    except OSError:
+        return keys
+    for line in data.splitlines():
+        parts = line.split("|")
+        if len(parts) >= 3 and re.fullmatch(r"[0-9a-f]{64}", parts[1] or ""):
+            keys[parts[1]] = {"name": parts[0], "scopes": set(parts[2].split(","))}
+    return keys
+
+
+def authenticate(header):
+    if not header or not header.startswith("Bearer "):
+        return None
+    token = header[7:].strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]{8,128}", token):
+        return None
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    for stored, info in load_keys().items():
+        if hmac.compare_digest(stored, digest):
+            return info
+    return None
+
+
+def has_scope(key, scope):
+    return "*" in key["scopes"] or scope in key["scopes"]
+
+
+def rate_ok(key_name, rpm):
+    """Token bucket: ёмкость rpm, пополнение rpm/60 в секунду."""
+    now = time.monotonic()
+    with _rate_lock:
+        tokens, last = _rate_buckets.get(key_name, (float(rpm), now))
+        tokens = min(float(rpm), tokens + (now - last) * rpm / 60.0)
+        if tokens < 1.0:
+            _rate_buckets[key_name] = (tokens, now)
+            return False
+        _rate_buckets[key_name] = (tokens - 1.0, now)
+        return True
+
+
+def audit(key_name, method, path, status, ms):
+    line = f"{int(time.time())}|{key_name}|{method}|{path}|{status}|{ms}\n"
+    with _log_lock:
+        try:
+            with open(ACCESS_LOG, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            pass
+
+
+# ---------- парсеры данных менеджера ----------
+
+def read_lines(path):
+    """Файл целиком одним read() — минимизирует окно torn read при sed -i."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+
+def data_path(name):
+    return os.path.join(DATA_DIR, name)
+
+
+def colon_db(path):
+    """user:value, value может содержать ':' — split по первому двоеточию."""
+    out = {}
+    for line in read_lines(path):
+        if ":" in line:
+            k, _, v = line.partition(":")
+            if k:
+                out.setdefault(k, []).append(v)
+    return out
+
+
+def pipe_rows(path, min_fields):
+    rows = []
+    for line in read_lines(path):
+        parts = line.split("|")
+        if len(parts) >= min_fields and parts[0]:
+            rows.append(parts)
+    return rows
+
+
+def user_exists(user):
+    active = user in colon_db(data_path("users.db"))
+    disabled = any(r[0] == user for r in pipe_rows(data_path("disabled.dat"), 2))
+    return active, disabled
+
+
+def user_expiry(user):
+    for r in pipe_rows(data_path("expiry.dat"), 2):
+        if r[0] == user and re.fullmatch(r"\d{4}-\d{2}-\d{2}", r[1]):
+            return r[1]
+    return None
+
+
+def days_left(expiry):
+    """Как expiry_days_left в lib/expiry.sh: срок действует до 23:59:59 даты."""
+    if not expiry:
+        return None
+    end = datetime.strptime(expiry, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+    return max(-3650, int((end - datetime.now()).total_seconds() // 86400))
+
+
+def user_limits(user):
+    for r in pipe_rows(data_path("userlimits.dat"), 2):
+        if r[0] == user:
+            devices = int(r[1]) if r[1].isdigit() else 1
+            hardcheck = 1 if len(r) > 2 and r[2] == "1" else 0
+            rate = int(r[3]) if len(r) > 3 and r[3].isdigit() else 0
+            return {"devices": devices, "hardcheck": bool(hardcheck), "rate_mbps": rate}
+    return {"devices": 1, "hardcheck": False, "rate_mbps": 0}
+
+
+def peer_stats(user):
+    """Суммы по кэшам пиров $DATA_DIR/peers/*.stats:
+    user \t online \t tx \t rx \t sptx \t sprx \t active \t active_since"""
+    online = tx = rx = 0
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".stats"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("\t")
+            if len(parts) >= 4 and parts[0] == user:
+                online += int(parts[1]) if parts[1].isdigit() else 0
+                tx += int(parts[2]) if parts[2].isdigit() else 0
+                rx += int(parts[3]) if parts[3].isdigit() else 0
+                break
+    return online, tx, rx
+
+
+def local_traffic(user):
+    for r in pipe_rows(data_path("stats.dat"), 3):
+        if r[0] == user:
+            return (int(r[1]) if r[1].isdigit() else 0,
+                    int(r[2]) if r[2].isdigit() else 0)
+    return 0, 0
+
+
+def user_ip_count(user):
+    ips = set()
+    for r in pipe_rows(data_path("ips.dat"), 2):
+        if r[0] == user:
+            ips.add(r[1])
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".ips"):
+            for r in pipe_rows(os.path.join(PEERS_DIR, name), 2):
+                if r[0] == user:
+                    ips.add(r[1])
+    return len(ips)
+
+
+def hysteria_online(user):
+    """Онлайн ЭТОЙ ноды из локального API Hysteria (см. lib/api.sh). None = недоступен."""
+    secret_file = data_path("api_secret")
+    try:
+        with open(secret_file, encoding="utf-8") as f:
+            secret = f.read().strip()
+    except OSError:
+        return None
+    port = 25580
+    try:
+        with open(CONFIG_YAML, encoding="utf-8", errors="replace") as f:
+            block = re.search(r"^trafficStats:.*?(?=^\S|\Z)", f.read(), re.S | re.M)
+        if block:
+            m = re.search(r"listen:\s*\S*?(\d+)\s*$", block.group(0), re.M)
+            if m:
+                port = int(m.group(1))
+    except OSError:
+        pass
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/online",
+                                 headers={"Authorization": secret})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        return int(data.get(user, 0))
+    except Exception:
+        return None
+
+
+def sub_tokens(user):
+    """Локальные + пировые токены подписки (первый локальный — основной)."""
+    tokens = list(colon_db(data_path("subtokens.db")).get(user, []))
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".subtokens"):
+            for t in colon_db(os.path.join(PEERS_DIR, name)).get(user, []):
+                if t not in tokens:
+                    tokens.append(t)
+    return tokens
+
+
+def tg_username(tg_id):
+    for r in pipe_rows(data_path("tgusers.dat"), 2):
+        if r[0] == tg_id:
+            return r[1]
+    return None
+
+
+def user_payload(user):
+    active, disabled = user_exists(user)
+    if not active and not disabled:
+        return None
+    expiry = user_expiry(user)
+    ltx, lrx = local_traffic(user)
+    ponline, ptx, prx = peer_stats(user)
+    lonline = hysteria_online(user)
+    limits = user_limits(user)
+    return {
+        "username": user,
+        "status": "active" if active else "disabled",
+        "expiry": expiry,                      # null = бессрочно
+        "days_left": days_left(expiry),
+        "unlimited": expiry is None,
+        "limits": limits,
+        "traffic": {
+            "tx_bytes": ltx + ptx,
+            "rx_bytes": lrx + prx,
+            "total_bytes": ltx + ptx + lrx + prx,
+        },
+        "online_connections": (lonline or 0) + ponline if lonline is not None else ponline,
+        "online": ((lonline or 0) + ponline) > 0,
+        "devices_seen": user_ip_count(user),
+    }
+
+
+# ---------- dispatch (мутации и сборка ссылок через lib/*.sh) ----------
+
+def run_dispatch(verb, *args):
+    """Возвращает (dict из key=value строк, None) либо (None, (http_код, api_код, сообщение))."""
+    env = dict(os.environ, HY2M_DATA_DIR=DATA_DIR, HY2M_CONFIG=CONFIG_YAML)
+    try:
+        proc = subprocess.run([DISPATCH, verb, *args], capture_output=True,
+                              text=True, timeout=60, env=env)
+    except subprocess.TimeoutExpired:
+        return None, (504, "dispatch_timeout", "менеджер не ответил за 60 секунд")
+    except OSError as e:
+        return None, (500, "dispatch_unavailable", str(e))
+    out = {}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            out[k] = v
+    if proc.returncode == 0:
+        return out, None
+    if proc.returncode == 2:
+        return None, (404, out.get("error", "not_found"), out.get("message", "объект не найден"))
+    if proc.returncode == 3:
+        return None, (409, out.get("error", "conflict"), out.get("message", "конфликт состояния"))
+    sys.stderr.write(f"dispatch {verb} rc={proc.returncode}: {proc.stderr.strip()}\n")
+    return None, (502, "manager_error", "внутренняя ошибка менеджера")
+
+
+# ---------- данные для info/tariffs/nodes/payments ----------
+
+def manager_version():
+    try:
+        with open(os.path.join(MANAGER_DIR, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def node_info():
+    node = read_kv(data_path("node.conf"))
+    users = colon_db(data_path("users.db"))
+    disabled = pipe_rows(data_path("disabled.dat"), 2)
+    peers = pipe_rows(data_path("cluster.conf"), 2)
+    return {
+        "manager_version": manager_version(),
+        "node_name": node.get("NODE_NAME"),
+        "node_host": node.get("NODE_HOST"),
+        "users_active": len(users),
+        "users_disabled": len(disabled),
+        "cluster_peers": len(peers),
+    }
+
+
+def tariffs():
+    out = []
+    for r in pipe_rows(data_path("tariffs.conf"), 6):
+        if r[2].isdigit() and re.fullmatch(r"\d+([.,]\d+)?", r[4] or ""):
+            out.append({
+                "code": r[0], "title": r[1], "days": int(r[2]),
+                "devices": int(r[3]) if r[3].isdigit() else 0,
+                "price": r[4], "currency": r[5],
+            })
+    return out
+
+
+def nodes():
+    node = read_kv(data_path("node.conf"))
+    out = []
+    if node.get("NODE_NAME") or node.get("NODE_HOST"):
+        out.append({"name": node.get("NODE_NAME"), "host": node.get("NODE_HOST"),
+                    "label": node.get("NODE_LABEL") or node.get("NODE_NAME"), "self": True})
+    for r in pipe_rows(data_path("cluster.conf"), 2):
+        out.append({"name": r[0], "host": r[1], "label": r[0], "self": False})
+    return out
+
+
+def payments(since_charge, limit):
+    """payments.log: datetime|tg_id|user|code|amount|currency|charge_id.
+    Курсор — charge_id (уникален у Telegram); datetime не монотонен (локальная TZ)."""
+    rows = pipe_rows(data_path("payments.log"), 7)
+    start = 0
+    if since_charge:
+        for i, r in enumerate(rows):
+            if r[6] == since_charge:
+                start = i + 1
+                break
+        else:
+            start = 0  # курсор не найден (лог ротирован?) — отдаём с начала
+    out = []
+    for r in rows[start:start + limit]:
+        out.append({"paid_at": r[0], "tg_id": r[1], "username": r[2],
+                    "tariff_code": r[3], "amount": r[4], "currency": r[5],
+                    "charge_id": r[6]})
+    return {"payments": out, "next_since_charge": out[-1]["charge_id"] if out else since_charge}
+
+
+def subscription_payload(user):
+    active, disabled = user_exists(user)
+    if not active and not disabled:
+        return None
+    node = read_kv(data_path("node.conf"))
+    host = node.get("NODE_HOST")
+    urls = [f"https://{host}/sub/{t}" for t in sub_tokens(user)] if host else []
+    links = []
+    res, err = run_dispatch("user-links", user)
+    if res and res.get("link"):
+        links.append(res["link"])
+    return {
+        "username": user,
+        "subscription_urls": urls,
+        "subscription_url": urls[0] if urls else None,
+        "links": links,   # прямые hysteria2:// (эта нода; остальные — внутри подписки)
+    }
+
+
+# ---------- HTTP ----------
+
+ROUTES = [
+    # (method, regex, scope|None, handler_name)
+    ("GET", re.compile(r"^/v1/health$"), None, "h_health"),
+    ("GET", re.compile(r"^/v1/info$"), "read", "h_info"),
+    ("GET", re.compile(r"^/v1/tariffs$"), "read", "h_tariffs"),
+    ("GET", re.compile(r"^/v1/nodes$"), "read", "h_nodes"),
+    ("GET", re.compile(r"^/v1/users/([^/]+)$"), "read", "h_user"),
+    ("GET", re.compile(r"^/v1/users/([^/]+)/subscription$"), "read", "h_user_sub"),
+    ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
+    ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
+    ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
+    ("POST", re.compile(r"^/v1/users$"), "users", "h_provision"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/extend$"), "users", "h_extend"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/enable$"), "users", "h_enable"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/disable$"), "users", "h_disable"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
+    ("POST", re.compile(r"^/v1/telegram/bind$"), "telegram", "h_bind"),
+    ("POST", re.compile(r"^/v1/codes/redeem$"), "telegram", "h_redeem"),
+]
+
+
+class ApiError(Exception):
+    def __init__(self, status, code, message):
+        self.status, self.code, self.message = status, code, message
+
+
+def need_username(value):
+    if not RE_USERNAME.fullmatch(value or ""):
+        raise ApiError(400, "invalid_username", "имя: латиница, цифры, _ и -, до 64 символов")
+    return value
+
+
+def need_tg_id(value):
+    if not RE_TG_ID.fullmatch(str(value or "")):
+        raise ApiError(400, "invalid_tg_id", "tg_id: только цифры")
+    return str(value)
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "hy2-webapi"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_):   # стандартный stderr-лог заменён нашим audit()
+        pass
+
+    # -- обработчики --
+
+    def h_health(self):
+        return {"version": manager_version()}
+
+    def h_info(self):
+        return node_info()
+
+    def h_tariffs(self):
+        return {"tariffs": tariffs()}
+
+    def h_nodes(self):
+        return {"nodes": nodes()}
+
+    def h_user(self, name):
+        payload = user_payload(need_username(name))
+        if payload is None:
+            raise ApiError(404, "user_not_found", "пользователь не найден")
+        return payload
+
+    def h_user_sub(self, name):
+        payload = subscription_payload(need_username(name))
+        if payload is None:
+            raise ApiError(404, "user_not_found", "пользователь не найден")
+        return payload
+
+    def h_user_by_tg(self, tg_id):
+        user = tg_username(need_tg_id(tg_id))
+        if not user:
+            raise ApiError(404, "not_linked", "telegram-аккаунт не привязан")
+        payload = user_payload(user)
+        if payload is None:
+            raise ApiError(404, "user_not_found", "привязка есть, но пользователь удалён")
+        return payload
+
+    def h_tg(self, tg_id):
+        user = tg_username(need_tg_id(tg_id))
+        return {"tg_id": tg_id, "bound": user is not None, "username": user}
+
+    def h_payments(self):
+        since = self.query.get("since_charge", "")
+        if since and not RE_CHARGE.fullmatch(since):
+            raise ApiError(400, "invalid_cursor", "недопустимый since_charge")
+        limit = self.query.get("limit", "200")
+        limit = min(500, int(limit)) if limit.isdigit() and int(limit) > 0 else 200
+        return payments(since or None, limit)
+
+    def h_provision(self):
+        user = need_username(self.body.get("username"))
+        active, disabled = user_exists(user)
+        res = self.dispatch("provision", user)
+        return {"username": user, "created": not (active or disabled),
+                "password": res.get("password"),
+                "subscription_url": res.get("sub_url") or None}
+
+    def h_extend(self, name):
+        user = need_username(name)
+        days = self.body.get("days")
+        if not (isinstance(days, int) and 1 <= days <= 3650):
+            raise ApiError(400, "invalid_days", "days: целое 1..3650")
+        res = self.dispatch("extend", user, str(days))
+        return {"username": user, "expiry": res.get("expiry"),
+                "days_left": days_left(res.get("expiry"))}
+
+    def h_enable(self, name):
+        user = need_username(name)
+        self.dispatch("enable", user)
+        return {"username": user, "status": "active"}
+
+    def h_disable(self, name):
+        user = need_username(name)
+        self.dispatch("disable", user)
+        return {"username": user, "status": "disabled"}
+
+    def h_limits(self, name):
+        user = need_username(name)
+        current = user_limits(user)
+        devices = self.body.get("devices", current["devices"])
+        rate = self.body.get("rate_mbps", current["rate_mbps"])
+        if not (isinstance(devices, int) and 0 <= devices <= 1000):
+            raise ApiError(400, "invalid_devices", "devices: целое 0..1000")
+        if not (isinstance(rate, int) and 0 <= rate <= 100000):
+            raise ApiError(400, "invalid_rate", "rate_mbps: целое 0..100000")
+        self.dispatch("set-limits", user, str(devices), str(rate))
+        return {"username": user, "limits": user_limits(user)}
+
+    def h_bind(self):
+        tg_id = need_tg_id(self.body.get("tg_id"))
+        user = need_username(self.body.get("username"))
+        self.dispatch("tg-bind", tg_id, user)
+        return {"tg_id": tg_id, "username": user, "bound": True}
+
+    def h_redeem(self):
+        code = self.body.get("code")
+        if not RE_CODE.fullmatch(str(code or "")):
+            raise ApiError(400, "invalid_code", "недопустимый формат кода")
+        args = [str(code)]
+        tg_id = self.body.get("tg_id")
+        if tg_id is not None:
+            args.append(need_tg_id(tg_id))
+        res = self.dispatch("redeem", *args)
+        return {"username": res.get("username"),
+                "bound": bool(tg_id)}
+
+    # -- инфраструктура --
+
+    def dispatch(self, verb, *args):
+        res, err = run_dispatch(verb, *args)
+        if err:
+            raise ApiError(*err)
+        return res
+
+    def handle_route(self, method):
+        started = time.monotonic()
+        path, _, qs = self.path.partition("?")
+        self.query = {}
+        for pair in qs.split("&"):
+            if "=" in pair:
+                k, _, v = pair.partition("=")
+                self.query[k] = urllib.parse.unquote(v)
+        key = None
+        status = 500
+        try:
+            matched = None
+            for m, rx, scope, handler in ROUTES:
+                match = rx.match(path)
+                if match:
+                    matched = True
+                    if m == method:
+                        break
+            else:
+                raise ApiError(405 if matched else 404,
+                               "method_not_allowed" if matched else "no_such_endpoint",
+                               "метод не поддерживается" if matched else "нет такого эндпоинта (см. docs/API.md)")
+            if scope is not None:
+                key = authenticate(self.headers.get("Authorization"))
+                if key is None:
+                    raise ApiError(401, "unauthorized", "нужен заголовок Authorization: Bearer <ключ>")
+                if not rate_ok(key["name"], conf()["rate_rpm"]):
+                    self.send_response(429)
+                    self.send_header("Retry-After", "10")
+                    self.finish_json({"ok": False, "error": {"code": "rate_limited",
+                                     "message": "слишком много запросов"}})
+                    status = 429
+                    return
+                if not has_scope(key, scope):
+                    raise ApiError(403, "forbidden", f"ключу не выдан scope «{scope}»")
+            if method == "POST":
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > 65536:
+                    raise ApiError(413, "payload_too_large", "тело запроса больше 64 КБ")
+                raw = self.rfile.read(length) if length else b""
+                if raw:
+                    try:
+                        self.body = json.loads(raw.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        raise ApiError(400, "invalid_json", "тело должно быть валидным JSON")
+                    if not isinstance(self.body, dict):
+                        raise ApiError(400, "invalid_json", "ожидается JSON-объект")
+                else:
+                    self.body = {}
+            data = getattr(self, handler)(*match.groups())
+            status = 200
+            self.send_response(200)
+            self.finish_json({"ok": True, "data": data})
+        except ApiError as e:
+            status = e.status
+            self.send_response(e.status)
+            self.finish_json({"ok": False, "error": {"code": e.code, "message": e.message}})
+        except Exception as e:  # не роняем демон из-за одного запроса
+            sys.stderr.write(f"unhandled {method} {path}: {e!r}\n")
+            status = 500
+            try:
+                self.send_response(500)
+                self.finish_json({"ok": False, "error": {"code": "internal",
+                                 "message": "внутренняя ошибка"}})
+            except Exception:
+                pass
+        finally:
+            ms = int((time.monotonic() - started) * 1000)
+            audit(key["name"] if key else "-", method, path, status, ms)
+
+    def finish_json(self, obj):
+        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        self.handle_route("GET")
+
+    def do_POST(self):
+        self.handle_route("POST")
+
+
+def main():
+    c = conf()
+    server = ThreadingHTTPServer((c["bind"], c["port"]), Handler)
+    sys.stderr.write(f"hy2-webapi: listening on {c['bind']}:{c['port']}, DATA_DIR={DATA_DIR}\n")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
