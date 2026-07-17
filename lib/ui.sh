@@ -268,9 +268,9 @@ render_user_table() {
         local cstatus cstatus_wide tx rx sp_tx sp_rx
         if [ "$_sub" = 1 ]; then
             if [ "$over" = 1 ]; then
-                cstatus="⚠️ ${cc}"; cstatus_wide=0   # ⚠️ = база+VS16: ширина уже учтена
+                cstatus="⚠️  ${cc}"; cstatus_wide=0   # ⚠️ = база+VS16: ширина уже учтена
             elif [ "${cc:-0}" -gt 0 ] 2>/dev/null; then
-                cstatus="🟢 ${cc}"; cstatus_wide=1
+                cstatus="💚 ${cc}"; cstatus_wide=1
             else
                 cstatus="⚫ —"; cstatus_wide=1
             fi
