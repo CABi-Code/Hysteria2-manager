@@ -9,6 +9,15 @@ refresh_online() {
     if [ -z "$CACHED_ONLINE" ] || ! echo "$CACHED_ONLINE" | jq empty 2>/dev/null; then
         CACHED_ONLINE='{}'
     fi
+    # Подмешиваем онлайн доп. протоколов (VLESS/SS2022/TUIC), суммируя по юзеру.
+    # best-effort: при выключенных протоколах или сбое — CACHED_ONLINE не меняется.
+    if declare -F proto_online_json >/dev/null 2>&1 && proto_any_enabled; then
+        local _po
+        _po=$(proto_online_json 2>/dev/null)
+        if [ -n "$_po" ] && [ "$_po" != '{}' ]; then
+            CACHED_ONLINE=$(_proto_merge_online "$CACHED_ONLINE" "$_po")
+        fi
+    fi
 }
 
 get_user_online_count() {

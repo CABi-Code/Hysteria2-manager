@@ -501,6 +501,122 @@ proto_disable_protocol() {   # name
     return 0
 }
 
+# ---------------- Учёт трафика доп. протоколов ----------------
+# Xray StatsService через штатный CLI `xray api statsquery -reset`: отдаёт трафик
+# с момента прошлого сброса (аналог hysteria /traffic?clear=1) и обнуляет счётчики.
+# Суммируем uplink+downlink по каждому юзеру (email) и ДОКЛАДЫВАЕМ в STATS_FILE —
+# ровно как collect_traffic для Hysteria, чтобы квоты/статистика учитывали и VLESS/SS.
+# TUIC (sing-box) в побайтный учёт пока не входит — clash_api не даёт устойчивого
+# per-user трафика; это задокументировано (docs/08-multiprotocol.md).
+proto_collect_traffic() {
+    proto_xray_needed || return 0
+    [ -x "$XRAY_BIN" ] || return 0
+    local json
+    json=$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -reset 2>/dev/null) || return 0
+    [ -n "$json" ] || return 0
+    # name = "user>>>EMAIL>>>traffic>>>uplink|downlink". Собираем user|tx|rx
+    # (downlink=клиенту=tx, uplink=от клиента=rx; для суммарной квоты порядок не важен).
+    local pairs
+    pairs=$(printf '%s' "$json" | jq -r '
+        (.stat // [])[]
+        | select(.name != null and (.name | startswith("user>>>")))
+        | (.name | split(">>>")) as $p
+        | "\($p[1])|\($p[3])|\(.value // 0)"' 2>/dev/null)
+    [ -n "$pairs" ] || return 0
+    # Свернём в user -> tx,rx
+    declare -A _tx _rx
+    local email dir val
+    while IFS='|' read -r email dir val; do
+        [ -n "$email" ] || continue
+        [[ "$val" =~ ^[0-9]+$ ]] || val=0
+        case "$dir" in
+            downlink) _tx[$email]=$(( ${_tx[$email]:-0} + val )) ;;
+            uplink)   _rx[$email]=$(( ${_rx[$email]:-0} + val )) ;;
+        esac
+    done <<< "$pairs"
+    local u tx rx old_tx old_rx new_tx new_rx users_uniq
+    users_uniq=$(printf '%s\n' "${!_tx[@]}" "${!_rx[@]}" | grep -v '^$' | sort -u)
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        tx=${_tx[$u]:-0}; rx=${_rx[$u]:-0}
+        [ "$tx" -eq 0 ] && [ "$rx" -eq 0 ] && continue
+        if grep -q "^${u}|" "$STATS_FILE" 2>/dev/null; then
+            old_tx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
+            old_rx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
+            new_tx=$(( ${old_tx:-0} + tx )); new_rx=$(( ${old_rx:-0} + rx ))
+            sed -i "s#^${u}|.*#${u}|${new_tx}|${new_rx}#" "$STATS_FILE"
+        else
+            echo "${u}|${tx}|${rx}" >> "$STATS_FILE"
+        fi
+    done <<< "$users_uniq"
+}
+
+# ---------------- Онлайн доп. протоколов ----------------
+# Возвращает JSON {user: conns} по доп. протоколам (best-effort; при любой ошибке
+# — пустой {}, чтобы никогда не ломать основной онлайн Hysteria).
+# Xray: online-статистика StatsService (name ".*>>>online"), если движок её отдаёт.
+# sing-box: число активных TUIC-соединений на юзера из clash_api /connections.
+proto_online_json() {
+    proto_any_enabled || { echo '{}'; return 0; }
+    local merged='{}'
+    if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
+        local xj xonline
+        xj=$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -pattern "online" 2>/dev/null)
+        if [ -n "$xj" ]; then
+            xonline=$(printf '%s' "$xj" | jq -c '
+                reduce ((.stat // [])[] | select(.name != null and (.name | test(">>>online$"))))
+                    as $s ({}; .[($s.name | split(">>>"))[1]] = (($s.value // 0) | tonumber))' 2>/dev/null)
+            [ -n "$xonline" ] && merged=$(_proto_merge_online "$merged" "$xonline")
+        fi
+    fi
+    if proto_tuic_enabled; then
+        local secret conns tonline
+        secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+        conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
+            "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
+        if [ -n "$conns" ]; then
+            # Считаем соединения по юзеру: metadata.user (sing-box кладёт имя юзера инбаунда).
+            tonline=$(printf '%s' "$conns" | jq -c '
+                reduce ((.connections // [])[] | .metadata.user // empty) as $u
+                    ({}; .[$u] = ((.[$u] // 0) + 1))' 2>/dev/null)
+            [ -n "$tonline" ] && merged=$(_proto_merge_online "$merged" "$tonline")
+        fi
+    fi
+    echo "$merged"
+}
+
+# Слить два JSON {user:n}, суммируя значения по ключу.
+_proto_merge_online() {   # a b -> merged
+    printf '%s\n%s\n' "$1" "$2" | jq -s '
+        reduce .[] as $o ({};
+            reduce ($o | to_entries[]) as $e (.; .[$e.key] = ((.[$e.key] // 0) + ($e.value // 0))))' 2>/dev/null \
+    || echo '{}'
+}
+
+# ---------------- Кик сессий доп. протоколов ----------------
+# Xray умеет снять юзера с инбаунда на лету (rmu) — это рвёт его активные сессии;
+# состав вернёт следующий proto_sync_users. sing-box per-user кика не имеет —
+# при необходимости рвём TUIC рестартом (редкое событие: истечение/бан).
+# ЗАМЕЧАНИЕ: при удалении/отключении/смене пароля юзер и так исчезает из конфига,
+# и restart-on-change в proto_sync_users роняет его сессии — отдельный kick нужен
+# лишь для «мягких» сценариев (сброс без изменения состава).
+proto_kick() {   # user
+    local user="$1"
+    [ -n "$user" ] || return 0
+    proto_any_enabled || return 0
+    if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
+        local tag
+        for tag in vless-in ss-in; do
+            "$XRAY_BIN" api rmu --server="127.0.0.1:${XRAY_API_PORT}" \
+                -tag "$tag" -email "$user" >/dev/null 2>&1
+        done
+        # Вернуть юзера в инбаунд (он остаётся валидным) — пересборкой из users.db.
+        proto_write_xray_config
+        _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
+    fi
+    return 0
+}
+
 # Статус для меню/диагностики: строка «vless:🟢 ss:🔴 tuic:🟢».
 proto_status_line() {
     local s=""
