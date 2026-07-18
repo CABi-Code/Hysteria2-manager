@@ -370,6 +370,24 @@ def manager_version():
         return None
 
 
+def enabled_protocols():
+    """Список доп. протоколов, включённых на ноде (из protocols.conf).
+
+    Подписка юзера физически содержит по ключу на каждый включённый протокол —
+    это поле лишь позволяет кабинету показать бейджи «VLESS/SS2022/TUIC», не
+    разбирая base64 подписки. Hysteria 2 присутствует всегда как базовый.
+    """
+    p = read_kv(data_path("protocols.conf"))
+    out = ["hysteria2"]
+    if p.get("PROTO_VLESS_ENABLED") == "1":
+        out.append("vless-reality-xhttp")
+    if p.get("PROTO_SS_ENABLED") == "1":
+        out.append("shadowsocks-2022")
+    if p.get("PROTO_TUIC_ENABLED") == "1":
+        out.append("tuic-v5")
+    return out
+
+
 def node_info():
     node = read_kv(data_path("node.conf"))
     users = colon_db(data_path("users.db"))
@@ -382,6 +400,7 @@ def node_info():
         "users_active": len(users),
         "users_disabled": len(disabled),
         "cluster_peers": len(peers),
+        "protocols": enabled_protocols(),
     }
 
 

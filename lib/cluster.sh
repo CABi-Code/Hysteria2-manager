@@ -119,7 +119,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips abuse"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips abuse version"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -132,6 +132,7 @@ _section_label() {
         userlimits) echo "устройства/жёсткая проверка" ;;
         subips)     echo "IP по ссылкам" ;;
         abuse)      echo "анти-абуз (балл/окно)" ;;
+        version)    echo "версия менеджера" ;;
         *)          echo "$1" ;;
     esac
 }
@@ -160,6 +161,7 @@ cluster_sync() {
     publish_cluster_abuse
     publish_ips
     publish_subips
+    publish_cluster_version
 
     # Жёсткая проверка НАШЕГО эндпоинта: без валидного HTTPS пиры физически не
     # смогут забрать наши данные — синхронизация будет односторонней.
@@ -289,6 +291,37 @@ publish_cluster_state() {
     cp -f "$CLUSTER_STATE_FILE" "$WEBROOT/cluster/state" 2>/dev/null || : > "$WEBROOT/cluster/state"
     chmod 640 "$WEBROOT/cluster/state" 2>/dev/null || true
     secure_web_files
+}
+
+# --- Обмен версиями между нодами ---
+# Каждая нода публикует свою версию менеджера; пиры тянут её в кэш (см.
+# CLUSTER_SYNC_SECTIONS). Так на любой ноде видно, какая версия где стоит, и
+# сразу понятно, кого пора обновлять. Формат — «ver|ts» (одна строка).
+publish_cluster_version() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    printf '%s|%s\n' "${MANAGER_VERSION:-unknown}" "$(date +%s)" > "$WEBROOT/cluster/version" 2>/dev/null
+    chmod 640 "$WEBROOT/cluster/version" 2>/dev/null || true
+    secure_web_files
+}
+
+# Версия менеджера конкретного пира из кэша (пусто, если ещё не синкались).
+peer_version() {   # peer-name
+    [ -n "$1" ] || return 1
+    cut -d'|' -f1 "$PEERS_DIR/${1}.version" 2>/dev/null | head -1
+}
+
+# Список «имя<TAB>host<TAB>версия» по всем нодам кластера (эта + пиры из кэша).
+# Для экрана «версии нод». Версия пира пустая → «?» (ещё не синкнулись/старьё).
+cluster_versions() {
+    printf '%s\t%s\t%s\n' "$(node_name)" "$(node_host)" "${MANAGER_VERSION:-unknown}"
+    local host name ver self; self=$(node_host)
+    while IFS='|' read -r name host; do
+        [ -n "$host" ] && [ "$host" != "$self" ] || continue
+        [ -z "$name" ] && name="$host"
+        ver=$(peer_version "$name"); [ -z "$ver" ] && ver="?"
+        printf '%s\t%s\t%s\n' "$name" "$host" "$ver"
+    done < "$CLUSTER_CONF" 2>/dev/null
 }
 
 # Тихое локальное удаление (без печати/сообщений) — для применения tombstone.

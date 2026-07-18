@@ -93,6 +93,11 @@ CLUSTER_STATE_FILE="$DATA_DIR/cluster_state.dat"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
+# --- Обновления менеджера (GitHub) ---
+# Единый источник ссылок на репозиторий — меняется только здесь. Проверка версии
+# тянет файл VERSION, само обновление запускает install.sh (режим «только менеджер»).
+MANAGER_REPO_RAW="${HY2M_REPO_RAW:-https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main}"
+MANAGER_VERSION_CACHE="$DATA_DIR/.remote_version"   # кэш проверки версии: «ver|ts»
 CADDYFILE="/etc/caddy/Caddyfile"
 # Заголовок profile-title для /sub/* — отдельным сниппетом, который Caddyfile
 # импортирует. Когда в названии профиля есть плейсхолдеры ({user} и др.), название
