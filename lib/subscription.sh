@@ -93,7 +93,9 @@ link_host() {
 # ---- Оформление подписки (что видит пользователь в клиенте) ----
 # Метка ноды (название сервера в клиенте; можно с эмодзи/флагом). По умолчанию — имя ноды.
 node_label()       { local l; l=$(node_get NODE_LABEL); echo "${l:-$(node_name)}"; }
-# Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name} {online}.
+# Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name} {online} {protocol}.
+# {protocol} (HY2/VLESS/SS22/TUIC) подставляется ПОЗЖЕ, при сборке каждого URI —
+# в render_tag протокол ещё не известен (см. build_user_link и proto_build_*).
 sub_tag_tmpl()     { local t; t=$(node_get SUB_TAG_TMPL); [ -z "$t" ] && t='{label}'; printf '%s' "$t"; }
 # Использует ли шаблон плейсхолдер {online} (общий онлайн ЭТОЙ ноды)? Если да —
 # перед генерацией подписи/манифеста нужен свежий онлайн (refresh_online). Каждая
@@ -127,8 +129,9 @@ _render_ph() {   # tmpl user
 
 # Подпись ключа по шаблону для конкретного юзера.
 render_tag()   { _render_ph "$(sub_tag_tmpl)" "$1"; }
-# Название профиля по шаблону для конкретного юзера.
-render_title() { _render_ph "$(sub_title)" "$1"; }
+# Название профиля по шаблону для конкретного юзера. {protocol} тут смысла не
+# имеет (профиль один на все протоколы) — вырезаем, чтобы не утёк буквально.
+render_title() { local t; t=$(_render_ph "$(sub_title)" "$1"); printf '%s' "${t//\{protocol\}/}"; }
 
 # Глобальные (общие для всего кластера) настройки. Метка ноды (NODE_LABEL) сюда
 # НЕ входит — она у каждой ноды своя. POOL_LIMIT/NODE_LIMIT — глобальные лимиты
@@ -243,6 +246,9 @@ build_user_link() {
     local ip="${3:-$(link_host)}" port="${4:-$(get_port)}"
     local obfs="${5:-$(get_obfs_pass)}" sni="${6:-$(get_sni)}"
     local tag="${7:-$user}"
+    # {protocol} — своя метка у каждого ключа (у юзера ключи разных протоколов).
+    # Подставляется здесь, а не в render_tag: там протокол ещё не известен. HY2.
+    tag=${tag//\{protocol\}/HY2}
     printf 'hysteria2://%s:%s@%s:%s/?obfs=salamander&obfs-password=%s&sni=%s&insecure=1#%s' \
         "$user" "$pass" "$ip" "$port" "$obfs" "$sni" "$tag"
 }
@@ -330,9 +336,21 @@ publish_manifest() {
     # Параметры сервера считаем один раз (get_ip дёргает сеть) и переиспользуем.
     ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
     : > "$tmp"
+    local _proto_on=0
+    declare -F proto_any_enabled >/dev/null 2>&1 && proto_any_enabled && _proto_on=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
         printf '%s\t%s\n' "$u" "$(build_user_link "$u" "$p" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$u")")" >> "$tmp"
+        # Доп. протоколы (VLESS/SS2022/TUIC) — по строке на протокол, тем же
+        # форматом «user<TAB>uri», чтобы пиры подмешали их в подписку так же, как
+        # hysteria2://. Адрес/подпись — те же, что у основного ключа.
+        if [ "$_proto_on" = 1 ]; then
+            local _puri
+            while IFS= read -r _puri; do
+                [ -n "$_puri" ] || continue
+                printf '%s\t%s\n' "$u" "$_puri" >> "$tmp"
+            done < <(proto_user_uris "$u" "$p" "$ip" "$(render_tag "$u")")
+        fi
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/manifest"
     secure_web_files
@@ -378,10 +396,26 @@ regen_subscriptions() {
             content=$(
                 {
                     [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
+                    # Локальные ссылки доп. протоколов этого юзера (VLESS/SS2022/TUIC).
+                    [ -n "$lp" ] && declare -F proto_user_uris >/dev/null 2>&1 && \
+                        proto_user_uris "$user" "$lp" "$ip" "$(render_tag "$user")"
                     [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
                         | awk -F'\t' -v u="$user" '$1==u{print $2}'
                 } | grep -v '^$' | awk '
                     {
+                      # Санитайз: старые ноды кластера не умеют подставлять
+                      # {protocol} и присылают его литералом. Символы {} в
+                      # #фрагменте ломают парсер клиента, и такие ключи (а с
+                      # ними и вся нода) пропадают из подписки. Заменяем на метку
+                      # по схеме URI, пока пиры не обновятся.
+                      if (index($0,"{protocol}")>0) {
+                        lbl="KEY"
+                        if      ($0 ~ /^hysteria2:\/\//) lbl="HY2"
+                        else if ($0 ~ /^vless:\/\//)     lbl="VLESS"
+                        else if ($0 ~ /^ss:\/\//)        lbl="SS22"
+                        else if ($0 ~ /^tuic:\/\//)      lbl="TUIC"
+                        gsub(/\{protocol\}/, lbl)
+                      }
                       s=$0
                       sub(/^[^/]*\/\//,"",s)   # убрать схему hysteria2://
                       sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
@@ -453,6 +487,10 @@ merge_subtokens() { return 0; }
 # Удобный хук: обновить манифест/токены и подписки после изменения пользователей.
 sub_refresh() {
     sub_enabled || return 0
+    # Синхронизируем серверы доп. протоколов из users.db (Xray hot/restart-on-change,
+    # sing-box restart-on-change). Делаем ПЕРВЫМ, до публикации манифеста/подписки,
+    # чтобы новые ключи начинали работать не позже, чем появятся в подписке.
+    declare -F proto_sync_users >/dev/null 2>&1 && proto_sync_users
     publish_manifest
     publish_subtokens
     publish_stats

@@ -108,7 +108,7 @@ webapi_menu() {
         echo "  🌐 Web API для внешних приложений"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         if webapi_enabled; then
-            echo "  Статус: 🟢 включён · демон: $(webapi_running && echo '🟢 работает' || echo '🔴 остановлен')"
+            echo "  Статус: 💚 включён · демон: $(webapi_running && echo '💚 работает' || echo '🔴 остановлен')"
             echo "  Локально:  http://127.0.0.1:$(webapi_port)/v1/health"
             if sub_enabled; then
                 echo "  Извне:     https://$(node_host)/api/v1/health"
@@ -127,7 +127,7 @@ webapi_menu() {
         if webapi_enabled; then
             echo "  1. 🔴 Выключить API"
         else
-            echo "  1. 🟢 Включить API"
+            echo "  1. 💚 Включить API"
         fi
         echo "  2. 🔑 Создать ключ доступа"
         echo "  3. 🗑  Отозвать ключ"

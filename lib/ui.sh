@@ -102,7 +102,7 @@ render_frame() {
 }
 
 # ====================== ШИРИНА И ЯЧЕЙКИ ТАБЛИЦЫ ======================
-# Эмодзи (🟢🔴⚫ …) занимают 2 колонки терминала, но ${#s} в UTF-8 локали
+# Эмодзи (💚🔴⚫ …) занимают 2 колонки терминала, но ${#s} в UTF-8 локали
 # считает их за 1 символ — из-за этого printf "%-Ns" «кривил» столбцы.
 # print_cell кладёт текст в колонку фиксированной ВИДИМОЙ ширины, зная,
 # сколько в нём «широких» символов (wide).
@@ -1147,6 +1147,168 @@ perf_menu() {
     done
 }
 
+# ====================== ПРОТОКОЛЫ ======================
+# Управление доп. протоколами рядом с Hysteria: VLESS+REALITY+XHTTP и
+# Shadowsocks-2022 (Xray), TUIC v5 (sing-box). Все они попадают в подписку юзера,
+# и клиент (Throne/Hiddify) выбирает тот, что проходит в его сети. См.
+# lib/protocols.sh и docs/08-multiprotocol.md.
+_proto_svc_state() {   # service -> строка со статусом
+    if systemctl is-active --quiet "$1" 2>/dev/null; then echo "💚 работает"
+    elif systemctl list-unit-files 2>/dev/null | grep -q "^$1"; then echo "🔴 остановлен"
+    else echo "⚪ не установлен"; fi
+}
+
+protocols_menu() {
+    while true; do
+        clear
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  🧩 Протоколы (мультипротокольная раздача)"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        if ! sub_enabled; then
+            echo "  ⚠️  Сначала настройте подписку (Настройки → 5): доп. протоколы"
+            echo "     раздаются клиенту именно через единую ссылку-подписку."
+            echo ""
+        fi
+        local vs ss ts
+        proto_vless_enabled && vs="💚 вкл" || vs="⚪ выкл"
+        proto_ss_enabled    && ss="💚 вкл" || ss="⚪ выкл"
+        proto_tuic_enabled  && ts="💚 вкл" || ts="⚪ выкл"
+        echo "  1. VLESS + REALITY + XHTTP   : $vs   (TCP $(proto_vless_port))"
+        echo "  2. Shadowsocks-2022          : $ss   (TCP $(proto_ss_port), $(proto_ss_method))"
+        echo "  3. TUIC v5                   : $ts   (UDP $(proto_tuic_port))"
+        echo ""
+        echo "  Сервисы: Xray $(_proto_svc_state "$XRAY_SERVICE") · sing-box $(_proto_svc_state "$SINGBOX_SERVICE")"
+        echo ""
+        echo "  4. ⚙  Параметры (порты, шифр SS, REALITY dest/SNI, путь XHTTP)"
+        echo "  5. 🔁 Переустановить/пересобрать сервисы (bootstrap)"
+        echo "  6. 🔍 Диагностика (версии бинарников, статус, порты)"
+        echo "  0. ↩  Назад"
+        echo ""
+        local choice
+        ask choice "  Выберите: "
+        case "$choice" in
+            1) _proto_toggle vless "VLESS+REALITY+XHTTP" ;;
+            2) _proto_toggle ss    "Shadowsocks-2022" ;;
+            3) _proto_toggle tuic  "TUIC v5" ;;
+            4) proto_params_menu ;;
+            5)
+                echo ""
+                if ! proto_any_enabled; then
+                    echo "  Нет включённых протоколов — включать нечего."
+                else
+                    echo "  ⏳ Установка бинарников и пересборка конфигов..."
+                    proto_bootstrap && echo "  ✅ Готово" || echo "  ⚠️  Были ошибки — см. вывод выше"
+                fi
+                pause
+                ;;
+            6) proto_diagnose_menu ;;
+            0) return ;;
+            *) echo "  ❌ Неверный выбор!"; sleep 1 ;;
+        esac
+    done
+}
+
+# Переключить протокол вкл/выкл. При включении ставит движок и поднимает сервис.
+_proto_toggle() {   # name human
+    local name="$1" human="$2"
+    echo ""
+    local enabled=0
+    case "$name" in
+        vless) proto_vless_enabled && enabled=1 ;;
+        ss)    proto_ss_enabled    && enabled=1 ;;
+        tuic)  proto_tuic_enabled  && enabled=1 ;;
+    esac
+    if [ "$enabled" = 1 ]; then
+        local c; ask c "  Выключить $human? (да/нет): "
+        if is_yes "$c"; then
+            proto_disable_protocol "$name"
+            echo "  ⚪ $human выключен (сервис остановлен, если больше не нужен)."
+        fi
+    else
+        if ! sub_enabled; then
+            echo "  ⚠️  Подписка не настроена — ключи некуда раздавать. Включите её сначала."
+            pause; return
+        fi
+        local c; ask c "  Включить $human? Скачает движок и поднимет сервис. (да/нет): "
+        if is_yes "$c"; then
+            echo "  ⏳ Устанавливаю и настраиваю..."
+            if proto_enable_protocol "$name"; then
+                echo "  💚 $human включён. Ключи появятся в подписках всех юзеров."
+                sub_refresh
+            else
+                echo "  ❌ Не удалось включить (см. вывод/лог). Флаг оставлен, повторите bootstrap."
+            fi
+        fi
+    fi
+    pause
+}
+
+# Параметры протоколов (порты, шифр, REALITY, XHTTP).
+proto_params_menu() {
+    while true; do
+        clear
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  ⚙  Параметры протоколов"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  1. Порт VLESS (TCP)     : $(proto_vless_port)"
+        echo "  2. Порт Shadowsocks(TCP): $(proto_ss_port)"
+        echo "  3. Порт TUIC (UDP)      : $(proto_tuic_port)"
+        echo "  4. Шифр Shadowsocks-2022: $(proto_ss_method)"
+        echo "  5. REALITY dest         : $(proto_reality_dest)"
+        echo "  6. REALITY SNI          : $(proto_reality_sni)"
+        echo "  7. Путь XHTTP           : $(proto_xhttp_path)"
+        echo ""
+        echo "  ⚠️  После смены параметров нужно пересобрать сервисы (Протоколы → 5)."
+        echo "  0. ↩  Назад"
+        echo ""
+        local c v
+        ask c "  Что изменить: "
+        case "$c" in
+            1) ask v "  Новый порт VLESS (TCP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_VLESS_PORT "$v" ;;
+            2) ask v "  Новый порт Shadowsocks (TCP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_SS_PORT "$v" ;;
+            3) ask v "  Новый порт TUIC (UDP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_TUIC_PORT "$v" ;;
+            4)
+                echo "  Варианты: 2022-blake3-aes-128-gcm (быстрее) / 2022-blake3-aes-256-gcm"
+                ask v "  Шифр: "
+                case "$v" in 2022-blake3-aes-128-gcm|2022-blake3-aes-256-gcm) proto_set PROTO_SS_METHOD "$v" ;; *) echo "  ❌ Неизвестный шифр"; sleep 1 ;; esac
+                ;;
+            5) ask v "  REALITY dest (host:443, реальный TLS1.3-сайт): "; [ -n "$v" ] && proto_set PROTO_REALITY_DEST "$v" ;;
+            6) ask v "  REALITY SNI (обычно host из dest): "; [ -n "$v" ] && proto_set PROTO_REALITY_SNI "$v" ;;
+            7) ask v "  Путь XHTTP (например /dl): "; [ -n "$v" ] && proto_set PROTO_XHTTP_PATH "$v" ;;
+            0) return ;;
+            *) echo "  ❌ Неверный выбор!"; sleep 1 ;;
+        esac
+    done
+}
+
+# Диагностика доп. протоколов.
+proto_diagnose_menu() {
+    clear
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  🔍 Диагностика протоколов"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Xray бинарник : $( [ -x "$XRAY_BIN" ] && "$XRAY_BIN" version 2>/dev/null | head -1 || echo 'не установлен' )"
+    echo "  sing-box      : $( [ -x "$SINGBOX_BIN" ] && "$SINGBOX_BIN" version 2>/dev/null | head -1 || echo 'не установлен' )"
+    echo "  Сервис Xray   : $(_proto_svc_state "$XRAY_SERVICE")"
+    echo "  Сервис sing-box: $(_proto_svc_state "$SINGBOX_SERVICE")"
+    echo ""
+    echo "  REALITY pubkey: $(proto_reality_pubkey | cut -c1-20)…  shortId: $(proto_reality_shortid)"
+    echo ""
+    echo "  Прослушиваемые порты:"
+    local p
+    for p in $(proto_vless_port) $(proto_ss_port); do
+        proto_vless_enabled || proto_ss_enabled || break
+        if ss -ltn 2>/dev/null | grep -q ":$p "; then echo "    TCP $p : 💚 слушается"; else echo "    TCP $p : 🔴 нет"; fi
+    done
+    if proto_tuic_enabled; then
+        p=$(proto_tuic_port)
+        if ss -lun 2>/dev/null | grep -q ":$p "; then echo "    UDP $p : 💚 слушается"; else echo "    UDP $p : 🔴 нет"; fi
+    fi
+    echo ""
+    echo "  Логи сервисов: journalctl -u $XRAY_SERVICE -e   |   journalctl -u $SINGBOX_SERVICE -e"
+    pause
+}
+
 settings_menu() {
     while true; do
         clear
@@ -1188,7 +1350,16 @@ settings_menu() {
         echo "  5. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
         echo "  6. 🤖 Telegram-бот (управление и продажа доступа)"
         echo "  7. 🔄 Получить синхронизацию (локально)"
-        echo "  8. ⬆  Обновить менеджер (до последней версии с GitHub)"
+        local _upd; _upd=$(manager_update_available 2>/dev/null)
+        if [ -n "$_upd" ]; then
+            echo "  8. ⬆  Обновить менеджер  🔔 доступна v$_upd (у вас v$(manager_local_version))"
+        else
+            echo "  8. ⬆  Обновить менеджер (проверить и установить с GitHub) · v$(manager_local_version)"
+        fi
+        echo "  9. 🧩 Протоколы: VLESS+REALITY+XHTTP · Shadowsocks-2022 · TUIC v5"
+        if declare -F proto_status_line >/dev/null 2>&1; then
+            echo "       [ $(proto_status_line) ]"
+        fi
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -1241,25 +1412,30 @@ settings_menu() {
                 ;;
             8)
                 echo ""
+                echo "  ⏳ Проверяю обновления на GitHub..."
+                local _loc _rem; _loc=$(manager_local_version); _rem=$(manager_remote_version force)
+                echo "  Текущая версия  : v$_loc"
+                if [ -z "$_rem" ]; then
+                    echo "  Версия в репо   : не удалось получить (проверьте сеть)."
+                elif _ver_gt "$_rem" "$_loc"; then
+                    echo "  Версия в репо   : v$_rem  ⬆ доступно обновление!"
+                elif [ "$_rem" = "$_loc" ]; then
+                    echo "  Версия в репо   : v$_rem  ✅ у вас последняя версия"
+                else
+                    echo "  Версия в репо   : v$_rem  (у вас новее/dev)"
+                fi
+                echo ""
                 echo "  Обновление скачает свежие файлы менеджера с GitHub и заменит текущие."
                 echo "  Hysteria, пользователи и настройки НЕ трогаются (режим «только менеджер»)."
                 local confirm
                 ask confirm "  Обновить сейчас? (да/нет): "
                 if is_yes "$confirm"; then
-                    local up_tmp
-                    up_tmp=$(mktemp)
-                    if curl -fsSL --max-time 30 "https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh" -o "$up_tmp"; then
-                        echo "  ⏳ Запускаю установщик (выберите пункт 1 — обновить только менеджер)..."
-                        # stderr менеджера уходит в лог-файл — вернём его на терминал,
-                        # чтобы сообщения установщика были видны. exec заменяет процесс.
-                        exec 2>/dev/tty
-                        exec bash "$up_tmp"
-                    else
-                        rm -f "$up_tmp"
-                        echo "  ❌ Не удалось скачать install.sh (проверьте сеть)."
-                    fi
+                    manager_do_update
                 fi
                 pause
+                ;;
+            9)
+                protocols_menu
                 ;;
             0) return ;;
             *)
@@ -1436,27 +1612,38 @@ subscription_menu() {
                 while true; do
                     clear
                     echo "  📋 Ноды кластера"
-                    echo "  Эта нода: «$(node_name)»  ($(node_host))"
-                    echo "  ──────────────────────────────────────────────────────"
+                    echo "  Эта нода: «$(node_name)»  ($(node_host)) · v$(manager_local_version)"
+                    echo "  ────────────────────────────────────────────────────────────────"
+                    printf "    %-2s %-16s %-24s %-13s %s\n" "#" "имя" "домен" "статус" "версия"
                     local -a node_hosts=() node_names=()
-                    local i=0 st self
-                    self=$(node_host)
+                    local i=0 st self lver ver vmark
+                    self=$(node_host); lver=$(manager_local_version)
                     if [ -s "$CLUSTER_CONF" ]; then
                         while IFS='|' read -r pn ph; do
                             [ -n "$ph" ] || continue
                             i=$((i+1)); node_names[$i]="$pn"; node_hosts[$i]="$ph"
                             if [ "$ph" = "$self" ]; then
-                                st="(эта нода)"
+                                st="(эта нода)"; ver="$lver"
                             elif cluster_call "$ph" "/cluster/manifest" >/dev/null 2>&1; then
                                 st="💚 на связи"
+                                # Версию берём из кэша синка, а нет — тянем вживую.
+                                ver=$(peer_version "$pn")
+                                [ -z "$ver" ] && ver=$(cluster_call "$ph" "/cluster/version" 4 2>/dev/null | cut -d'|' -f1)
+                                [ -z "$ver" ] && ver="?"
                             else
-                                st="🔴 недоступна"
+                                st="🔴 недоступна"; ver=$(peer_version "$pn"); [ -z "$ver" ] && ver="?"
                             fi
-                            printf "    %d. %-18s %-28s %s\n" "$i" "$pn" "$ph" "$st"
+                            # Пометка: старее этой ноды → пора обновить; «?» → старый код без обмена версиями.
+                            vmark=""
+                            if [ "$ver" = "?" ]; then vmark=" ⚠ старая"
+                            elif [ "$ph" != "$self" ] && _ver_gt "$lver" "$ver"; then vmark=" ⬆ обновить"
+                            fi
+                            printf "    %-2d %-16s %-24s %-13s v%s%s\n" "$i" "$pn" "$ph" "$st" "$ver" "$vmark"
                         done < "$CLUSTER_CONF"
                     fi
                     [ "$i" -eq 0 ] && echo "    (пусто — кластер не настроен)"
                     echo ""
+                    echo "    «?» — нода на старой версии без обмена версиями (обновите её)."
                     echo "    Номер — удалить ноду из реестра  |  0 — назад"
                     local sel
                     ask sel "  Выберите: "
@@ -1678,7 +1865,7 @@ subscription_menu() {
                     echo "  ──────────────────────────────────────────────────────"
                     echo "  Название профиля : $(sub_title)   (плейсхолдеры: {label} {user} {name} {online})"
                     echo "  Метка этой ноды  : $(node_label)"
-                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name} {online} — онлайн сервера)"
+                    echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name} {online} {protocol})"
                     echo "  Интервал обновл. : каждые $(sub_update_hours) ч"
                     echo ""
                     echo "  Пример названия профиля      : $(render_title 'username')"
@@ -1703,11 +1890,12 @@ subscription_menu() {
                            echo "    ℹ️ С {user} название профиля у каждого юзера своё."
                            local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
                         2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;
-                        3) echo "    Плейсхолдеры: {label} метка ноды · {user} имя · {name} имя ноды · {online} онлайн сервера"
-                           echo "    Примеры: {label}   |   {label} · {user}   |   {label} [💚 {online}]"
+                        3) echo "    Плейсхолдеры: {label} метка ноды · {user} имя · {name} имя ноды · {online} онлайн сервера · {protocol} протокол ключа"
+                           echo "    Примеры: {label}   |   {label} · {user}   |   {label} [💚 {online}]   |   {label} · {protocol}"
                            echo "    ℹ️ {online} — сколько юзеров сейчас онлайн на КОНКРЕТНОМ сервере (индикатор"
                            echo "       загрузки: клиент видит, к какому серверу лучше подключиться). У ключа каждой"
                            echo "       ноды — онлайн своей ноды. Обновляется ~1 мин; видно после обновления подписки."
+                           echo "    ℹ️ {protocol} — метка протокола этого ключа: HY2 / VLESS / SS22 / TUIC."
                            local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; setting_set SUB_TAG_TMPL "$v"; glob_changed=1 ;;
                         4) local v; ask v "  Интервал обновления, часов (напр. 12): "; if [[ "$v" =~ ^[0-9]+$ ]]; then setting_set SUB_UPDATE_HOURS "$v"; glob_changed=1; else echo "  ❌ Нужно число"; fi ;;
                         5) cluster_sync_now; pause; continue ;;

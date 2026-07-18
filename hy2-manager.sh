@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster tgbot webapi ui)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster update tgbot webapi ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -73,6 +73,7 @@ fi
 if [ "$1" = "--collect" ]; then
     setup_stats_api
     collect_traffic
+    proto_collect_traffic    # трафик VLESS/SS2022 из Xray StatsService в общий учёт
     collect_ips
     collect_sub_ips    # IP по токенам подписки из access-лога Caddy
     publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
@@ -133,6 +134,13 @@ if sub_enabled; then
        || ! caddy validate --config "$CADDYFILE" --adapter caddyfile &>/dev/null; then
         setup_caddy >/dev/null 2>&1
     fi
+fi
+
+# Самовосстановление доп. протоколов: если что-то включено, но сервис лежит или
+# конфиг устарел — переустановим/пересоберём и поднимем (идемпотентно, быстро,
+# если движки уже стоят). При выключенных протоколах — no-op.
+if declare -F proto_any_enabled >/dev/null 2>&1 && proto_any_enabled; then
+    proto_bootstrap >/dev/null 2>&1 || true
 fi
 
 CACHED_IP=$(get_ip)
@@ -243,7 +251,7 @@ while true; do
     online_count=${online_count:-?}; [ -z "$online_count" ] && online_count="?"
 
     if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
-        hy_status="🟢 Работает"
+        hy_status="💚 Работает"
     else
         hy_status="🔴 Остановлен"
     fi
@@ -264,22 +272,26 @@ while true; do
         echo "  SNI/маскировка: $CACHED_SNI · OBFS: $(echo "$CACHED_OBFS" | cut -c1-10)…"
         echo "  Пользователи  : $total_count (активных $active_count · онлайн $online_count)"
         if declare -F klimit_down >/dev/null && { [ "$(klimit_down)" -gt 0 ] || [ "$(klimit_up)" -gt 0 ]; } 2>/dev/null; then
-            echo "  Лимит скорости: ↓$(klimit_down)/↑$(klimit_up) Мбит на клиента $(klimit_active && echo '🟢' || echo '🔴 (не загружен!)')"
+            echo "  Лимит скорости: ↓$(klimit_down)/↑$(klimit_up) Мбит на клиента $(klimit_active && echo '💚' || echo '🔴 (не загружен!)')"
         fi
         if sub_enabled; then
             cluster_nodes=$(grep -c '^' "$CLUSTER_CONF" 2>/dev/null | tr -dc '0-9'); cluster_nodes=${cluster_nodes:-1}
             dev_limit=$(get_device_limit)
             [ "$dev_limit" -gt 0 ] 2>/dev/null && limit_str=" · лимит устройств $dev_limit" || limit_str=""
-            echo "  Подписка      : 🟢 нода «$(node_name)» · нод в кластере: $cluster_nodes$limit_str"
+            echo "  Подписка      : 💚 нода «$(node_name)» · нод в кластере: $cluster_nodes$limit_str"
         else
             echo "  Подписка      : ⚪ не настроена (Настройки → 5)"
         fi
         if declare -F bot_enabled >/dev/null && bot_enabled; then
-            echo "  Telegram-бот  : $(bot_running && echo '🟢 работает' || echo '🔴 остановлен (Настройки → 6)')"
+            echo "  Telegram-бот  : $(bot_running && echo '💚 работает' || echo '🔴 остановлен (Настройки → 6)')"
         fi
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         if is_restart_pending; then
             echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria (Настройки → 2)"
+        fi
+        if declare -F manager_update_banner >/dev/null 2>&1; then
+            _upd_banner=$(manager_update_banner 2>/dev/null)
+            [ -n "$_upd_banner" ] && echo "  🔔 $_upd_banner — обновить: Настройки → 8"
         fi
         echo ""
         echo "  1. ➕ Добавить нового пользователя"
@@ -287,7 +299,7 @@ while true; do
         echo "  3. 🔗 Получить ссылку"
         echo "  4. ⚙  Настройки"
         sub_enabled && echo "  5. 🔄 Получить синхронизацию (локально)"
-        echo "  6. 🌐 Web API для приложений $(webapi_enabled && echo '🟢' || echo '⚪')"
+        echo "  6. 🌐 Web API для приложений $(webapi_enabled && echo '💚' || echo '⚪')"
         echo "  0. 🚪 Выход"
         echo ""
     )

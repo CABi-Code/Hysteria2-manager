@@ -1,0 +1,637 @@
+#!/bin/bash
+# ================================================
+# Мультипротокол: VLESS+REALITY+XHTTP и Shadowsocks-2022 (Xray-core),
+# TUIC v5 (sing-box). Рядом с базовой Hysteria 2.
+#
+# Идея: один и тот же пользователь из users.db раздаётся несколькими
+# протоколами; все они попадают в его подписку, и клиент (Throne/Hiddify)
+# выбирает тот, что не задушен в его сети. Креды всех протоколов
+# ДЕТЕРМИНИРОВАННО выводятся из (user, pass, узловой секрет) — отдельного
+# состояния по юзерам нет, поэтому подписка/манифест/конфиги серверов всегда
+# согласованы. Подробности — docs/08-multiprotocol.md.
+# ================================================
+
+# Файл параметров узла (отдельно от node.conf — там кластерные настройки).
+PROTO_CONF="${PROTO_CONF:-$DATA_DIR/protocols.conf}"
+# Узловой секрет для деривации кредов (не покидает ноду).
+PROTO_SECRET_FILE="${PROTO_SECRET_FILE:-$DATA_DIR/proto.secret}"
+# Рабочий каталог доп. протоколов: конфиги, сертификаты, слепки, бинарники.
+PROTO_DIR="${PROTO_DIR:-$DATA_DIR/proto}"
+XRAY_BIN="${XRAY_BIN:-/usr/local/bin/xray}"
+SINGBOX_BIN="${SINGBOX_BIN:-/usr/local/bin/sing-box}"
+XRAY_CONFIG="$PROTO_DIR/xray.json"
+SINGBOX_CONFIG="$PROTO_DIR/singbox.json"
+XRAY_SERVICE="hy2-xray.service"
+SINGBOX_SERVICE="hy2-singbox.service"
+TUIC_CRT="$PROTO_DIR/tuic.crt"
+TUIC_KEY="$PROTO_DIR/tuic.key"
+# Локальный gRPC API Xray (StatsService/HandlerService) — только 127.0.0.1.
+XRAY_API_PORT="${XRAY_API_PORT:-10085}"
+# Clash API sing-box (онлайн/трафик TUIC) — только 127.0.0.1.
+SINGBOX_API_PORT="${SINGBOX_API_PORT:-9090}"
+SINGBOX_API_SECRET_FILE="$PROTO_DIR/singbox_api.secret"
+# Слепки применённых конфигов: рестартуем сервис ТОЛЬКО когда состав/параметры
+# реально изменились (иначе sub_refresh дёргал бы Xray/sing-box на каждый чих).
+XRAY_APPLIED_HASH="$PROTO_DIR/.xray.hash"
+SINGBOX_APPLIED_HASH="$PROTO_DIR/.singbox.hash"
+
+# ---------------- Параметры узла (protocols.conf) ----------------
+proto_get() {   # key -> value
+    [ -f "$PROTO_CONF" ] && grep "^${1}=" "$PROTO_CONF" 2>/dev/null | head -1 | cut -d= -f2-
+}
+# Пишем одно поле без sed (значения могут содержать спецсимволы sed).
+proto_set() {   # key value
+    local key="$1" val="$2" tmp
+    mkdir -p "$(dirname "$PROTO_CONF")"; touch "$PROTO_CONF"
+    tmp=$(mktemp) || return 1
+    grep -v "^${key}=" "$PROTO_CONF" > "$tmp" 2>/dev/null
+    printf '%s=%s\n' "$key" "$val" >> "$tmp"
+    cat "$tmp" > "$PROTO_CONF"; rm -f "$tmp"
+    chmod 600 "$PROTO_CONF" 2>/dev/null
+}
+_proto_flag() { [ "$(proto_get "$1")" = "1" ]; }
+proto_vless_enabled() { _proto_flag PROTO_VLESS_ENABLED; }
+proto_ss_enabled()    { _proto_flag PROTO_SS_ENABLED; }
+proto_tuic_enabled()  { _proto_flag PROTO_TUIC_ENABLED; }
+# Включён ли хоть один доп. протокол (нужен ли Xray / sing-box вообще).
+proto_any_enabled()   { proto_vless_enabled || proto_ss_enabled || proto_tuic_enabled; }
+proto_xray_needed()   { proto_vless_enabled || proto_ss_enabled; }
+
+proto_vless_port() { local p; p=$(proto_get PROTO_VLESS_PORT); echo "${p:-8443}"; }
+proto_ss_port()    { local p; p=$(proto_get PROTO_SS_PORT);    echo "${p:-8388}"; }
+proto_tuic_port()  { local p; p=$(proto_get PROTO_TUIC_PORT);  echo "${p:-2053}"; }
+proto_ss_method()  { local m; m=$(proto_get PROTO_SS_METHOD);  echo "${m:-2022-blake3-aes-128-gcm}"; }
+proto_ss_keylen()  { case "$(proto_ss_method)" in *aes-256*) echo 32 ;; *) echo 16 ;; esac; }
+proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-www.icloud.com:443}"; }
+proto_reality_sni()     { local s; s=$(proto_get PROTO_REALITY_SNI);    echo "${s:-www.icloud.com}"; }
+proto_reality_privkey() { proto_get PROTO_REALITY_PRIVKEY; }
+proto_reality_pubkey()  { proto_get PROTO_REALITY_PUBKEY; }
+proto_reality_shortid() { proto_get PROTO_REALITY_SHORTID; }
+proto_xhttp_path()      { local p; p=$(proto_get PROTO_XHTTP_PATH);     echo "${p:-/}"; }
+
+# ---------------- Секрет и деривация кредов ----------------
+proto_secret() {
+    if [ ! -s "$PROTO_SECRET_FILE" ]; then
+        mkdir -p "$(dirname "$PROTO_SECRET_FILE")"
+        pwgen -s 48 1 > "$PROTO_SECRET_FILE" 2>/dev/null || \
+            head -c 36 /dev/urandom | base64 | tr -d '/+=' | head -c 48 > "$PROTO_SECRET_FILE"
+        chmod 600 "$PROTO_SECRET_FILE"
+    fi
+    cat "$PROTO_SECRET_FILE"
+}
+
+# Детерминированный UUIDv5-подобный из (secret|user|pass) — для VLESS и TUIC.
+# Одинаков на любой ноде с тем же секретом → подписка и конфиг всегда сходятся.
+proto_uuid() {   # user pass
+    local h
+    h=$(printf '%s' "$(proto_secret)|$1|$2" | sha1sum | cut -c1-32)
+    printf '%s-%s-5%s-8%s-%s' \
+        "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
+}
+
+# uPSK пользователя для Shadowsocks-2022 (base64 сырых байт sha256, обрезка до keylen).
+proto_upsk() {   # user pass
+    local kl; kl=$(proto_ss_keylen)
+    printf '%s' "$(proto_secret)|ss|$1|$2" | openssl dgst -sha256 -binary | head -c "$kl" | base64
+}
+# iPSK инбаунда SS-2022 (общий ключ сервера) — один на ноду.
+proto_ipsk() {
+    local kl; kl=$(proto_ss_keylen)
+    printf '%s' "$(proto_secret)|ss-ipsk" | openssl dgst -sha256 -binary | head -c "$kl" | base64
+}
+
+# ---------------- Установка движков ----------------
+# Определяем архитектуру для имён релизов.
+_proto_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo amd64 ;;
+        aarch64|arm64) echo arm64 ;;
+        armv7l) echo armv7 ;;
+        *) echo amd64 ;;
+    esac
+}
+
+proto_install_xray() {
+    command -v "$XRAY_BIN" >/dev/null 2>&1 && [ -x "$XRAY_BIN" ] && return 0
+    echo "  📦 Устанавливаю Xray-core (VLESS/REALITY/XHTTP, Shadowsocks-2022)..."
+    local arch zip tmp url
+    case "$(_proto_arch)" in
+        amd64) arch="64" ;; arm64) arch="arm64-v8a" ;; armv7) arch="arm32-v7a" ;; *) arch="64" ;;
+    esac
+    url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
+    tmp=$(mktemp -d); zip="$tmp/xray.zip"
+    if ! curl -fsSL --max-time 120 -o "$zip" "$url"; then
+        echo "  ❌ Не удалось скачать Xray ($url)"; rm -rf "$tmp"; return 1
+    fi
+    command -v unzip >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq unzip; }
+    unzip -o -q "$zip" -d "$tmp" || { echo "  ❌ Распаковка Xray не удалась"; rm -rf "$tmp"; return 1; }
+    install -m 0755 "$tmp/xray" "$XRAY_BIN"
+    mkdir -p /usr/local/share/xray
+    [ -f "$tmp/geoip.dat" ]   && install -m 0644 "$tmp/geoip.dat"   /usr/local/share/xray/ 2>/dev/null
+    [ -f "$tmp/geosite.dat" ] && install -m 0644 "$tmp/geosite.dat" /usr/local/share/xray/ 2>/dev/null
+    rm -rf "$tmp"
+    "$XRAY_BIN" version >/dev/null 2>&1
+}
+
+proto_install_singbox() {
+    command -v "$SINGBOX_BIN" >/dev/null 2>&1 && [ -x "$SINGBOX_BIN" ] && return 0
+    echo "  📦 Устанавливаю sing-box (TUIC v5)..."
+    local arch tag ver tmp tgz url
+    arch=$(_proto_arch)
+    tag=$(curl -fsSL --max-time 30 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
+          | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
+    [ -z "$tag" ] && { echo "  ❌ Не удалось узнать версию sing-box"; return 1; }
+    ver="${tag#v}"
+    url="https://github.com/SagerNet/sing-box/releases/download/${tag}/sing-box-${ver}-linux-${arch}.tar.gz"
+    tmp=$(mktemp -d); tgz="$tmp/sb.tgz"
+    if ! curl -fsSL --max-time 120 -o "$tgz" "$url"; then
+        echo "  ❌ Не удалось скачать sing-box ($url)"; rm -rf "$tmp"; return 1
+    fi
+    tar -xzf "$tgz" -C "$tmp" || { echo "  ❌ Распаковка sing-box не удалась"; rm -rf "$tmp"; return 1; }
+    local binpath; binpath=$(find "$tmp" -type f -name sing-box | head -1)
+    [ -n "$binpath" ] || { echo "  ❌ Бинарник sing-box не найден в архиве"; rm -rf "$tmp"; return 1; }
+    install -m 0755 "$binpath" "$SINGBOX_BIN"
+    rm -rf "$tmp"
+    "$SINGBOX_BIN" version >/dev/null 2>&1
+}
+
+# Ключи REALITY (x25519) — генерятся один раз, приватный в конфиг, публичный (pbk)
+# и shortId уходят в подписку. Требует уже установленного xray.
+proto_gen_reality_keys() {
+    [ -n "$(proto_reality_pubkey)" ] && [ -n "$(proto_reality_privkey)" ] && return 0
+    local out priv pub
+    out=$("$XRAY_BIN" x25519 2>/dev/null) || { echo "  ❌ xray x25519 не сработал"; return 1; }
+    # Метки менялись между версиями Xray. Приватный ключ — строго по слову
+    # "private"; публичный — по "public", а если такой строки нет (новые версии
+    # печатают его как "Password") — берём "password". Порядок важен, чтобы НЕ
+    # перепутать ключи: сначала пробуем однозначные метки.
+    priv=$(printf '%s\n' "$out" | grep -iE 'private' | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
+    pub=$(printf '%s\n'  "$out" | grep -iE 'public'  | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
+    [ -n "$pub" ] || pub=$(printf '%s\n' "$out" | grep -iE 'password' | head -1 | grep -oE '[A-Za-z0-9_-]{40,}')
+    [ -n "$priv" ] && [ -n "$pub" ] || { echo "  ❌ Не разобрал ключи REALITY (вывод: $out)"; return 1; }
+    proto_set PROTO_REALITY_PRIVKEY "$priv"
+    proto_set PROTO_REALITY_PUBKEY  "$pub"
+    [ -n "$(proto_reality_shortid)" ] || proto_set PROTO_REALITY_SHORTID "$(openssl rand -hex 8)"
+}
+
+# Самоподписанный серт для TUIC (клиент идёт с allow_insecure=1, как у Hysteria).
+proto_gen_tuic_cert() {
+    [ -s "$TUIC_CRT" ] && [ -s "$TUIC_KEY" ] && return 0
+    mkdir -p "$PROTO_DIR"
+    local cn; cn=$(node_host 2>/dev/null); [ -n "$cn" ] || cn="$(get_ip)"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout "$TUIC_KEY" -out "$TUIC_CRT" -days 3650 -nodes \
+        -subj "/CN=${cn}" >/dev/null 2>&1 || {
+            echo "  ❌ Не удалось выпустить серт для TUIC"; return 1; }
+    chmod 600 "$TUIC_KEY"
+    return 0
+}
+
+# ---------------- Генерация клиентских записей для конфигов ----------------
+# VLESS-клиенты Xray: [{ "id":UUID, "email":user, "flow":"" }, ...]
+_proto_xray_vless_clients() {
+    local u p first=1
+    while IFS=: read -r u p; do
+        [ -n "$u" ] || continue
+        [ "$first" = 1 ] || printf ','
+        printf '{"id":"%s","email":"%s","flow":""}' "$(proto_uuid "$u" "$p")" "$u"
+        first=0
+    done < "$USERS_DB"
+}
+# SS-2022 клиенты Xray: [{ "password":uPSK, "email":user }, ...]
+_proto_xray_ss_clients() {
+    local u p first=1
+    while IFS=: read -r u p; do
+        [ -n "$u" ] || continue
+        [ "$first" = 1 ] || printf ','
+        printf '{"password":"%s","email":"%s"}' "$(proto_upsk "$u" "$p")" "$u"
+        first=0
+    done < "$USERS_DB"
+}
+# TUIC-юзеры sing-box: [{ "name":user, "uuid":UUID, "password":pass }, ...]
+_proto_singbox_tuic_users() {
+    local u p first=1
+    while IFS=: read -r u p; do
+        [ -n "$u" ] || continue
+        [ "$first" = 1 ] || printf ','
+        printf '{"name":"%s","uuid":"%s","password":"%s"}' "$u" "$(proto_uuid "$u" "$p")" "$p"
+        first=0
+    done < "$USERS_DB"
+}
+
+# ---------------- Генерация конфигов ----------------
+proto_write_xray_config() {
+    proto_xray_needed || return 0
+    mkdir -p "$PROTO_DIR"
+    local inbounds="" comma=""
+    if proto_vless_enabled; then
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]},"xhttpSettings":{"path":"%s","mode":"auto"}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
+            "$(proto_vless_port)" "$(_proto_xray_vless_clients)" "$(proto_reality_dest)" \
+            "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)" "$(proto_xhttp_path)")
+        comma=","
+    fi
+    if proto_ss_enabled; then
+        inbounds+="${comma}"
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"shadowsocks","tag":"ss-in","settings":{"method":"%s","password":"%s","clients":[%s],"network":"tcp,udp"}}' \
+            "$(proto_ss_port)" "$(proto_ss_method)" "$(proto_ipsk)" "$(_proto_xray_ss_clients)")
+        comma=","
+    fi
+    # Локальный gRPC API для статистики и hot-add (только 127.0.0.1).
+    cat > "$XRAY_CONFIG" <<EOF
+{
+  "log": { "loglevel": "warning" },
+  "api": { "tag": "api", "services": ["HandlerService", "StatsService"] },
+  "stats": {},
+  "policy": {
+    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
+    "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
+  },
+  "inbounds": [
+    ${inbounds},
+    { "listen": "127.0.0.1", "port": ${XRAY_API_PORT}, "protocol": "dokodemo-door",
+      "settings": { "address": "127.0.0.1" }, "tag": "api" }
+  ],
+  "outbounds": [ { "protocol": "freedom", "tag": "direct" } ],
+  "routing": { "rules": [ { "type": "field", "inboundTag": ["api"], "outboundTag": "api" } ] }
+}
+EOF
+    chmod 600 "$XRAY_CONFIG" 2>/dev/null
+}
+
+proto_write_singbox_config() {
+    proto_tuic_enabled || return 0
+    mkdir -p "$PROTO_DIR"
+    proto_gen_tuic_cert || return 1
+    local secret; secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+    [ -n "$secret" ] || { secret=$(pwgen -s 24 1); echo "$secret" > "$SINGBOX_API_SECRET_FILE"; chmod 600 "$SINGBOX_API_SECRET_FILE"; }
+    cat > "$SINGBOX_CONFIG" <<EOF
+{
+  "log": { "level": "error" },
+  "inbounds": [
+    {
+      "type": "tuic",
+      "tag": "tuic-in",
+      "listen": "::",
+      "listen_port": $(proto_tuic_port),
+      "users": [ $(_proto_singbox_tuic_users) ],
+      "congestion_control": "bbr",
+      "zero_rtt_handshake": false,
+      "tls": {
+        "enabled": true,
+        "alpn": ["h3"],
+        "certificate_path": "${TUIC_CRT}",
+        "key_path": "${TUIC_KEY}"
+      }
+    }
+  ],
+  "outbounds": [ { "type": "direct", "tag": "direct" } ],
+  "experimental": {
+    "clash_api": { "external_controller": "127.0.0.1:${SINGBOX_API_PORT}", "secret": "${secret}" }
+  }
+}
+EOF
+    chmod 600 "$SINGBOX_CONFIG" 2>/dev/null
+}
+
+# ---------------- systemd-юниты ----------------
+proto_write_units() {
+    if proto_xray_needed; then
+        cat > "/etc/systemd/system/${XRAY_SERVICE}" <<EOF
+[Unit]
+Description=hy2-manager Xray (VLESS/REALITY/XHTTP, Shadowsocks-2022)
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStart=${XRAY_BIN} run -c ${XRAY_CONFIG}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+    if proto_tuic_enabled; then
+        cat > "/etc/systemd/system/${SINGBOX_SERVICE}" <<EOF
+[Unit]
+Description=hy2-manager sing-box (TUIC v5)
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStart=${SINGBOX_BIN} run -c ${SINGBOX_CONFIG}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+    systemctl daemon-reload 2>/dev/null
+}
+
+# ---------------- Firewall ----------------
+ensure_proto_ports_open() {
+    proto_any_enabled || return 0
+    local tcp_ports=() udp_ports=()
+    proto_vless_enabled && tcp_ports+=("$(proto_vless_port)")
+    proto_ss_enabled    && tcp_ports+=("$(proto_ss_port)")
+    proto_tuic_enabled  && udp_ports+=("$(proto_tuic_port)")
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active; then
+        local p
+        for p in "${tcp_ports[@]}"; do ufw allow "$p/tcp" >/dev/null 2>&1; done
+        for p in "${udp_ports[@]}"; do ufw allow "$p/udp" >/dev/null 2>&1; done
+    elif command -v iptables >/dev/null 2>&1; then
+        local p
+        for p in "${tcp_ports[@]}"; do
+            iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || \
+                iptables -I INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null
+        done
+        for p in "${udp_ports[@]}"; do
+            iptables -C INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null || \
+                iptables -I INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null
+        done
+    fi
+    return 0
+}
+
+# ---------------- Применение: рестарт ТОЛЬКО при изменении ----------------
+# Конфиги перегенерируются из users.db на каждый sub_refresh, но перезапуск
+# сервиса делаем лишь когда содержимое реально поменялось (состав юзеров или
+# параметры узла). Так рутинные вызовы sub_refresh (смена токена и т.п.) не рвут
+# активные сессии VLESS/SS/TUIC. Hysteria остаётся горячей всегда.
+_proto_apply_service() {   # service config_file hash_file
+    local svc="$1" cfg="$2" hf="$3" newh oldh
+    [ -s "$cfg" ] || return 0
+    newh=$(sha256sum "$cfg" 2>/dev/null | cut -d' ' -f1)
+    oldh=$(cat "$hf" 2>/dev/null)
+    systemctl enable "$svc" >/dev/null 2>&1
+    if [ "$newh" != "$oldh" ] || ! systemctl is-active --quiet "$svc" 2>/dev/null; then
+        systemctl restart "$svc" >/dev/null 2>&1
+        echo "$newh" > "$hf"
+    fi
+}
+
+# Пересобрать конфиги из users.db и применить. Вызывается из sub_refresh.
+proto_sync_users() {
+    proto_any_enabled || return 0
+    if proto_xray_needed; then
+        proto_write_xray_config
+        _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
+    fi
+    if proto_tuic_enabled; then
+        proto_write_singbox_config
+        _proto_apply_service "$SINGBOX_SERVICE" "$SINGBOX_CONFIG" "$SINGBOX_APPLIED_HASH"
+    fi
+}
+
+# ---------------- Построение ссылок для подписки ----------------
+# proto_user_uris user pass [ip] [tag]
+# Печатает по одной share-ссылке на КАЖДЫЙ включённый доп. протокол (без хвостовой
+# пустой строки лишней — вызывающий добавляет их в общий список к hysteria2://).
+proto_build_vless() {   # user pass ip tag
+    local user="$1" pass="$2" ip="$3" tag="$4"
+    tag=${tag//\{protocol\}/VLESS}   # {protocol} — метка этого ключа
+    printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%s&mode=auto#%s' \
+        "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_vless_port)" \
+        "$(proto_reality_sni)" "$(proto_reality_pubkey)" "$(proto_reality_shortid)" \
+        "$(_proto_urlenc "$(proto_xhttp_path)")" "$(_proto_urlenc "$tag")"
+}
+proto_build_ss() {   # user pass ip tag
+    local user="$1" pass="$2" ip="$3" tag="$4" userinfo
+    tag=${tag//\{protocol\}/SS22}   # {protocol} — метка этого ключа
+    # SIP002: userinfo = base64url(method:password). В мультипользовательском
+    # SS-2022 (EIH) инбаунд имеет общий iPSK + личный uPSK, и клиент ОБЯЗАН
+    # слать оба ключа как "iPSK:uPSK" — иначе сервер не сматчит юзера и рвёт
+    # соединение (таймаут на клиенте). Поэтому password = iPSK:uPSK.
+    userinfo=$(printf '%s:%s:%s' "$(proto_ss_method)" "$(proto_ipsk)" "$(proto_upsk "$user" "$pass")" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+    printf 'ss://%s@%s:%s#%s' "$userinfo" "$ip" "$(proto_ss_port)" "$(_proto_urlenc "$tag")"
+}
+proto_build_tuic() {   # user pass ip tag
+    local user="$1" pass="$2" ip="$3" tag="$4"
+    tag=${tag//\{protocol\}/TUIC}   # {protocol} — метка этого ключа
+    printf 'tuic://%s:%s@%s:%s?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=%s&allow_insecure=1#%s' \
+        "$(proto_uuid "$user" "$pass")" "$(_proto_urlenc "$pass")" "$ip" "$(proto_tuic_port)" \
+        "$(proto_reality_sni_or_host)" "$(_proto_urlenc "$tag")"
+}
+
+# SNI для TUIC: серт самоподписанный на CN=домен/ip, поэтому в ссылку кладём хост.
+proto_reality_sni_or_host() { node_host 2>/dev/null || get_ip; }
+
+# Минимальный urlencode для значений в query/fragment (пробелы, эмодзи, /, #, &).
+# LC_ALL=C — чтобы итерировать по БАЙТАМ: многобайтовые символы (флаги-эмодзи,
+# кириллица) кодируются побайтно как %XX, иначе клиент увидит битую подпись.
+_proto_urlenc() {
+    local s="$1" out="" c i
+    local LC_ALL=C LC_CTYPE=C
+    for (( i=0; i<${#s}; i++ )); do
+        c="${s:$i:1}"
+        case "$c" in
+            [a-zA-Z0-9._~-]) out+="$c" ;;
+            *) out+=$(printf '%%%02X' "'$c") ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# Все доп-URI для юзера (по строке на протокол). ip — адрес ноды в ссылке,
+# tag — подпись (#...), как у build_user_link.
+proto_user_uris() {   # user pass ip tag
+    local user="$1" pass="$2" ip="${3:-$(link_host)}" tag="${4:-$user}"
+    proto_any_enabled || return 0
+    proto_vless_enabled && { proto_build_vless "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_ss_enabled    && { proto_build_ss    "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_tuic_enabled  && { proto_build_tuic  "$user" "$pass" "$ip" "$tag"; echo; }
+    return 0
+}
+
+# ---------------- Оркестрация: включение/выключение/bootstrap ----------------
+# Готовит инфраструктуру под то, что СЕЙЧАС включено в protocols.conf: ставит
+# нужные бинарники, генерит ключи/серт, пишет конфиги+юниты, открывает порты,
+# синхронизирует юзеров. Идемпотентно — безопасно звать при каждом старте.
+proto_bootstrap() {
+    proto_any_enabled || return 0
+    if proto_xray_needed; then
+        proto_install_xray || return 1
+        proto_gen_reality_keys || return 1
+    fi
+    if proto_tuic_enabled; then
+        proto_install_singbox || return 1
+        proto_gen_tuic_cert || return 1
+    fi
+    proto_write_units
+    ensure_proto_ports_open
+    proto_sync_users
+}
+
+# Включить протокол: vless|ss|tuic. Ставит движок, пишет дефолты, поднимает.
+proto_enable_protocol() {   # name
+    case "$1" in
+        vless)
+            proto_set PROTO_VLESS_ENABLED 1
+            [ -n "$(proto_get PROTO_VLESS_PORT)" ] || proto_set PROTO_VLESS_PORT 8443
+            [ -n "$(proto_get PROTO_XHTTP_PATH)" ] || proto_set PROTO_XHTTP_PATH /
+            [ -n "$(proto_get PROTO_REALITY_DEST)" ] || proto_set PROTO_REALITY_DEST www.microsoft.com:443
+            [ -n "$(proto_get PROTO_REALITY_SNI)" ]  || proto_set PROTO_REALITY_SNI www.microsoft.com
+            ;;
+        ss)
+            proto_set PROTO_SS_ENABLED 1
+            [ -n "$(proto_get PROTO_SS_PORT)" ]   || proto_set PROTO_SS_PORT 8388
+            [ -n "$(proto_get PROTO_SS_METHOD)" ] || proto_set PROTO_SS_METHOD 2022-blake3-aes-128-gcm
+            ;;
+        tuic)
+            proto_set PROTO_TUIC_ENABLED 1
+            [ -n "$(proto_get PROTO_TUIC_PORT)" ] || proto_set PROTO_TUIC_PORT 2053
+            ;;
+        *) return 1 ;;
+    esac
+    proto_bootstrap
+}
+
+# Выключить протокол: гасит сервис, если после этого движок больше не нужен.
+proto_disable_protocol() {   # name
+    case "$1" in
+        vless) proto_set PROTO_VLESS_ENABLED 0 ;;
+        ss)    proto_set PROTO_SS_ENABLED 0 ;;
+        tuic)  proto_set PROTO_TUIC_ENABLED 0 ;;
+        *) return 1 ;;
+    esac
+    if ! proto_xray_needed; then
+        systemctl disable --now "$XRAY_SERVICE" >/dev/null 2>&1
+        rm -f "$XRAY_APPLIED_HASH"
+    fi
+    if ! proto_tuic_enabled; then
+        systemctl disable --now "$SINGBOX_SERVICE" >/dev/null 2>&1
+        rm -f "$SINGBOX_APPLIED_HASH"
+    fi
+    # Оставшиеся протоколы (если есть) переприменяем — состав портов мог поменяться.
+    proto_any_enabled && proto_bootstrap
+    return 0
+}
+
+# ---------------- Учёт трафика доп. протоколов ----------------
+# Xray StatsService через штатный CLI `xray api statsquery -reset`: отдаёт трафик
+# с момента прошлого сброса (аналог hysteria /traffic?clear=1) и обнуляет счётчики.
+# Суммируем uplink+downlink по каждому юзеру (email) и ДОКЛАДЫВАЕМ в STATS_FILE —
+# ровно как collect_traffic для Hysteria, чтобы квоты/статистика учитывали и VLESS/SS.
+# TUIC (sing-box) в побайтный учёт пока не входит — clash_api не даёт устойчивого
+# per-user трафика; это задокументировано (docs/08-multiprotocol.md).
+proto_collect_traffic() {
+    proto_xray_needed || return 0
+    [ -x "$XRAY_BIN" ] || return 0
+    local json
+    json=$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -reset 2>/dev/null) || return 0
+    [ -n "$json" ] || return 0
+    # name = "user>>>EMAIL>>>traffic>>>uplink|downlink". Собираем user|tx|rx
+    # (downlink=клиенту=tx, uplink=от клиента=rx; для суммарной квоты порядок не важен).
+    local pairs
+    pairs=$(printf '%s' "$json" | jq -r '
+        (.stat // [])[]
+        | select(.name != null and (.name | startswith("user>>>")))
+        | (.name | split(">>>")) as $p
+        | "\($p[1])|\($p[3])|\(.value // 0)"' 2>/dev/null)
+    [ -n "$pairs" ] || return 0
+    # Свернём в user -> tx,rx
+    declare -A _tx _rx
+    local email dir val
+    while IFS='|' read -r email dir val; do
+        [ -n "$email" ] || continue
+        [[ "$val" =~ ^[0-9]+$ ]] || val=0
+        case "$dir" in
+            downlink) _tx[$email]=$(( ${_tx[$email]:-0} + val )) ;;
+            uplink)   _rx[$email]=$(( ${_rx[$email]:-0} + val )) ;;
+        esac
+    done <<< "$pairs"
+    local u tx rx old_tx old_rx new_tx new_rx users_uniq
+    users_uniq=$(printf '%s\n' "${!_tx[@]}" "${!_rx[@]}" | grep -v '^$' | sort -u)
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        tx=${_tx[$u]:-0}; rx=${_rx[$u]:-0}
+        [ "$tx" -eq 0 ] && [ "$rx" -eq 0 ] && continue
+        if grep -q "^${u}|" "$STATS_FILE" 2>/dev/null; then
+            old_tx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
+            old_rx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
+            new_tx=$(( ${old_tx:-0} + tx )); new_rx=$(( ${old_rx:-0} + rx ))
+            sed -i "s#^${u}|.*#${u}|${new_tx}|${new_rx}#" "$STATS_FILE"
+        else
+            echo "${u}|${tx}|${rx}" >> "$STATS_FILE"
+        fi
+    done <<< "$users_uniq"
+}
+
+# ---------------- Онлайн доп. протоколов ----------------
+# Возвращает JSON {user: conns} по доп. протоколам (best-effort; при любой ошибке
+# — пустой {}, чтобы никогда не ломать основной онлайн Hysteria).
+# Xray: online-статистика StatsService (name ".*>>>online"), если движок её отдаёт.
+# sing-box: число активных TUIC-соединений на юзера из clash_api /connections.
+proto_online_json() {
+    proto_any_enabled || { echo '{}'; return 0; }
+    local merged='{}'
+    if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
+        local xj xonline
+        xj=$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -pattern "online" 2>/dev/null)
+        if [ -n "$xj" ]; then
+            xonline=$(printf '%s' "$xj" | jq -c '
+                reduce ((.stat // [])[] | select(.name != null and (.name | test(">>>online$"))))
+                    as $s ({}; .[($s.name | split(">>>"))[1]] = (($s.value // 0) | tonumber))' 2>/dev/null)
+            [ -n "$xonline" ] && merged=$(_proto_merge_online "$merged" "$xonline")
+        fi
+    fi
+    if proto_tuic_enabled; then
+        local secret conns tonline
+        secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+        conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
+            "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
+        if [ -n "$conns" ]; then
+            # Считаем соединения по юзеру: metadata.user (sing-box кладёт имя юзера инбаунда).
+            tonline=$(printf '%s' "$conns" | jq -c '
+                reduce ((.connections // [])[] | .metadata.user // empty) as $u
+                    ({}; .[$u] = ((.[$u] // 0) + 1))' 2>/dev/null)
+            [ -n "$tonline" ] && merged=$(_proto_merge_online "$merged" "$tonline")
+        fi
+    fi
+    echo "$merged"
+}
+
+# Слить два JSON {user:n}, суммируя значения по ключу.
+_proto_merge_online() {   # a b -> merged
+    printf '%s\n%s\n' "$1" "$2" | jq -s '
+        reduce .[] as $o ({};
+            reduce ($o | to_entries[]) as $e (.; .[$e.key] = ((.[$e.key] // 0) + ($e.value // 0))))' 2>/dev/null \
+    || echo '{}'
+}
+
+# ---------------- Кик сессий доп. протоколов ----------------
+# Xray умеет снять юзера с инбаунда на лету (rmu) — это рвёт его активные сессии;
+# состав вернёт следующий proto_sync_users. sing-box per-user кика не имеет —
+# при необходимости рвём TUIC рестартом (редкое событие: истечение/бан).
+# ЗАМЕЧАНИЕ: при удалении/отключении/смене пароля юзер и так исчезает из конфига,
+# и restart-on-change в proto_sync_users роняет его сессии — отдельный kick нужен
+# лишь для «мягких» сценариев (сброс без изменения состава).
+proto_kick() {   # user
+    local user="$1"
+    [ -n "$user" ] || return 0
+    proto_any_enabled || return 0
+    if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
+        local tag
+        for tag in vless-in ss-in; do
+            "$XRAY_BIN" api rmu --server="127.0.0.1:${XRAY_API_PORT}" \
+                -tag "$tag" -email "$user" >/dev/null 2>&1
+        done
+        # Вернуть юзера в инбаунд (он остаётся валидным) — пересборкой из users.db.
+        proto_write_xray_config
+        _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
+    fi
+    return 0
+}
+
+# Статус для меню/диагностики: строка «vless:💚 ss:🔴 tuic:💚».
+proto_status_line() {
+    local s=""
+    proto_vless_enabled && s+="VLESS 💚 " || s+="VLESS ⚪ "
+    proto_ss_enabled    && s+="SS2022 💚 " || s+="SS2022 ⚪ "
+    proto_tuic_enabled  && s+="TUIC 💚"    || s+="TUIC ⚪"
+    printf '%s' "$s"
+}
