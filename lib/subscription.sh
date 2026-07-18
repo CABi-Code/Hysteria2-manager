@@ -93,7 +93,9 @@ link_host() {
 # ---- Оформление подписки (что видит пользователь в клиенте) ----
 # Метка ноды (название сервера в клиенте; можно с эмодзи/флагом). По умолчанию — имя ноды.
 node_label()       { local l; l=$(node_get NODE_LABEL); echo "${l:-$(node_name)}"; }
-# Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name} {online}.
+# Шаблон подписи каждого ключа (#фрагмент). Плейсхолдеры: {label} {user} {name} {online} {protocol}.
+# {protocol} (HY2/VLESS/SS22/TUIC) подставляется ПОЗЖЕ, при сборке каждого URI —
+# в render_tag протокол ещё не известен (см. build_user_link и proto_build_*).
 sub_tag_tmpl()     { local t; t=$(node_get SUB_TAG_TMPL); [ -z "$t" ] && t='{label}'; printf '%s' "$t"; }
 # Использует ли шаблон плейсхолдер {online} (общий онлайн ЭТОЙ ноды)? Если да —
 # перед генерацией подписи/манифеста нужен свежий онлайн (refresh_online). Каждая
@@ -127,8 +129,9 @@ _render_ph() {   # tmpl user
 
 # Подпись ключа по шаблону для конкретного юзера.
 render_tag()   { _render_ph "$(sub_tag_tmpl)" "$1"; }
-# Название профиля по шаблону для конкретного юзера.
-render_title() { _render_ph "$(sub_title)" "$1"; }
+# Название профиля по шаблону для конкретного юзера. {protocol} тут смысла не
+# имеет (профиль один на все протоколы) — вырезаем, чтобы не утёк буквально.
+render_title() { local t; t=$(_render_ph "$(sub_title)" "$1"); printf '%s' "${t//\{protocol\}/}"; }
 
 # Глобальные (общие для всего кластера) настройки. Метка ноды (NODE_LABEL) сюда
 # НЕ входит — она у каждой ноды своя. POOL_LIMIT/NODE_LIMIT — глобальные лимиты
@@ -243,6 +246,9 @@ build_user_link() {
     local ip="${3:-$(link_host)}" port="${4:-$(get_port)}"
     local obfs="${5:-$(get_obfs_pass)}" sni="${6:-$(get_sni)}"
     local tag="${7:-$user}"
+    # {protocol} — своя метка у каждого ключа (у юзера ключи разных протоколов).
+    # Подставляется здесь, а не в render_tag: там протокол ещё не известен. HY2.
+    tag=${tag//\{protocol\}/HY2}
     printf 'hysteria2://%s:%s@%s:%s/?obfs=salamander&obfs-password=%s&sni=%s&insecure=1#%s' \
         "$user" "$pass" "$ip" "$port" "$obfs" "$sni" "$tag"
 }

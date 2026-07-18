@@ -393,6 +393,7 @@ proto_sync_users() {
 # пустой строки лишней — вызывающий добавляет их в общий список к hysteria2://).
 proto_build_vless() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4"
+    tag=${tag//\{protocol\}/VLESS}   # {protocol} — метка этого ключа
     printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%s&mode=auto#%s' \
         "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_vless_port)" \
         "$(proto_reality_sni)" "$(proto_reality_pubkey)" "$(proto_reality_shortid)" \
@@ -400,12 +401,14 @@ proto_build_vless() {   # user pass ip tag
 }
 proto_build_ss() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4" userinfo
+    tag=${tag//\{protocol\}/SS22}   # {protocol} — метка этого ключа
     # SIP002: userinfo = base64url(method:uPSK). Для SS-2022 password = uPSK.
     userinfo=$(printf '%s:%s' "$(proto_ss_method)" "$(proto_upsk "$user" "$pass")" | base64 -w0 | tr '+/' '-_' | tr -d '=')
     printf 'ss://%s@%s:%s#%s' "$userinfo" "$ip" "$(proto_ss_port)" "$(_proto_urlenc "$tag")"
 }
 proto_build_tuic() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4"
+    tag=${tag//\{protocol\}/TUIC}   # {protocol} — метка этого ключа
     printf 'tuic://%s:%s@%s:%s?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=%s&allow_insecure=1#%s' \
         "$(proto_uuid "$user" "$pass")" "$(_proto_urlenc "$pass")" "$ip" "$(proto_tuic_port)" \
         "$(proto_reality_sni_or_host)" "$(_proto_urlenc "$tag")"
