@@ -1350,7 +1350,12 @@ settings_menu() {
         echo "  5. 🌐 Подписка / Кластер (единая ссылка на все серверы)"
         echo "  6. 🤖 Telegram-бот (управление и продажа доступа)"
         echo "  7. 🔄 Получить синхронизацию (локально)"
-        echo "  8. ⬆  Обновить менеджер (до последней версии с GitHub)"
+        local _upd; _upd=$(manager_update_available 2>/dev/null)
+        if [ -n "$_upd" ]; then
+            echo "  8. ⬆  Обновить менеджер  🔔 доступна v$_upd (у вас v$(manager_local_version))"
+        else
+            echo "  8. ⬆  Обновить менеджер (проверить и установить с GitHub) · v$(manager_local_version)"
+        fi
         echo "  9. 🧩 Протоколы: VLESS+REALITY+XHTTP · Shadowsocks-2022 · TUIC v5"
         if declare -F proto_status_line >/dev/null 2>&1; then
             echo "       [ $(proto_status_line) ]"
@@ -1407,23 +1412,25 @@ settings_menu() {
                 ;;
             8)
                 echo ""
+                echo "  ⏳ Проверяю обновления на GitHub..."
+                local _loc _rem; _loc=$(manager_local_version); _rem=$(manager_remote_version force)
+                echo "  Текущая версия  : v$_loc"
+                if [ -z "$_rem" ]; then
+                    echo "  Версия в репо   : не удалось получить (проверьте сеть)."
+                elif _ver_gt "$_rem" "$_loc"; then
+                    echo "  Версия в репо   : v$_rem  ⬆ доступно обновление!"
+                elif [ "$_rem" = "$_loc" ]; then
+                    echo "  Версия в репо   : v$_rem  ✅ у вас последняя версия"
+                else
+                    echo "  Версия в репо   : v$_rem  (у вас новее/dev)"
+                fi
+                echo ""
                 echo "  Обновление скачает свежие файлы менеджера с GitHub и заменит текущие."
                 echo "  Hysteria, пользователи и настройки НЕ трогаются (режим «только менеджер»)."
                 local confirm
                 ask confirm "  Обновить сейчас? (да/нет): "
                 if is_yes "$confirm"; then
-                    local up_tmp
-                    up_tmp=$(mktemp)
-                    if curl -fsSL --max-time 30 "https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main/install.sh" -o "$up_tmp"; then
-                        echo "  ⏳ Запускаю установщик (выберите пункт 1 — обновить только менеджер)..."
-                        # stderr менеджера уходит в лог-файл — вернём его на терминал,
-                        # чтобы сообщения установщика были видны. exec заменяет процесс.
-                        exec 2>/dev/tty
-                        exec bash "$up_tmp"
-                    else
-                        rm -f "$up_tmp"
-                        echo "  ❌ Не удалось скачать install.sh (проверьте сеть)."
-                    fi
+                    manager_do_update
                 fi
                 pause
                 ;;
@@ -1605,27 +1612,38 @@ subscription_menu() {
                 while true; do
                     clear
                     echo "  📋 Ноды кластера"
-                    echo "  Эта нода: «$(node_name)»  ($(node_host))"
-                    echo "  ──────────────────────────────────────────────────────"
+                    echo "  Эта нода: «$(node_name)»  ($(node_host)) · v$(manager_local_version)"
+                    echo "  ────────────────────────────────────────────────────────────────"
+                    printf "    %-2s %-16s %-24s %-13s %s\n" "#" "имя" "домен" "статус" "версия"
                     local -a node_hosts=() node_names=()
-                    local i=0 st self
-                    self=$(node_host)
+                    local i=0 st self lver ver vmark
+                    self=$(node_host); lver=$(manager_local_version)
                     if [ -s "$CLUSTER_CONF" ]; then
                         while IFS='|' read -r pn ph; do
                             [ -n "$ph" ] || continue
                             i=$((i+1)); node_names[$i]="$pn"; node_hosts[$i]="$ph"
                             if [ "$ph" = "$self" ]; then
-                                st="(эта нода)"
+                                st="(эта нода)"; ver="$lver"
                             elif cluster_call "$ph" "/cluster/manifest" >/dev/null 2>&1; then
                                 st="💚 на связи"
+                                # Версию берём из кэша синка, а нет — тянем вживую.
+                                ver=$(peer_version "$pn")
+                                [ -z "$ver" ] && ver=$(cluster_call "$ph" "/cluster/version" 4 2>/dev/null | cut -d'|' -f1)
+                                [ -z "$ver" ] && ver="?"
                             else
-                                st="🔴 недоступна"
+                                st="🔴 недоступна"; ver=$(peer_version "$pn"); [ -z "$ver" ] && ver="?"
                             fi
-                            printf "    %d. %-18s %-28s %s\n" "$i" "$pn" "$ph" "$st"
+                            # Пометка: старее этой ноды → пора обновить; «?» → старый код без обмена версиями.
+                            vmark=""
+                            if [ "$ver" = "?" ]; then vmark=" ⚠ старая"
+                            elif [ "$ph" != "$self" ] && _ver_gt "$lver" "$ver"; then vmark=" ⬆ обновить"
+                            fi
+                            printf "    %-2d %-16s %-24s %-13s v%s%s\n" "$i" "$pn" "$ph" "$st" "$ver" "$vmark"
                         done < "$CLUSTER_CONF"
                     fi
                     [ "$i" -eq 0 ] && echo "    (пусто — кластер не настроен)"
                     echo ""
+                    echo "    «?» — нода на старой версии без обмена версиями (обновите её)."
                     echo "    Номер — удалить ноду из реестра  |  0 — назад"
                     local sel
                     ask sel "  Выберите: "

@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot webapi ui)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster update tgbot webapi ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -288,6 +288,10 @@ while true; do
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         if is_restart_pending; then
             echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria (Настройки → 2)"
+        fi
+        if declare -F manager_update_banner >/dev/null 2>&1; then
+            _upd_banner=$(manager_update_banner 2>/dev/null)
+            [ -n "$_upd_banner" ] && echo "  🔔 $_upd_banner — обновить: Настройки → 8"
         fi
         echo ""
         echo "  1. ➕ Добавить нового пользователя"
