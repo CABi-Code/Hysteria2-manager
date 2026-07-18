@@ -62,8 +62,8 @@ proto_ss_port()    { local p; p=$(proto_get PROTO_SS_PORT);    echo "${p:-8388}"
 proto_tuic_port()  { local p; p=$(proto_get PROTO_TUIC_PORT);  echo "${p:-2053}"; }
 proto_ss_method()  { local m; m=$(proto_get PROTO_SS_METHOD);  echo "${m:-2022-blake3-aes-128-gcm}"; }
 proto_ss_keylen()  { case "$(proto_ss_method)" in *aes-256*) echo 32 ;; *) echo 16 ;; esac; }
-proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-www.microsoft.com:443}"; }
-proto_reality_sni()     { local s; s=$(proto_get PROTO_REALITY_SNI);    echo "${s:-www.microsoft.com}"; }
+proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-www.icloud.com:443}"; }
+proto_reality_sni()     { local s; s=$(proto_get PROTO_REALITY_SNI);    echo "${s:-www.icloud.com}"; }
 proto_reality_privkey() { proto_get PROTO_REALITY_PRIVKEY; }
 proto_reality_pubkey()  { proto_get PROTO_REALITY_PUBKEY; }
 proto_reality_shortid() { proto_get PROTO_REALITY_SHORTID; }
@@ -402,8 +402,11 @@ proto_build_vless() {   # user pass ip tag
 proto_build_ss() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4" userinfo
     tag=${tag//\{protocol\}/SS22}   # {protocol} — метка этого ключа
-    # SIP002: userinfo = base64url(method:uPSK). Для SS-2022 password = uPSK.
-    userinfo=$(printf '%s:%s' "$(proto_ss_method)" "$(proto_upsk "$user" "$pass")" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+    # SIP002: userinfo = base64url(method:password). В мультипользовательском
+    # SS-2022 (EIH) инбаунд имеет общий iPSK + личный uPSK, и клиент ОБЯЗАН
+    # слать оба ключа как "iPSK:uPSK" — иначе сервер не сматчит юзера и рвёт
+    # соединение (таймаут на клиенте). Поэтому password = iPSK:uPSK.
+    userinfo=$(printf '%s:%s:%s' "$(proto_ss_method)" "$(proto_ipsk)" "$(proto_upsk "$user" "$pass")" | base64 -w0 | tr '+/' '-_' | tr -d '=')
     printf 'ss://%s@%s:%s#%s' "$userinfo" "$ip" "$(proto_ss_port)" "$(_proto_urlenc "$tag")"
 }
 proto_build_tuic() {   # user pass ip tag
