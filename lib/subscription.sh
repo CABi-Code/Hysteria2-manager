@@ -414,6 +414,7 @@ regen_subscriptions() {
                         else if ($0 ~ /^vless:\/\//)     lbl="VLESS"
                         else if ($0 ~ /^ss:\/\//)        lbl="SS22"
                         else if ($0 ~ /^tuic:\/\//)      lbl="TUIC"
+                        else if ($0 ~ /^trojan:\/\//)    lbl="TROJAN"
                         gsub(/\{protocol\}/, lbl)
                       }
                       s=$0

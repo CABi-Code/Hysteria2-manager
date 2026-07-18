@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-# Мультипротокол: VLESS+REALITY+XHTTP и Shadowsocks-2022 (Xray-core),
+# Мультипротокол: VLESS+REALITY+XHTTP, Shadowsocks-2022 и Trojan/WS (Xray-core),
 # TUIC v5 (sing-box). Рядом с базовой Hysteria 2.
 #
 # Идея: один и тот же пользователь из users.db раздаётся несколькими
@@ -53,13 +53,16 @@ _proto_flag() { [ "$(proto_get "$1")" = "1" ]; }
 proto_vless_enabled() { _proto_flag PROTO_VLESS_ENABLED; }
 proto_ss_enabled()    { _proto_flag PROTO_SS_ENABLED; }
 proto_tuic_enabled()  { _proto_flag PROTO_TUIC_ENABLED; }
+proto_trojan_enabled(){ _proto_flag PROTO_TROJAN_ENABLED; }
 # Включён ли хоть один доп. протокол (нужен ли Xray / sing-box вообще).
-proto_any_enabled()   { proto_vless_enabled || proto_ss_enabled || proto_tuic_enabled; }
-proto_xray_needed()   { proto_vless_enabled || proto_ss_enabled; }
+proto_any_enabled()   { proto_vless_enabled || proto_ss_enabled || proto_tuic_enabled || proto_trojan_enabled; }
+proto_xray_needed()   { proto_vless_enabled || proto_ss_enabled || proto_trojan_enabled; }
 
 proto_vless_port() { local p; p=$(proto_get PROTO_VLESS_PORT); echo "${p:-8443}"; }
 proto_ss_port()    { local p; p=$(proto_get PROTO_SS_PORT);    echo "${p:-8388}"; }
 proto_tuic_port()  { local p; p=$(proto_get PROTO_TUIC_PORT);  echo "${p:-2053}"; }
+proto_trojan_port()    { local p; p=$(proto_get PROTO_TROJAN_PORT);    echo "${p:-8444}"; }
+proto_trojan_ws_path() { local p; p=$(proto_get PROTO_TROJAN_WS_PATH); echo "${p:-/}"; }
 proto_ss_method()  { local m; m=$(proto_get PROTO_SS_METHOD);  echo "${m:-2022-blake3-aes-128-gcm}"; }
 proto_ss_keylen()  { case "$(proto_ss_method)" in *aes-256*) echo 32 ;; *) echo 16 ;; esac; }
 proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-www.icloud.com:443}"; }
@@ -208,6 +211,17 @@ _proto_xray_ss_clients() {
         first=0
     done < "$USERS_DB"
 }
+# Trojan-клиенты Xray: [{ "password":UUID, "email":user }, ...] — пароль
+# детерминированный (proto_uuid), как у VLESS/TUIC.
+_proto_xray_trojan_clients() {
+    local u p first=1
+    while IFS=: read -r u p; do
+        [ -n "$u" ] || continue
+        [ "$first" = 1 ] || printf ','
+        printf '{"password":"%s","email":"%s"}' "$(proto_uuid "$u" "$p")" "$u"
+        first=0
+    done < "$USERS_DB"
+}
 # TUIC-юзеры sing-box: [{ "name":user, "uuid":UUID, "password":pass }, ...]
 _proto_singbox_tuic_users() {
     local u p first=1
@@ -234,6 +248,14 @@ proto_write_xray_config() {
         inbounds+="${comma}"
         inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"shadowsocks","tag":"ss-in","settings":{"method":"%s","password":"%s","clients":[%s],"network":"tcp,udp"}}' \
             "$(proto_ss_port)" "$(proto_ss_method)" "$(proto_ipsk)" "$(_proto_xray_ss_clients)")
+        comma=","
+    fi
+    if proto_trojan_enabled; then
+        # TLS на том же самоподписанном серте, что и TUIC (клиент идёт с allowInsecure=1).
+        proto_gen_tuic_cert || return 1
+        inbounds+="${comma}"
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"trojan","tag":"trojan-in","settings":{"clients":[%s]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"certificates":[{"certificateFile":"%s","keyFile":"%s"}]},"wsSettings":{"path":"%s"}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
+            "$(proto_trojan_port)" "$(_proto_xray_trojan_clients)" "$TUIC_CRT" "$TUIC_KEY" "$(proto_trojan_ws_path)")
         comma=","
     fi
     # Локальный gRPC API для статистики и hot-add (только 127.0.0.1).
@@ -298,7 +320,7 @@ proto_write_units() {
     if proto_xray_needed; then
         cat > "/etc/systemd/system/${XRAY_SERVICE}" <<EOF
 [Unit]
-Description=hy2-manager Xray (VLESS/REALITY/XHTTP, Shadowsocks-2022)
+Description=hy2-manager Xray (VLESS/REALITY/XHTTP, Shadowsocks-2022, Trojan/WS)
 After=network.target nss-lookup.target
 
 [Service]
@@ -336,9 +358,10 @@ EOF
 ensure_proto_ports_open() {
     proto_any_enabled || return 0
     local tcp_ports=() udp_ports=()
-    proto_vless_enabled && tcp_ports+=("$(proto_vless_port)")
-    proto_ss_enabled    && tcp_ports+=("$(proto_ss_port)")
-    proto_tuic_enabled  && udp_ports+=("$(proto_tuic_port)")
+    proto_vless_enabled  && tcp_ports+=("$(proto_vless_port)")
+    proto_ss_enabled     && tcp_ports+=("$(proto_ss_port)")
+    proto_trojan_enabled && tcp_ports+=("$(proto_trojan_port)")
+    proto_tuic_enabled   && udp_ports+=("$(proto_tuic_port)")
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active; then
         local p
         for p in "${tcp_ports[@]}"; do ufw allow "$p/tcp" >/dev/null 2>&1; done
@@ -417,6 +440,15 @@ proto_build_tuic() {   # user pass ip tag
         "$(proto_reality_sni_or_host)" "$(_proto_urlenc "$tag")"
 }
 
+proto_build_trojan() {   # user pass ip tag
+    local user="$1" pass="$2" ip="$3" tag="$4"
+    tag=${tag//\{protocol\}/TROJAN}   # {protocol} — метка этого ключа
+    printf 'trojan://%s@%s:%s?security=tls&type=ws&path=%s&sni=%s&allowInsecure=1#%s' \
+        "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_trojan_port)" \
+        "$(_proto_urlenc "$(proto_trojan_ws_path)")" "$(proto_reality_sni_or_host)" \
+        "$(_proto_urlenc "$tag")"
+}
+
 # SNI для TUIC: серт самоподписанный на CN=домен/ip, поэтому в ссылку кладём хост.
 proto_reality_sni_or_host() { node_host 2>/dev/null || get_ip; }
 
@@ -439,11 +471,14 @@ _proto_urlenc() {
 # Все доп-URI для юзера (по строке на протокол). ip — адрес ноды в ссылке,
 # tag — подпись (#...), как у build_user_link.
 proto_user_uris() {   # user pass ip tag
-    local user="$1" pass="$2" ip="${3:-$(link_host)}" tag="${4:-$user}"
+    # ${4:-$1}, не $user: RHS local-присваиваний разворачивается ДО того, как
+    # local создаст user, и дефолтный тег получался пустым.
+    local user="$1" pass="$2" ip="${3:-$(link_host)}" tag="${4:-$1}"
     proto_any_enabled || return 0
-    proto_vless_enabled && { proto_build_vless "$user" "$pass" "$ip" "$tag"; echo; }
-    proto_ss_enabled    && { proto_build_ss    "$user" "$pass" "$ip" "$tag"; echo; }
-    proto_tuic_enabled  && { proto_build_tuic  "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_vless_enabled  && { proto_build_vless  "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_ss_enabled     && { proto_build_ss     "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_trojan_enabled && { proto_build_trojan "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_tuic_enabled   && { proto_build_tuic   "$user" "$pass" "$ip" "$tag"; echo; }
     return 0
 }
 
@@ -485,6 +520,11 @@ proto_enable_protocol() {   # name
             proto_set PROTO_TUIC_ENABLED 1
             [ -n "$(proto_get PROTO_TUIC_PORT)" ] || proto_set PROTO_TUIC_PORT 2053
             ;;
+        trojan)
+            proto_set PROTO_TROJAN_ENABLED 1
+            [ -n "$(proto_get PROTO_TROJAN_PORT)" ]    || proto_set PROTO_TROJAN_PORT 8444
+            [ -n "$(proto_get PROTO_TROJAN_WS_PATH)" ] || proto_set PROTO_TROJAN_WS_PATH /
+            ;;
         *) return 1 ;;
     esac
     proto_bootstrap
@@ -493,9 +533,10 @@ proto_enable_protocol() {   # name
 # Выключить протокол: гасит сервис, если после этого движок больше не нужен.
 proto_disable_protocol() {   # name
     case "$1" in
-        vless) proto_set PROTO_VLESS_ENABLED 0 ;;
-        ss)    proto_set PROTO_SS_ENABLED 0 ;;
-        tuic)  proto_set PROTO_TUIC_ENABLED 0 ;;
+        vless)  proto_set PROTO_VLESS_ENABLED 0 ;;
+        ss)     proto_set PROTO_SS_ENABLED 0 ;;
+        tuic)   proto_set PROTO_TUIC_ENABLED 0 ;;
+        trojan) proto_set PROTO_TROJAN_ENABLED 0 ;;
         *) return 1 ;;
     esac
     if ! proto_xray_needed; then
@@ -616,7 +657,7 @@ proto_kick() {   # user
     proto_any_enabled || return 0
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
         local tag
-        for tag in vless-in ss-in; do
+        for tag in vless-in ss-in trojan-in; do
             "$XRAY_BIN" api rmu --server="127.0.0.1:${XRAY_API_PORT}" \
                 -tag "$tag" -email "$user" >/dev/null 2>&1
         done
@@ -630,8 +671,9 @@ proto_kick() {   # user
 # Статус для меню/диагностики: строка «vless:💚 ss:🔴 tuic:💚».
 proto_status_line() {
     local s=""
-    proto_vless_enabled && s+="VLESS 💚 " || s+="VLESS ⚪ "
-    proto_ss_enabled    && s+="SS2022 💚 " || s+="SS2022 ⚪ "
-    proto_tuic_enabled  && s+="TUIC 💚"    || s+="TUIC ⚪"
+    proto_vless_enabled  && s+="VLESS 💚 "  || s+="VLESS ⚪ "
+    proto_ss_enabled     && s+="SS2022 💚 " || s+="SS2022 ⚪ "
+    proto_trojan_enabled && s+="TROJAN 💚 " || s+="TROJAN ⚪ "
+    proto_tuic_enabled   && s+="TUIC 💚"    || s+="TUIC ⚪"
     printf '%s' "$s"
 }
