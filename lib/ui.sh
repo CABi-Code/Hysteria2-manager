@@ -1169,29 +1169,32 @@ protocols_menu() {
             echo "     раздаются клиенту именно через единую ссылку-подписку."
             echo ""
         fi
-        local vs ss ts
-        proto_vless_enabled && vs="💚 вкл" || vs="⚪ выкл"
-        proto_ss_enabled    && ss="💚 вкл" || ss="⚪ выкл"
-        proto_tuic_enabled  && ts="💚 вкл" || ts="⚪ выкл"
+        local vs ss ts tj
+        proto_vless_enabled  && vs="💚 вкл" || vs="⚪ выкл"
+        proto_ss_enabled     && ss="💚 вкл" || ss="⚪ выкл"
+        proto_tuic_enabled   && ts="💚 вкл" || ts="⚪ выкл"
+        proto_trojan_enabled && tj="💚 вкл" || tj="⚪ выкл"
         echo "  1. VLESS + REALITY + XHTTP   : $vs   (TCP $(proto_vless_port))"
         echo "  2. Shadowsocks-2022          : $ss   (TCP $(proto_ss_port), $(proto_ss_method))"
         echo "  3. TUIC v5                   : $ts   (UDP $(proto_tuic_port))"
+        echo "  4. Trojan / WebSocket + TLS  : $tj   (TCP $(proto_trojan_port))"
         echo ""
         echo "  Сервисы: Xray $(_proto_svc_state "$XRAY_SERVICE") · sing-box $(_proto_svc_state "$SINGBOX_SERVICE")"
         echo ""
-        echo "  4. ⚙  Параметры (порты, шифр SS, REALITY dest/SNI, путь XHTTP)"
-        echo "  5. 🔁 Переустановить/пересобрать сервисы (bootstrap)"
-        echo "  6. 🔍 Диагностика (версии бинарников, статус, порты)"
+        echo "  5. ⚙  Параметры (порты, шифр SS, REALITY dest/SNI, пути XHTTP/WS)"
+        echo "  6. 🔁 Переустановить/пересобрать сервисы (bootstrap)"
+        echo "  7. 🔍 Диагностика (версии бинарников, статус, порты)"
         echo "  0. ↩  Назад"
         echo ""
         local choice
         ask choice "  Выберите: "
         case "$choice" in
-            1) _proto_toggle vless "VLESS+REALITY+XHTTP" ;;
-            2) _proto_toggle ss    "Shadowsocks-2022" ;;
-            3) _proto_toggle tuic  "TUIC v5" ;;
-            4) proto_params_menu ;;
-            5)
+            1) _proto_toggle vless  "VLESS+REALITY+XHTTP" ;;
+            2) _proto_toggle ss     "Shadowsocks-2022" ;;
+            3) _proto_toggle tuic   "TUIC v5" ;;
+            4) _proto_toggle trojan "Trojan/WS" ;;
+            5) proto_params_menu ;;
+            6)
                 echo ""
                 if ! proto_any_enabled; then
                     echo "  Нет включённых протоколов — включать нечего."
@@ -1201,7 +1204,7 @@ protocols_menu() {
                 fi
                 pause
                 ;;
-            6) proto_diagnose_menu ;;
+            7) proto_diagnose_menu ;;
             0) return ;;
             *) echo "  ❌ Неверный выбор!"; sleep 1 ;;
         esac
@@ -1214,9 +1217,10 @@ _proto_toggle() {   # name human
     echo ""
     local enabled=0
     case "$name" in
-        vless) proto_vless_enabled && enabled=1 ;;
-        ss)    proto_ss_enabled    && enabled=1 ;;
-        tuic)  proto_tuic_enabled  && enabled=1 ;;
+        vless)  proto_vless_enabled  && enabled=1 ;;
+        ss)     proto_ss_enabled     && enabled=1 ;;
+        tuic)   proto_tuic_enabled   && enabled=1 ;;
+        trojan) proto_trojan_enabled && enabled=1 ;;
     esac
     if [ "$enabled" = 1 ]; then
         local c; ask c "  Выключить $human? (да/нет): "
@@ -1257,6 +1261,8 @@ proto_params_menu() {
         echo "  5. REALITY dest         : $(proto_reality_dest)"
         echo "  6. REALITY SNI          : $(proto_reality_sni)"
         echo "  7. Путь XHTTP           : $(proto_xhttp_path)"
+        echo "  8. Порт Trojan (TCP)    : $(proto_trojan_port)"
+        echo "  9. Путь WS Trojan       : $(proto_trojan_ws_path)"
         echo ""
         echo "  ⚠️  После смены параметров нужно пересобрать сервисы (Протоколы → 5)."
         echo "  0. ↩  Назад"
@@ -1275,6 +1281,8 @@ proto_params_menu() {
             5) ask v "  REALITY dest (host:443, реальный TLS1.3-сайт): "; [ -n "$v" ] && proto_set PROTO_REALITY_DEST "$v" ;;
             6) ask v "  REALITY SNI (обычно host из dest): "; [ -n "$v" ] && proto_set PROTO_REALITY_SNI "$v" ;;
             7) ask v "  Путь XHTTP (например /dl): "; [ -n "$v" ] && proto_set PROTO_XHTTP_PATH "$v" ;;
+            8) ask v "  Новый порт Trojan (TCP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_TROJAN_PORT "$v" ;;
+            9) ask v "  Путь WS Trojan (например /ws): "; [ -n "$v" ] && proto_set PROTO_TROJAN_WS_PATH "$v" ;;
             0) return ;;
             *) echo "  ❌ Неверный выбор!"; sleep 1 ;;
         esac
@@ -1296,8 +1304,8 @@ proto_diagnose_menu() {
     echo ""
     echo "  Прослушиваемые порты:"
     local p
-    for p in $(proto_vless_port) $(proto_ss_port); do
-        proto_vless_enabled || proto_ss_enabled || break
+    for p in $(proto_vless_port) $(proto_ss_port) $(proto_trojan_port); do
+        proto_xray_needed || break
         if ss -ltn 2>/dev/null | grep -q ":$p "; then echo "    TCP $p : 💚 слушается"; else echo "    TCP $p : 🔴 нет"; fi
     done
     if proto_tuic_enabled; then

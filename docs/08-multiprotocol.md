@@ -1,4 +1,4 @@
-# 08. Мультипротокол: VLESS+REALITY+XHTTP, Shadowsocks-2022, TUIC v5
+# 08. Мультипротокол: VLESS+REALITY+XHTTP, Shadowsocks-2022, Trojan/WS, TUIC v5
 
 Нода перестаёт быть «только Hysteria». Тот же пользователь из `users.db`
 раздаётся сразу несколькими протоколами, и все они попадают в его подписку.
@@ -13,10 +13,11 @@
 | Hysteria 2 (obfs salamander) | `hysteria` (как было) | базовый, не трогаем |
 | VLESS + REALITY + XHTTP | **Xray-core** | XHTTP — изобретение Xray; sing-box его как сервер не умеет |
 | Shadowsocks-2022 (+ gRPC API) | **Xray-core** | тот же процесс, hot-add юзеров через `xray api` без рестарта |
+| Trojan / WebSocket + TLS | **Xray-core** | тот же процесс; классика, которую понимает любой клиент |
 | TUIC v5 | **sing-box** | единственная живая серверная реализация TUIC в 2026 |
 
 Итого рядом с `hysteria-server.service` появляются два опциональных сервиса:
-`hy2-xray.service` (VLESS+SS) и `hy2-singbox.service` (TUIC). Каждый включается
+`hy2-xray.service` (VLESS+SS+Trojan) и `hy2-singbox.service` (TUIC). Каждый включается
 независимо; если ни один не включён — менеджер работает ровно как раньше.
 
 ## Единый источник правды по юзерам
@@ -35,7 +36,7 @@
 Деривация (см. `proto_uuid` / `proto_upsk` в `lib/protocols.sh`):
 
 ```
-UUID(user)  = uuidv5-подобный из sha1(proto_secret | user | pass)   # VLESS, TUIC
+UUID(user)  = uuidv5-подобный из sha1(proto_secret | user | pass)   # VLESS, TUIC, пароль Trojan
 uPSK(user)  = base64( sha256(proto_secret | "ss" | user | pass)[:keylen] )  # SS-2022
 iPSK(node)  = base64( sha256(proto_secret | "ipsk")[:keylen] )       # общий ключ инбаунда SS
 TUIC-pass   = pass                                                    # пароль из users.db
@@ -51,9 +52,12 @@ TUIC-pass   = pass                                                    # паро
 PROTO_VLESS_ENABLED=1
 PROTO_SS_ENABLED=1
 PROTO_TUIC_ENABLED=1
+PROTO_TROJAN_ENABLED=1
 PROTO_VLESS_PORT=8443            # TCP
 PROTO_SS_PORT=8388               # TCP
 PROTO_TUIC_PORT=2053             # UDP
+PROTO_TROJAN_PORT=8444           # TCP
+PROTO_TROJAN_WS_PATH=/           # путь WebSocket
 PROTO_SS_METHOD=2022-blake3-aes-128-gcm
 PROTO_REALITY_DEST=www.microsoft.com:443
 PROTO_REALITY_SNI=www.microsoft.com
@@ -71,7 +75,8 @@ PROTO_XHTTP_PATH=/               # path XHTTP
 * VLESS+REALITY — сертификат не нужен (REALITY заимствует TLS чужого `dest`).
 * SS-2022 — без TLS.
 * TUIC (QUIC) — нужен TLS. По умолчанию самоподписанный серт (генерится при
-  установке в `$DATA_DIR/proto/tuic.{crt,key}`), клиент идёт с `allow_insecure=1`
+  установке в `$DATA_DIR/proto/tuic.{crt,key}`), клиент идёт с `allow_insecure=1`.
+  Тот же серт использует и Trojan/WS (`allowInsecure=1` в ссылке)
   — тот же подход, что у Hysteria (`insecure=1`). Опционально можно подставить
   валидный серт Caddy для домена ноды.
 
