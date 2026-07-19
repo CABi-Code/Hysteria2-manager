@@ -294,7 +294,9 @@ def sub_tokens(user):
 def tg_username(tg_id):
     for r in pipe_rows(data_path("tgusers.dat"), 2):
         if r[0] == tg_id:
-            return r[1]
+            # Пустое поле — tombstone отвязки (кластерный LWW, см. tg_unbind):
+            # трактуем как «не привязан», а не как привязку к юзеру "".
+            return r[1] or None
     return None
 
 

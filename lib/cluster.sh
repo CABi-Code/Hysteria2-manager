@@ -44,7 +44,7 @@ cluster_remove_peer() {   # host
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
     if [ -n "$name" ]; then
-        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.state" "$PEERS_DIR/${name}.ips" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" "$PEERS_DIR/${name}.userlimits" "$PEERS_DIR/${name}.subips" 2>/dev/null
+        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.state" "$PEERS_DIR/${name}.ips" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" "$PEERS_DIR/${name}.userlimits" "$PEERS_DIR/${name}.subips" "$PEERS_DIR/${name}.tgbind" 2>/dev/null
     fi
     publish_peers_list
     regen_subscriptions
@@ -119,7 +119,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips abuse version"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips abuse tgbind version"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -132,6 +132,7 @@ _section_label() {
         userlimits) echo "устройства/жёсткая проверка" ;;
         subips)     echo "IP по ссылкам" ;;
         abuse)      echo "анти-абуз (балл/окно)" ;;
+        tgbind)     echo "привязки Telegram" ;;
         version)    echo "версия менеджера" ;;
         *)          echo "$1" ;;
     esac
@@ -161,6 +162,7 @@ cluster_sync() {
     publish_cluster_abuse
     publish_ips
     publish_subips
+    publish_cluster_tgbind
     publish_cluster_version
 
     # Жёсткая проверка НАШЕГО эндпоинта: без валидного HTTPS пиры физически не
@@ -229,6 +231,7 @@ cluster_sync() {
     cluster_apply_settings   # подтянуть общее оформление подписки
     cluster_apply_userlimits # подтянуть персональные лимиты устройств
     abuse_apply              # подтянуть состояние анти-абуза (балл/окно авто-HC)
+    cluster_apply_tgbind     # слить привязки Telegram↔пользователь (LWW по tg_id)
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
     write_authlimits         # обновить снимок для жёсткой проверки
@@ -627,6 +630,51 @@ cluster_apply_userlimits() {
     if [ "$changed" = 1 ]; then
         write_authlimits
         publish_cluster_userlimits
+    fi
+}
+
+# ---- Синхронизация ПРИВЯЗОК Telegram ↔ пользователь ----
+# Строка «tg_id|username|ts» (tombstone отвязки — «tg_id||ts», см. tg_unbind).
+# Ключ слияния — tg_id: один Telegram-аккаунт привязан ровно к одному юзеру,
+# и правки на разных нодах разрешаются last-write-wins по ts. Так админ может
+# привязать/перепривязать/отвязать аккаунт на ЛЮБОЙ ноде, а веб-апп на любой
+# ноде отдаст профиль по by-telegram (файл tgusers.dat ведёт lib/tgbot.sh).
+publish_cluster_tgbind() {
+    sub_enabled || return 0
+    [ -n "$TGUSERS_FILE" ] || return 0
+    mkdir -p "$WEBROOT/cluster"
+    cp -f "$TGUSERS_FILE" "$WEBROOT/cluster/tgbind" 2>/dev/null || : > "$WEBROOT/cluster/tgbind"
+    chmod 640 "$WEBROOT/cluster/tgbind" 2>/dev/null || true
+    secure_web_files
+}
+
+# Сливает привязки со всех нод: по каждому tg_id берём запись с наибольшим ts
+# (при равном ts — детерминированно бо́льшую строку username, чтобы ноды не
+# «моргали»). Результат = полный авторитетный набор для tgusers.dat, включая
+# tombstone'ы. Переписываем файл только при реальном изменении (иначе — лишний
+# republish в цикле). Записи привязки к несуществующему у нас юзеру безвредны:
+# они лишь дают by-telegram → username, а сам профиль всё равно берётся из БД.
+cluster_apply_tgbind() {
+    sub_enabled || return 0
+    [ -n "$TGUSERS_FILE" ] || return 0
+    local merged
+    merged=$(
+        { [ -f "$TGUSERS_FILE" ] && cat "$TGUSERS_FILE"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.tgbind 2>/dev/null; } \
+        | awk -F'|' 'NF>=3 && $1!="" {
+                if (($3+0) > (ts[$1]+0) || (($3+0)==(ts[$1]+0) && $2 > u[$1])) { ts[$1]=$3; u[$1]=$2 }
+            }
+            END { for (id in ts) printf "%s|%s|%s\n", id, u[id], ts[id] }'
+    )
+    [ -n "$merged" ] || return 0
+    # Сравниваем отсортированные версии — порядок строк не важен, важен состав.
+    local cur new
+    cur=$( [ -f "$TGUSERS_FILE" ] && sort "$TGUSERS_FILE" 2>/dev/null )
+    new=$( printf '%s\n' "$merged" | sort )
+    if [ "$cur" != "$new" ]; then
+        touch "$TGUSERS_FILE"; chmod 600 "$TGUSERS_FILE" 2>/dev/null
+        printf '%s\n' "$merged" > "$TGUSERS_FILE"
+        publish_cluster_tgbind
     fi
 }
 

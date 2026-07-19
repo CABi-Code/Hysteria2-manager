@@ -111,14 +111,26 @@ bot_notify_admins() {
 }
 
 # ---------- привязки Telegram ↔ пользователи ----------
-tg_bound_user() { awk -F'|' -v id="$1" '$1==id{print $2; exit}' "$TGUSERS_FILE" 2>/dev/null; }
+# Пустой username в строке «tg_id||ts» — tombstone отвязки (нужен для кластера:
+# без него запись-привязка с пира воскрешала бы уже отвязанный tg_id, см.
+# cluster_apply_tgbind). Поэтому tg_bound_user трактует пустое поле как «не
+# привязан», а список привязок такие строки пропускает.
+tg_bound_user() { awk -F'|' -v id="$1" '$1==id && $2!=""{print $2; exit}' "$TGUSERS_FILE" 2>/dev/null; }
 tg_user_chats() { awk -F'|' -v u="$1" '$2==u{print $1}' "$TGUSERS_FILE" 2>/dev/null; }
 tg_bind() {   # tg_id username
     touch "$TGUSERS_FILE"; chmod 600 "$TGUSERS_FILE" 2>/dev/null
     sed -i "/^${1}|/d" "$TGUSERS_FILE" 2>/dev/null
     printf '%s|%s|%s\n' "$1" "$2" "$(date +%s)" >> "$TGUSERS_FILE"
+    publish_cluster_tgbind    # держим статический файл кластера свежим (no-op вне кластера)
 }
-tg_unbind() { sed -i "/^${1}|/d" "$TGUSERS_FILE" 2>/dev/null; }
+# Отвязка = tombstone (пустой username + свежий ts), а НЕ удаление строки:
+# иначе last-write-wins по пиру откатил бы отвязку назад к старой привязке.
+tg_unbind() {   # tg_id
+    touch "$TGUSERS_FILE"; chmod 600 "$TGUSERS_FILE" 2>/dev/null
+    sed -i "/^${1}|/d" "$TGUSERS_FILE" 2>/dev/null
+    printf '%s||%s\n' "$1" "$(date +%s)" >> "$TGUSERS_FILE"
+    publish_cluster_tgbind
+}
 
 # Одноразовый код привязки для юзера (живёт 48 часов).
 bot_bind_code() {   # username -> code
@@ -910,7 +922,7 @@ bot_menu() {
                 local i=0 tgid u ts
                 local -a unb_ids=()
                 while IFS='|' read -r tgid u ts; do
-                    [ -n "$tgid" ] || continue
+                    [ -n "$tgid" ] && [ -n "$u" ] || continue   # пропускаем tombstone-отвязки
                     i=$((i+1)); unb_ids[$i]="$tgid"
                     printf "    %d. tg:%s → %s (с %s)\n" "$i" "$tgid" "$u" "$(date -d "@${ts:-0}" '+%Y-%m-%d' 2>/dev/null || echo '?')"
                 done < "$TGUSERS_FILE" 2>/dev/null
