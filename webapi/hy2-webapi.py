@@ -409,12 +409,27 @@ def node_info():
 def tariffs():
     out = []
     for r in pipe_rows(data_path("tariffs.conf"), 6):
-        if r[2].isdigit() and re.fullmatch(r"\d+([.,]\d+)?", r[4] or ""):
-            out.append({
-                "code": r[0], "title": r[1], "days": int(r[2]),
-                "devices": int(r[3]) if r[3].isdigit() else 0,
-                "price": r[4], "currency": r[5],
-            })
+        if not r[2].isdigit():
+            continue
+        # Поля цены/валюты могут быть '/'-списками одинаковой длины (мультивалютный
+        # тариф). Разбираем в prices=[{currency, price}]; price/currency = первый
+        # (основной) элемент — для обратной совместимости со старыми клиентами.
+        prices_raw = (r[4] or "").split("/")
+        curs_raw = (r[5] or "").split("/")
+        prices = []
+        for i, p in enumerate(prices_raw):
+            p = p.strip()
+            c = (curs_raw[i].strip().upper() if i < len(curs_raw) else "")
+            if c and re.fullmatch(r"\d+([.,]\d+)?", p):
+                prices.append({"currency": c, "price": p})
+        if not prices:
+            continue
+        out.append({
+            "code": r[0], "title": r[1], "days": int(r[2]),
+            "devices": int(r[3]) if r[3].isdigit() else 0,
+            "price": prices[0]["price"], "currency": prices[0]["currency"],
+            "prices": prices,
+        })
     return out
 
 
