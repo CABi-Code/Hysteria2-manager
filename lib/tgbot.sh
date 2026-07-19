@@ -300,14 +300,21 @@ tariff_ask_prices() {   # [cur_default] [price_default]
 
 # ---------- продление/выдача доступа (общее для оплат и админ-команд) ----------
 # Продлить срок юзера на N дней ОТ максимума(сегодня, текущий срок).
-bot_extend_user() {   # user days -> печатает новую дату
-    local user="$1" days="$2" cur base new
+bot_extend_user() {   # user days [nonotify] -> печатает новую дату
+    local user="$1" days="$2" quiet="$3" cur base new
     cur=$(get_user_expiry "$user")
     base=$(date +%Y-%m-%d)
     if [ -n "$cur" ] && [[ "$cur" > "$base" ]]; then base="$cur"; fi
     new=$(date -d "$base +${days} days" +%Y-%m-%d 2>/dev/null)
     [ -n "$new" ] || return 1
     set_user_expiry "$user" "$new"
+    # Длина текущего периода — для гейтов порогов «за 7 дней / за 1 день».
+    declare -F period_days_set >/dev/null && period_days_set "$user" "$days"
+    # Уведомление об активации/продлении с датой окончания. Прямой Stars-платёж
+    # шлёт свою расширенную карточку (передаёт nonotify), чтобы не дублировать.
+    if [ "$quiet" != "nonotify" ] && declare -F bot_notify_activated >/dev/null; then
+        bot_notify_activated "$user" "$new"
+    fi
     printf '%s' "$new"
 }
 
@@ -542,7 +549,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
         tg_send "$chat" "Оплата получена, но при выдаче доступа произошла ошибка. Администратор уведомлён и всё выдаст вручную."
         return
     fi
-    newexp=$(bot_extend_user "$user" "$days")
+    newexp=$(bot_extend_user "$user" "$days" nonotify)
     [ "$devices" -gt 0 ] 2>/dev/null && set_user_limits "$user" "$devices" "$(get_user_hardcheck "$user")"
     tg_bind "$tgid" "$user"
     write_authlimits 2>/dev/null
@@ -770,6 +777,17 @@ ${tl:-нет тарифов}
     [ -z "$chat" ] && return 0
     from=$(echo "$upd" | jq -r '.message.from.id // empty')
     text=$(echo "$upd" | jq -r '.message.text // empty')
+
+    # 3-DM) чат прямых сообщений канала (Direct Messages in Channels, Bot API 9.2):
+    # запоминаем topic пользователя, чтобы слать уведомления «от лица канала».
+    # Не прерываемся — обычные команды тоже могут приходить отсюда.
+    if [ "$(echo "$upd" | jq -r '.message.chat.is_direct_messages // false' 2>/dev/null)" = "true" ]; then
+        local dm_uid dm_topic
+        dm_uid=$(echo "$upd" | jq -r '.message.direct_messages_topic.user.id // empty')
+        dm_topic=$(echo "$upd" | jq -r '.message.direct_messages_topic.topic_id // empty')
+        [ -n "$dm_uid" ] && [ -n "$dm_topic" ] && declare -F chandm_topic_set >/dev/null \
+            && chandm_topic_set "$dm_uid" "$chat" "$dm_topic"
+    fi
 
     # 3а) успешная оплата.
     local sp

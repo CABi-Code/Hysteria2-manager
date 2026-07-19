@@ -28,6 +28,12 @@ setup_cron() {
         (echo "$current_cron"; echo "0 */6 * * * /bin/bash \"$script_path\" --check-expiry >/dev/null 2>&1") | crontab -
         current_cron=$(crontab -l 2>/dev/null || true)
     fi
+    # Частые ступенчатые напоминания об истечении (пороги 30мин/1ч ловятся только
+    # при частом прогоне). См. lib/notify.sh и docs/NOTIFICATIONS.md.
+    if ! echo "$current_cron" | grep -q "hy2-manager.*--notify-sweep"; then
+        (echo "$current_cron"; echo "*/5 * * * * /bin/bash \"$script_path\" --notify-sweep >/dev/null 2>&1") | crontab -
+        current_cron=$(crontab -l 2>/dev/null || true)
+    fi
     # Синхронизация ключей с пирами кластера + пересборка подписок.
     if ! echo "$current_cron" | grep -q "hy2-manager.*--cluster-sync"; then
         (echo "$current_cron"; echo "*/5 * * * * /bin/bash \"$script_path\" --cluster-sync >/dev/null 2>&1") | crontab -
