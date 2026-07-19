@@ -231,11 +231,32 @@ def local_traffic(user):
     return 0, 0
 
 
-def user_ip_count(user):
+# Окно «активных устройств»: считаем уникальные IP только за последние сутки.
+# ips.dat раньше отдавался целиком (кумулятивно за всё время) и рос вечно
+# из-за ротации мобильных IP/CGNAT — карточка показывала «128 из 1». Формат
+# строки: user|ip|first_seen|last_seen|count (см. lib/ip_tracking.sh), время —
+# epoch-секунды; фильтруем по last_seen (поле 4, индекс 3).
+DEVICES_WINDOW_SEC = 86400
+
+
+def user_ip_count(user, window_sec=DEVICES_WINDOW_SEC):
+    cutoff = time.time() - window_sec
     ips = set()
+
+    def consider(row):
+        # Требуем last_seen; строки без метки времени (легаси) в окно не берём.
+        if len(row) < 4:
+            return
+        try:
+            last_seen = int(row[3])
+        except (ValueError, IndexError):
+            return
+        if last_seen >= cutoff:
+            ips.add(row[1])
+
     for r in pipe_rows(data_path("ips.dat"), 2):
         if r[0] == user:
-            ips.add(r[1])
+            consider(r)
     try:
         names = os.listdir(PEERS_DIR)
     except OSError:
@@ -244,7 +265,7 @@ def user_ip_count(user):
         if name.endswith(".ips"):
             for r in pipe_rows(os.path.join(PEERS_DIR, name), 2):
                 if r[0] == user:
-                    ips.add(r[1])
+                    consider(r)
     return len(ips)
 
 
