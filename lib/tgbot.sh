@@ -165,6 +165,37 @@ tariff_add()    {   # code title days devices price currency
 }
 tariff_del()    { sed -i "/^${1}|/d" "$TARIFFS_CONF" 2>/dev/null; }
 
+# Заменить строку тарифа НА МЕСТЕ (позиция в файле = порядок в /buy и в webapp
+# сохраняется). Код тоже можно сменить: ищем по СТАРОМУ коду, пишем новую строку.
+tariff_update() {   # oldcode newcode title days devices price currency
+    local old="$1"; shift
+    local new="$1|$2|$3|$4|$5|$6" tmp line
+    tmp=$(mktemp) || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" == "$old|"* ]]; then printf '%s\n' "$new"; else printf '%s\n' "$line"; fi
+    done < "$TARIFFS_CONF" > "$tmp"
+    mv "$tmp" "$TARIFFS_CONF"
+}
+
+# Поменять тариф местами с соседним (dir = up|down). Меняет порядок показа
+# тарифов клиенту. Возврат 1, если тариф уже с краю или не найден.
+tariff_move() {   # code up|down
+    local code="$1" dir="$2" tmp i idx=-1 j
+    local -a lines
+    mapfile -t lines < <(tariff_list)
+    local n=${#lines[@]}
+    for ((i=0; i<n; i++)); do
+        [ "${lines[$i]%%|*}" = "$code" ] && { idx=$i; break; }
+    done
+    [ "$idx" -lt 0 ] && return 1
+    if [ "$dir" = "up" ]; then j=$((idx-1)); else j=$((idx+1)); fi
+    if [ "$j" -lt 0 ] || [ "$j" -ge "$n" ]; then return 1; fi
+    local t="${lines[$idx]}"; lines[$idx]="${lines[$j]}"; lines[$j]="$t"
+    tmp=$(mktemp) || return 1
+    printf '%s\n' "${lines[@]}" > "$tmp"
+    mv "$tmp" "$TARIFFS_CONF"
+}
+
 # Человеческая цена тарифа: «⭐ 100» или «199 RUB».
 tariff_price_str() {   # price currency
     if [ "$2" = "XTR" ]; then printf '⭐ %s' "$1"; else printf '%s %s' "$1" "$2"; fi
@@ -1012,8 +1043,10 @@ bot_tariffs_menu() {
         echo "  платёжный токен провайдера (меню бота, пункт 5)."
         echo ""
         echo "  1. ➕ Добавить тариф"
-        echo "  2. ➖ Удалить тариф (по номеру)"
-        echo "  3. 🧩 Создать типовые тарифы-примеры (Stars: 30/90/365 дней)"
+        echo "  2. ✏️  Редактировать тариф (цена/название/дни/устройства/валюта/код)"
+        echo "  3. ↕️  Переместить тариф (поменять порядок показа)"
+        echo "  4. ➖ Удалить тариф (по номеру)"
+        echo "  5. 🧩 Создать типовые тарифы-примеры (Stars: 30/90/365 дней)"
         echo "  0. ↩  Назад"
         echo ""
         local ch; ask ch "  Выберите: "
@@ -1047,6 +1080,58 @@ bot_tariffs_menu() {
                 bot_restart
                 pause ;;
             2)
+                local sel; ask sel "  Номер тарифа для редактирования: "
+                if ! [[ "$sel" =~ ^[0-9]+$ ]] || [ -z "${t_codes[$sel]:-}" ]; then
+                    echo "  ❌ Неверный номер."; pause; continue
+                fi
+                local ocode="${t_codes[$sel]}" ec et ed edv ep ecu
+                IFS='|' read -r ec et ed edv ep ecu <<<"$(tariff_get "$ocode")"
+                echo ""
+                echo "  Редактирование [$ocode]. Enter — оставить текущее значение."
+                local nc nt nd ndv np ncu
+                ask nc  "  Код [$ec]: ";        nc="${nc:-$ec}"
+                [[ "$nc" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "  ❌ Код: латиница/цифры."; pause; continue; }
+                if [ "$nc" != "$ec" ] && [ -n "$(tariff_get "$nc")" ]; then
+                    echo "  ❌ Код [$nc] уже занят другим тарифом."; pause; continue
+                fi
+                ask nt  "  Название [$et]: ";   nt="${nt:-$et}"; nt=$(printf '%s' "$nt" | tr -d '|')
+                [ -n "$nt" ] || { echo "  ❌ Название пустое."; pause; continue; }
+                ask nd  "  Дней доступа [$ed]: "; nd="${nd:-$ed}"
+                [[ "$nd" =~ ^[0-9]+$ ]] && [ "$nd" -gt 0 ] || { echo "  ❌ Дни — число > 0."; pause; continue; }
+                ask ndv "  Лимит устройств [$edv] (0 — не менять при покупке): "; ndv="${ndv:-$edv}"
+                [[ "$ndv" =~ ^[0-9]+$ ]] || ndv=0
+                ask ncu "  Валюта [$ecu] (XTR — Telegram Stars; или RUB/USD/...): "; ncu="${ncu:-$ecu}"
+                ncu=$(printf '%s' "$ncu" | tr 'a-z' 'A-Z' | tr -d '[:space:]')
+                [[ "$ncu" =~ ^[A-Z]{3}$ ]] || ncu=XTR
+                if [ "$ncu" = "XTR" ]; then
+                    ask np "  Цена в звёздах [$ep]: "
+                else
+                    ask np "  Цена в $ncu [$ep] (целое, в основных единицах): "
+                fi
+                np="${np:-$ep}"
+                [[ "$np" =~ ^[0-9]+$ ]] && [ "$np" -gt 0 ] || { echo "  ❌ Цена — целое число > 0."; pause; continue; }
+                if [ "$ncu" != "XTR" ] && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
+                    echo "  ⚠️  Провайдер не настроен — тариф в $ncu не будет продаваться, пока не зададите токен (меню бота → 5)."
+                fi
+                tariff_update "$ocode" "$nc" "$nt" "$nd" "$ndv" "$np" "$ncu"
+                echo "  ✅ Тариф [$nc] обновлён."
+                bot_restart
+                pause ;;
+            3)
+                local sel; ask sel "  Номер тарифа для перемещения: "
+                if ! [[ "$sel" =~ ^[0-9]+$ ]] || [ -z "${t_codes[$sel]:-}" ]; then
+                    echo "  ❌ Неверный номер."; pause; continue
+                fi
+                local dir; ask dir "  Направление (u — вверх, d — вниз): "
+                case "$dir" in
+                    u|U|up|вверх)
+                        if tariff_move "${t_codes[$sel]}" up;   then echo "  ✅ Перемещён вверх."; bot_restart; else echo "  ⚠️  Тариф уже первый."; fi ;;
+                    d|D|down|вниз)
+                        if tariff_move "${t_codes[$sel]}" down; then echo "  ✅ Перемещён вниз.";  bot_restart; else echo "  ⚠️  Тариф уже последний."; fi ;;
+                    *) echo "  ❌ Неверное направление (нужно u или d)." ;;
+                esac
+                pause ;;
+            4)
                 local sel; ask sel "  Номер тарифа для удаления: "
                 if [[ "$sel" =~ ^[0-9]+$ ]] && [ -n "${t_codes[$sel]:-}" ]; then
                     tariff_del "${t_codes[$sel]}"
@@ -1056,7 +1141,7 @@ bot_tariffs_menu() {
                     echo "  ❌ Неверный номер."
                 fi
                 pause ;;
-            3)
+            5)
                 tariff_add m1  "1 месяц"   30  0 100  XTR
                 tariff_add m3  "3 месяца"  90  0 250  XTR
                 tariff_add y1  "1 год"     365 0 800  XTR
