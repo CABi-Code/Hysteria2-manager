@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster update tgbot webapi ui)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster update tgbot notify webapi ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -66,7 +66,14 @@ if [ "$1" = "--check-expiry" ]; then
     migrate_to_command_auth
     setup_stats_api
     check_expired_users
-    bot_expiry_reminders    # напоминания в Telegram за 3 дня до истечения (если бот включён)
+    bot_notify_sweep        # ступенчатые напоминания об истечении (если бот включён)
+    exit 0
+fi
+
+# Частый прогон только напоминаний (cron каждые ~5 мин): чтобы ловить пороги
+# 30 мин / 1 час, недостижимые при 6-часовом --check-expiry.
+if [ "$1" = "--notify-sweep" ]; then
+    bot_notify_sweep
     exit 0
 fi
 
