@@ -547,6 +547,52 @@ user_action_menu() {
                 pause
                 need_clear=1
                 ;;
+            14)
+                echo ""
+                echo "  📱 Telegram-привязка для «$user»"
+                echo "  ────────────────────────────────────────────────────────"
+                local bound_ids ntg
+                bound_ids=$(tg_user_chats "$user")
+                if [ -n "$bound_ids" ]; then
+                    echo "  Привязанные tg_id: $(echo "$bound_ids" | tr '\n' ' ' | sed 's/ *$//')"
+                else
+                    echo "  Пока не привязан ни один Telegram."
+                fi
+                echo ""
+                echo "  • Введите Telegram ID — привязать этот аккаунт к «$user»."
+                echo "    (свой ID клиент узнаёт у @userinfobot; перепривязка с другого"
+                echo "     пользователя выполняется автоматически)."
+                echo "  • «0» или «нет» — отвязать все Telegram от «$user»."
+                echo "  • Enter — назад."
+                ask ntg "  Telegram ID: "
+                if [ -z "$ntg" ]; then
+                    :
+                elif [ "$ntg" = "0" ] || [ "$ntg" = "нет" ]; then
+                    if [ -n "$bound_ids" ]; then
+                        while IFS= read -r _id; do
+                            [ -n "$_id" ] && tg_unbind "$_id"
+                        done <<< "$bound_ids"
+                        echo "  ✅ Все Telegram отвязаны от «$user»."
+                        sub_enabled && offer_sync
+                    else
+                        echo "  Нечего отвязывать."
+                    fi
+                elif [[ "$ntg" =~ ^[0-9]+$ ]]; then
+                    local prev
+                    prev=$(tg_bound_user "$ntg")
+                    tg_bind "$ntg" "$user"
+                    if [ -n "$prev" ] && [ "$prev" != "$user" ]; then
+                        echo "  ✅ tg:$ntg перепривязан с «$prev» на «$user»."
+                    else
+                        echo "  ✅ tg:$ntg привязан к «$user» — веб-апп покажет его профиль."
+                    fi
+                    sub_enabled && offer_sync
+                else
+                    echo "  ❌ Telegram ID — это число (например, 123456789)."
+                fi
+                pause
+                need_clear=1
+                ;;
             0) return ;;
         esac
     done
@@ -805,6 +851,14 @@ _render_user_action() {
         echo "  Срок действия: не установлен"
     fi
 
+    local _tgids
+    _tgids=$(tg_user_chats "$user" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')
+    if [ -n "$_tgids" ]; then
+        echo "  Telegram: 📱 $_tgids"
+    else
+        echo "  Telegram: не привязан"
+    fi
+
     is_restart_pending && echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria"
 
     echo ""
@@ -830,6 +884,7 @@ _render_user_action() {
         echo " 11. 🩺 Диагностика профиля (по кластеру)"
     fi
     echo " 12. 🔢 Устройства и ссылки подписки"
+    echo " 14. 📱 Привязать/отвязать Telegram (для веб-аппа и бота)"
     sub_enabled && echo " 13. 🔄 Получить синхронизацию (локально)"
     echo "  0. ↩  Назад"
     echo ""
