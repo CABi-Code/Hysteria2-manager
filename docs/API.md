@@ -102,14 +102,17 @@ curl -H "$H" "$BASE/v1/info"
 ### GET /v1/tariffs — тарифы (scope: read)
 
 Отдаёт `tariffs.conf`. `currency:"XTR"` — Telegram Stars (цена = число звёзд),
-иначе фиатная валюта платёжного провайдера в основных единицах.
+иначе фиатная валюта платёжного провайдера в основных единицах. Тариф может
+иметь НЕСКОЛЬКО цен в разных валютах — они в массиве `prices[]`; поля `price`/
+`currency` дублируют первую (основную) цену для обратной совместимости.
 
 ```bash
 curl -H "$H" "$BASE/v1/tariffs"
 ```
 ```json
 {"ok":true,"data":{"tariffs":[
-  {"code":"m1","title":"Месяц","days":30,"devices":3,"price":"100","currency":"XTR"}]}}
+  {"code":"m1","title":"Месяц","days":30,"devices":3,"price":"100","currency":"XTR",
+   "prices":[{"currency":"XTR","price":"100"},{"currency":"RUB","price":"199"}]}]}}
 ```
 
 ### GET /v1/nodes — ноды кластера (scope: read)

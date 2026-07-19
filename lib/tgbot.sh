@@ -19,7 +19,8 @@
 #
 # Все данные — в $DATA_DIR:
 #   bot.conf      BOT_TOKEN / ADMIN_IDS / PAY_PROVIDER_TOKEN / PAY_CURRENCY / ...
-#   tariffs.conf  тарифы: «код|Название|дней|устройств|цена|валюта» (XTR = Stars)
+#   tariffs.conf  тарифы: «код|Название|дней|устройств|цена|валюта» (XTR = Stars;
+#                 цена/валюта могут быть '/'-списками — несколько цен на тариф)
 #   tgusers.dat   привязки: «tg_id|username|ts»
 #   botcodes.dat  одноразовые коды привязки: «код|username|expires_ts»
 #   payments.log  журнал оплат
@@ -155,6 +156,10 @@ bot_code_lookup() {   # code -> username (и гасит код)
 # Строка: «код|Название|дней|устройств|цена|валюта». Валюта XTR = Telegram Stars
 # (цена = кол-во звёзд, целое). Иначе — валюта платёжного провайдера
 # (цена в ОСНОВНЫХ единицах: 199 = 199 руб; в копейки переводим сами).
+#
+# Мультивалютность: поля «цена» и «валюта» могут быть '/'-списками одинаковой
+# длины (индексы выровнены), напр. «100/199|XTR/RUB» — один тариф с ценой и в
+# звёздах, и в рублях. Одиночная цена — частный случай списка из одного элемента.
 tariff_list()   { grep -vE '^\s*(#|$)' "$TARIFFS_CONF" 2>/dev/null; }
 tariff_get()    { tariff_list | awk -F'|' -v c="$1" '$1==c{print; exit}'; }
 tariff_count()  { tariff_list | grep -c '^'; }
@@ -196,9 +201,101 @@ tariff_move() {   # code up|down
     mv "$tmp" "$TARIFFS_CONF"
 }
 
-# Человеческая цена тарифа: «⭐ 100» или «199 RUB».
-tariff_price_str() {   # price currency
-    if [ "$2" = "XTR" ]; then printf '⭐ %s' "$1"; else printf '%s %s' "$1" "$2"; fi
+# Переставить тариф на позицию N (1-based) в списке: удаляем со старого места и
+# вставляем на нужное. N вне диапазона зажимается к [1..кол-во]. Возврат 1, если
+# тариф не найден.
+tariff_move_to() {   # code position
+    local code="$1" pos="$2" tmp i idx=-1 target
+    [[ "$pos" =~ ^[0-9]+$ ]] || return 1
+    local -a lines; mapfile -t lines < <(tariff_list)
+    local n=${#lines[@]}
+    [ "$n" -eq 0 ] && return 1
+    [ "$pos" -lt 1 ] && pos=1; [ "$pos" -gt "$n" ] && pos="$n"
+    for ((i=0; i<n; i++)); do
+        [ "${lines[$i]%%|*}" = "$code" ] && { idx=$i; break; }
+    done
+    [ "$idx" -lt 0 ] && return 1
+    target=$((pos-1))
+    [ "$target" -eq "$idx" ] && return 0
+    local moved="${lines[$idx]}"
+    local -a rest=() out=()
+    for ((i=0; i<n; i++)); do [ "$i" -ne "$idx" ] && rest+=("${lines[$i]}"); done
+    for ((i=0; i<${#rest[@]}; i++)); do
+        [ "$i" -eq "$target" ] && out+=("$moved")
+        out+=("${rest[$i]}")
+    done
+    [ "$target" -ge "${#rest[@]}" ] && out+=("$moved")
+    tmp=$(mktemp) || return 1
+    printf '%s\n' "${out[@]}" > "$tmp"
+    mv "$tmp" "$TARIFFS_CONF"
+}
+
+# Человеческая цена тарифа: «⭐ 100», «199 RUB» или список «⭐ 100 / 199 RUB».
+# Оба аргумента — '/'-списки одинаковой длины (или одиночные значения).
+tariff_price_str() {   # price[/...] currency[/...]
+    local -a pa ca; IFS='/' read -r -a pa <<< "$1"; IFS='/' read -r -a ca <<< "$2"
+    local i p c one out=""
+    for i in "${!pa[@]}"; do
+        p="${pa[$i]}"; c="${ca[$i]:-XTR}"
+        if [ "$c" = "XTR" ]; then one="⭐ $p"; else one="$p $c"; fi
+        [ -n "$out" ] && out="$out / $one" || out="$one"
+    done
+    printf '%s' "$out"
+}
+
+# Цена тарифа для конкретной валюты из '/'-списков price/cur (пусто → нет такой).
+tariff_price_in_list() {   # price_list cur_list want_currency
+    local -a pa ca; IFS='/' read -r -a pa <<< "$1"; IFS='/' read -r -a ca <<< "$2"
+    local i
+    for i in "${!ca[@]}"; do
+        [ "${ca[$i]}" = "$3" ] && { printf '%s' "${pa[$i]}"; return 0; }
+    done
+    return 1
+}
+
+# Список валют тарифа (через пробел) по его коду.
+tariff_currencies_of() {   # code
+    local row c; row=$(tariff_get "$1"); [ -z "$row" ] && return 1
+    IFS='|' read -r _ _ _ _ _ c <<< "$row"
+    printf '%s' "$c" | tr '/' ' '
+}
+
+# Диалог ввода набора валют и цены для каждой. Результат в _TPRICE/_TCUR
+# ('/'-списки). Возврат 1 при ошибке ввода (сообщение уже напечатано).
+# Необязательные аргументы cur_default/price_default показываются как текущие.
+tariff_ask_prices() {   # [cur_default] [price_default]
+    _TPRICE=""; _TCUR=""
+    local dcur="${1:-}" dprice="${2:-}" raw
+    local hint="  Валюты через пробел/запятую/слеш (XTR — Stars; RUB/USD/...)"
+    if [ -n "$dcur" ]; then
+        ask raw "$hint [$(printf '%s' "$dcur" | tr '/' ' ')]: "; raw="${raw:-$dcur}"
+    else
+        ask raw "$hint (Enter = XTR): "; raw="${raw:-XTR}"
+    fi
+    raw=$(printf '%s' "$raw" | tr ',/' '  ' | tr 'a-z' 'A-Z')
+    local -a curs=(); local c dup s
+    for c in $raw; do
+        [ -z "$c" ] && continue
+        [[ "$c" =~ ^[A-Z]{3}$ ]] || { echo "  ❌ Валюта «$c» — ровно 3 буквы (XTR/RUB/USD...)."; return 1; }
+        dup=0; for s in "${curs[@]}"; do [ "$s" = "$c" ] && dup=1; done
+        [ "$dup" -eq 0 ] && curs+=("$c")
+    done
+    [ "${#curs[@]}" -eq 0 ] && { echo "  ❌ Не указано ни одной валюты."; return 1; }
+    local -a prices=(); local cur p def
+    for cur in "${curs[@]}"; do
+        def=$(tariff_price_in_list "$dprice" "$dcur" "$cur" 2>/dev/null || true)
+        if [ "$cur" = "XTR" ]; then
+            ask p "  Цена в звёздах (XTR)${def:+ [$def]}: "
+        else
+            ask p "  Цена в $cur (целое, осн. единицы)${def:+ [$def]}: "
+        fi
+        p="${p:-$def}"
+        [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -gt 0 ] || { echo "  ❌ Цена в $cur — целое число > 0."; return 1; }
+        prices+=("$p")
+    done
+    local IFS='/'
+    _TCUR="${curs[*]}"; _TPRICE="${prices[*]}"
+    return 0
 }
 
 # ---------- продление/выдача доступа (общее для оплат и админ-команд) ----------
@@ -328,11 +425,20 @@ bot_buy_menu() {   # chat_id
 }
 
 # Выставить счёт по тарифу.
-bot_send_invoice() {   # chat_id tariff_code
-    local chat="$1" code="$2" row title days devices price cur user payload prices provider
+bot_send_invoice() {   # chat_id tariff_code [currency]
+    local chat="$1" code="$2" want="${3:-}" row title days devices price cur user payload prices provider
     row=$(tariff_get "$code")
     [ -z "$row" ] && { tg_send "$chat" "Тариф не найден (возможно, удалён)."; return; }
     IFS='|' read -r code title days devices price cur <<< "$row"
+    # Мультивалютный тариф: берём указанную валюту, иначе первую в списке.
+    local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
+    local pick=0 k
+    if [ -n "$want" ]; then
+        pick=-1
+        for k in "${!ca[@]}"; do [ "${ca[$k]}" = "$want" ] && { pick=$k; break; }; done
+        [ "$pick" -lt 0 ] && { tg_send "$chat" "Эта валюта недоступна для тарифа."; return; }
+    fi
+    price="${pa[$pick]}"; cur="${ca[$pick]:-XTR}"
     user=$(tg_bound_user "$chat"); [ -z "$user" ] && user="-"
     payload="pay:${code}:${user}"
     local desc="Доступ на ${days} дн."
@@ -354,6 +460,38 @@ bot_send_invoice() {   # chat_id tariff_code
             --data-urlencode "description=$desc" --data-urlencode "payload=$payload" \
             --data-urlencode "provider_token=$provider" --data-urlencode "currency=$cur" \
             --data-urlencode "prices=$prices" >/dev/null
+    fi
+}
+
+# Меню выбора валюты оплаты для мультивалютного тарифа (кнопка на валюту).
+bot_buy_currency_menu() {   # chat_id tariff_code
+    local chat="$1" code="$2" row title price cur
+    row=$(tariff_get "$code")
+    [ -z "$row" ] && { tg_send "$chat" "Тариф не найден."; return; }
+    IFS='|' read -r _ title _ _ price cur <<< "$row"
+    local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
+    local rows i c p label
+    rows=$(for i in "${!ca[@]}"; do
+        c="${ca[$i]}"; p="${pa[$i]}"
+        [ "$c" = "XTR" ] && label="⭐ $p" || label="$p $c"
+        jq -nc --arg t "$label" --arg d "buy:$code:$c" '[{text:$t,callback_data:$d}]'
+    done | jq -sc '.')
+    local kb; kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:$r}')
+    tg_send "$chat" "💳 <b>$(tg_esc "$title")</b> — выберите способ оплаты:" "$kb"
+}
+
+# Обработка кнопки «buy:...»: «buy:код» (без валюты) или «buy:код:ВАЛЮТА».
+# Без валюты: одна валюта → сразу счёт; несколько → меню выбора валюты.
+bot_buy_dispatch() {   # chat_id rest(код | код:валюта)
+    local chat="$1" rest="$2" code cur
+    code="${rest%%:*}"
+    if [ "$rest" = "$code" ]; then
+        local -a ca; read -r -a ca <<< "$(tariff_currencies_of "$code")"
+        if [ "${#ca[@]}" -le 1 ]; then bot_send_invoice "$chat" "$code"
+        else bot_buy_currency_menu "$chat" "$code"; fi
+    else
+        cur="${rest#*:}"
+        bot_send_invoice "$chat" "$code" "$cur"
     fi
 }
 
@@ -558,7 +696,7 @@ bot_handle_update() {   # json
                 fi ;;
             m:status) bot_client_status "$chat" ;;
             m:buy)    bot_buy_menu "$chat" ;;
-            buy:*)    bot_send_invoice "$chat" "${data#buy:}" ;;
+            buy:*)    bot_buy_dispatch "$chat" "${data#buy:}" ;;
             a:*)
                 bot_is_admin "$from" || { tg_send "$chat" "⛔ Только для администратора."; return 0; }
                 case "$data" in
@@ -1040,11 +1178,12 @@ bot_tariffs_menu() {
         [ "$i" -eq 0 ] && echo "    (тарифов нет — клиенты не смогут купить доступ)"
         echo ""
         echo "  Валюта XTR = Telegram Stars (работают сразу). RUB/USD/… — нужен"
-        echo "  платёжный токен провайдера (меню бота, пункт 5)."
+        echo "  платёжный токен провайдера (меню бота, пункт 5). У одного тарифа"
+        echo "  можно задать НЕСКОЛЬКО цен (напр. XTR и RUB) — клиент выберет способ."
         echo ""
         echo "  1. ➕ Добавить тариф"
-        echo "  2. ✏️  Редактировать тариф (цена/название/дни/устройства/валюта/код)"
-        echo "  3. ↕️  Переместить тариф (поменять порядок показа)"
+        echo "  2. ✏️  Редактировать тариф (цены/название/дни/устройства/валюты/код)"
+        echo "  3. ↕️  Переместить тариф (вверх/вниз или на позицию N)"
         echo "  4. ➖ Удалить тариф (по номеру)"
         echo "  5. 🧩 Создать типовые тарифы-примеры (Stars: 30/90/365 дней)"
         echo "  0. ↩  Назад"
@@ -1063,20 +1202,12 @@ bot_tariffs_menu() {
                 [[ "$d" =~ ^[0-9]+$ ]] && [ "$d" -gt 0 ] || { echo "  ❌ Дни — число > 0."; pause; continue; }
                 ask dv "  Лимит устройств (0 — не менять при покупке): "
                 [[ "$dv" =~ ^[0-9]+$ ]] || dv=0
-                ask cu "  Валюта (Enter = XTR — Telegram Stars; или RUB/USD/...): "
-                cu=$(printf '%s' "${cu:-XTR}" | tr 'a-z' 'A-Z' | tr -d '[:space:]')
-                [[ "$cu" =~ ^[A-Z]{3}$ ]] || cu=XTR
-                if [ "$cu" = "XTR" ]; then
-                    ask p "  Цена в звёздах (целое, напр. 100): "
-                else
-                    ask p "  Цена в $cu (целое, в основных единицах, напр. 199): "
+                tariff_ask_prices || { pause; continue; }
+                if printf '%s' "$_TCUR" | tr '/' '\n' | grep -qvx 'XTR' && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
+                    echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5)."
                 fi
-                [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -gt 0 ] || { echo "  ❌ Цена — целое число > 0."; pause; continue; }
-                if [ "$cu" != "XTR" ] && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
-                    echo "  ⚠️  Провайдер не настроен — тариф в $cu не будет продаваться, пока не зададите токен (меню бота → 5)."
-                fi
-                tariff_add "$c" "$t" "$d" "$dv" "$p" "$cu"
-                echo "  ✅ Тариф [$c] сохранён."
+                tariff_add "$c" "$t" "$d" "$dv" "$_TPRICE" "$_TCUR"
+                echo "  ✅ Тариф [$c] сохранён ($(tariff_price_str "$_TPRICE" "$_TCUR"))."
                 bot_restart
                 pause ;;
             2)
@@ -1100,21 +1231,13 @@ bot_tariffs_menu() {
                 [[ "$nd" =~ ^[0-9]+$ ]] && [ "$nd" -gt 0 ] || { echo "  ❌ Дни — число > 0."; pause; continue; }
                 ask ndv "  Лимит устройств [$edv] (0 — не менять при покупке): "; ndv="${ndv:-$edv}"
                 [[ "$ndv" =~ ^[0-9]+$ ]] || ndv=0
-                ask ncu "  Валюта [$ecu] (XTR — Telegram Stars; или RUB/USD/...): "; ncu="${ncu:-$ecu}"
-                ncu=$(printf '%s' "$ncu" | tr 'a-z' 'A-Z' | tr -d '[:space:]')
-                [[ "$ncu" =~ ^[A-Z]{3}$ ]] || ncu=XTR
-                if [ "$ncu" = "XTR" ]; then
-                    ask np "  Цена в звёздах [$ep]: "
-                else
-                    ask np "  Цена в $ncu [$ep] (целое, в основных единицах): "
+                echo "  Текущие цены: $(tariff_price_str "$ep" "$ecu")"
+                tariff_ask_prices "$ecu" "$ep" || { pause; continue; }
+                if printf '%s' "$_TCUR" | tr '/' '\n' | grep -qvx 'XTR' && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
+                    echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5)."
                 fi
-                np="${np:-$ep}"
-                [[ "$np" =~ ^[0-9]+$ ]] && [ "$np" -gt 0 ] || { echo "  ❌ Цена — целое число > 0."; pause; continue; }
-                if [ "$ncu" != "XTR" ] && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
-                    echo "  ⚠️  Провайдер не настроен — тариф в $ncu не будет продаваться, пока не зададите токен (меню бота → 5)."
-                fi
-                tariff_update "$ocode" "$nc" "$nt" "$nd" "$ndv" "$np" "$ncu"
-                echo "  ✅ Тариф [$nc] обновлён."
+                tariff_update "$ocode" "$nc" "$nt" "$nd" "$ndv" "$_TPRICE" "$_TCUR"
+                echo "  ✅ Тариф [$nc] обновлён ($(tariff_price_str "$_TPRICE" "$_TCUR"))."
                 bot_restart
                 pause ;;
             3)
@@ -1122,14 +1245,16 @@ bot_tariffs_menu() {
                 if ! [[ "$sel" =~ ^[0-9]+$ ]] || [ -z "${t_codes[$sel]:-}" ]; then
                     echo "  ❌ Неверный номер."; pause; continue
                 fi
-                local dir; ask dir "  Направление (u — вверх, d — вниз): "
-                case "$dir" in
-                    u|U|up|вверх)
-                        if tariff_move "${t_codes[$sel]}" up;   then echo "  ✅ Перемещён вверх."; bot_restart; else echo "  ⚠️  Тариф уже первый."; fi ;;
-                    d|D|down|вниз)
-                        if tariff_move "${t_codes[$sel]}" down; then echo "  ✅ Перемещён вниз.";  bot_restart; else echo "  ⚠️  Тариф уже последний."; fi ;;
-                    *) echo "  ❌ Неверное направление (нужно u или d)." ;;
-                esac
+                local dir; ask dir "  Куда: u — вверх, d — вниз, или НОМЕР позиции (напр. 1): "
+                if [[ "$dir" =~ ^[0-9]+$ ]]; then
+                    if tariff_move_to "${t_codes[$sel]}" "$dir"; then echo "  ✅ Тариф на позиции $dir."; bot_restart; else echo "  ❌ Не удалось переместить."; fi
+                elif [[ "$dir" =~ ^(u|U|up|вверх)$ ]]; then
+                    if tariff_move "${t_codes[$sel]}" up;   then echo "  ✅ Перемещён вверх."; bot_restart; else echo "  ⚠️  Тариф уже первый."; fi
+                elif [[ "$dir" =~ ^(d|D|down|вниз)$ ]]; then
+                    if tariff_move "${t_codes[$sel]}" down; then echo "  ✅ Перемещён вниз.";  bot_restart; else echo "  ⚠️  Тариф уже последний."; fi
+                else
+                    echo "  ❌ Введите u, d или номер позиции."
+                fi
                 pause ;;
             4)
                 local sel; ask sel "  Номер тарифа для удаления: "
