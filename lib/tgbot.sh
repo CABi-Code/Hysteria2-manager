@@ -326,10 +326,27 @@ bot_send_invoice() {   # chat_id tariff_code
     fi
 }
 
+# Пополнение баланса мини-аппа (payload «topup:<tg_id>»): доступ VPN НЕ трогаем,
+# только пишем строку topup в журнал оплат — её подхватит биллинг мини-аппа
+# (Laravel PollPayments) и зачислит баланс = звёзды × курс. Формат строки тот же,
+# что у обычной оплаты; отличие — code=topup, username=«-» (биллинг матчит по tgid).
+bot_fulfill_topup() {   # chat_id tg_id amount currency charge_id
+    local chat="$1" tgid="$2" amount="$3" cur="$4" charge="$5"
+    mkdir -p "$DATA_DIR"
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$tgid" "-" "topup" "$amount" "$cur" "$charge" >> "$PAYMENTS_LOG"
+    tg_send "$chat" "✅ <b>Оплата получена</b> — баланс пополняется, обновите приложение через пару секунд."
+    bot_notify_admins "💎 <b>Пополнение баланса</b>: tg:${tgid} · ${amount} ${cur} · charge: <code>$(tg_esc "$charge")</code>"
+}
+
 # Оплата прошла — выдать/продлить доступ.
 bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_id
     local chat="$1" tgid="$2" payload="$3" amount="$4" cur="$5" charge="$6"
     local code user row title days devices price tcur newexp
+    # Пополнение баланса — отдельная ветка, тариф не ищем.
+    if [ "${payload#topup:}" != "$payload" ]; then
+        bot_fulfill_topup "$chat" "$tgid" "$amount" "$cur" "$charge"
+        return
+    fi
     code=$(printf '%s' "$payload" | cut -d: -f2)
     user=$(printf '%s' "$payload" | cut -d: -f3)
     row=$(tariff_get "$code")
@@ -469,6 +486,13 @@ bot_handle_update() {   # json
     if [ -n "$pcq_id" ]; then
         local payload code
         payload=$(echo "$upd" | jq -r '.pre_checkout_query.invoice_payload // empty')
+        # Пополнение баланса мини-аппа (payload «topup:<tg_id>») тарифа не имеет —
+        # подтверждаем безусловно, фулфилмент запишет строку topup в журнал.
+        if [ "${payload#topup:}" != "$payload" ]; then
+            tg_api answerPreCheckoutQuery --data-urlencode "pre_checkout_query_id=$pcq_id" \
+                --data-urlencode "ok=true" >/dev/null
+            return 0
+        fi
         code=$(printf '%s' "$payload" | cut -d: -f2)
         if [ -n "$(tariff_get "$code")" ]; then
             tg_api answerPreCheckoutQuery --data-urlencode "pre_checkout_query_id=$pcq_id" \
