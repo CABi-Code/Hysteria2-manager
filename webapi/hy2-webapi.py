@@ -54,6 +54,29 @@ _rate_lock = threading.Lock()
 _rate_buckets = {}  # key_name -> [tokens, last_ts]
 
 
+def _env_int(name, default):
+    v = os.environ.get(name, "")
+    return int(v) if v.isdigit() else default
+
+
+# --- «Онлайн сейчас» по активности трафика ---
+# Проблема: клиент для замера латентности пингует все протоколы сразу, и каждый
+# движок (Hysteria/Xray/TUIC) видит пинг как «соединение». Считать онлайн по
+# наличию соединений — значит множить один пинг на число протоколов. Единственный
+# устойчивый признак «реально пользуется, а не пингует» — движение байтовых
+# счётчиков: пинг двигает их на единицы КБ за интервал (десятки Б/с), реальное
+# использование — на порядки больше. Фоновый сэмплер (_online_sampler) снимает
+# кумулятивный трафик всех юзеров раз в ONLINE_SAMPLE_SEC; юзер «онлайн», если
+# скорость между снимками >= ONLINE_RATE_BPS. Порог настраивается env-переменными
+# на юните демона (см. lib/webapi.sh); дефолт 2 КБ/с — заведомо выше пинг-шума и
+# ниже даже лёгкого реального сёрфинга.
+ONLINE_SAMPLE_SEC = max(5, _env_int("HY2M_ONLINE_SAMPLE_SEC", 15))
+ONLINE_RATE_BPS = _env_int("HY2M_ONLINE_RATE_BPS", 2048)
+_online_lock = threading.Lock()
+_online_prev = {}      # user -> (total_bytes, ts) — предыдущий снимок сэмплера
+_online_active = set()  # user'ы, активные по последнему снимку
+
+
 # ---------- конфиг и ключи ----------
 
 def read_kv(path):
@@ -297,6 +320,65 @@ def hysteria_online(user):
         return None
 
 
+def _all_user_totals():
+    """user -> суммарный кумулятивный трафик (локальный + пировый), одним проходом
+    файлов. Те же источники, что traffic в user_payload (stats.dat + peers/*.stats),
+    поэтому суммы сходятся. Считается по всем протоколам сразу — движки пишут в
+    общий stats.dat, так что признак активности не зависит от протокола."""
+    totals = {}
+    for r in pipe_rows(data_path("stats.dat"), 3):
+        tx = int(r[1]) if r[1].isdigit() else 0
+        rx = int(r[2]) if r[2].isdigit() else 0
+        totals[r[0]] = totals.get(r[0], 0) + tx + rx
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".stats"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("\t")
+            if len(parts) >= 4:
+                tx = int(parts[2]) if parts[2].isdigit() else 0
+                rx = int(parts[3]) if parts[3].isdigit() else 0
+                totals[parts[0]] = totals.get(parts[0], 0) + tx + rx
+    return totals
+
+
+def _online_sampler():
+    """Фоновый цикл: раз в ONLINE_SAMPLE_SEC пересчитывает множество активных
+    юзеров по скорости трафика между снимками. Демонический тред, ошибки не
+    роняют его (I/O по файлам менеджера может временно спотыкаться о sed -i)."""
+    while True:
+        try:
+            now = time.time()
+            totals = _all_user_totals()
+            active = set()
+            with _online_lock:
+                for user, cur in totals.items():
+                    prev = _online_prev.get(user)
+                    if prev:
+                        pb, pts = prev
+                        dt = now - pts
+                        # dt>0 всегда (цикл со сном), delta<0 = сброс счётчика.
+                        if dt > 0 and cur >= pb and (cur - pb) / dt >= ONLINE_RATE_BPS:
+                            active.add(user)
+                _online_prev.clear()
+                _online_prev.update((u, (b, now)) for u, b in totals.items())
+                _online_active.clear()
+                _online_active.update(active)
+        except Exception as e:
+            sys.stderr.write(f"online sampler: {e!r}\n")
+        time.sleep(ONLINE_SAMPLE_SEC)
+
+
+def is_online(user):
+    """«Онлайн сейчас» = юзер реально гонял трафик в последнем окне сэмплера."""
+    with _online_lock:
+        return user in _online_active
+
+
 def sub_tokens(user):
     """Локальные + пировые токены подписки (первый локальный — основной)."""
     tokens = list(colon_db(data_path("subtokens.db")).get(user, []))
@@ -342,8 +424,11 @@ def user_payload(user):
             "rx_bytes": lrx + prx,
             "total_bytes": ltx + ptx + lrx + prx,
         },
+        # online_connections — сырое число соединений всех движков (включая пинги),
+        # оставлено для совместимости API. online — «реально пользуется сейчас»
+        # по движению трафика (см. _online_sampler): пинги его не накручивают.
         "online_connections": (lonline or 0) + ponline if lonline is not None else ponline,
-        "online": ((lonline or 0) + ponline) > 0,
+        "online": is_online(user),
         "devices_seen": user_ip_count(user),
     }
 
@@ -801,8 +886,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     c = conf()
+    threading.Thread(target=_online_sampler, daemon=True).start()
     server = ThreadingHTTPServer((c["bind"], c["port"]), Handler)
-    sys.stderr.write(f"hy2-webapi: listening on {c['bind']}:{c['port']}, DATA_DIR={DATA_DIR}\n")
+    sys.stderr.write(f"hy2-webapi: listening on {c['bind']}:{c['port']}, DATA_DIR={DATA_DIR}, "
+                     f"online>={ONLINE_RATE_BPS}B/s@{ONLINE_SAMPLE_SEC}s\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
