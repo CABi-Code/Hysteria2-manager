@@ -630,6 +630,10 @@ cluster_apply_userlimits() {
     if [ "$changed" = 1 ]; then
         write_authlimits
         publish_cluster_userlimits
+        # Тариф из подписки мог принести новую скорость — пересобрать kernel-лимит,
+        # чтобы под неё существовал HTB-класс, а klimit_reconcile разложил пер-IP
+        # правила (без этого пришедший тариф игнорируется на ноде-приёмнике).
+        declare -F klimit_apply >/dev/null 2>&1 && klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1 || true
     fi
 }
 

@@ -29,7 +29,7 @@ LOG_DIR="/var/log/hy2-manager"                  # tgbot.sh читает при �
 LOG_FILE="$LOG_DIR/error.log"
 
 # Тот же набор модулей, что грузит hy2-manager.sh (без ui — интерактив не нужен).
-for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster tgbot; do
+for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot; do
     # shellcheck disable=SC1090
     source "$MANAGER_DIR/lib/${_lib}.sh"
 done
@@ -114,6 +114,10 @@ case "$verb" in
         take_lock
         set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" "" "$3" >/dev/null 2>&1
         write_authlimits >/dev/null 2>&1 || true
+        # Пересобрать kernel-лимит: гарантирует HTB-класс под назначенную скорость
+        # (иначе тариф без совпадающего класса игнорируется klimit_reconcile) и
+        # немедленно раскладывает пер-IP правила. Меню бота делает то же (ui.sh).
+        klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1 || true
         printf 'devices=%s\nrate=%s\n' "$(get_user_devices "$1")" "$(get_user_rate "$1")"
         ;;
 
