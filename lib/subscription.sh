@@ -253,6 +253,49 @@ build_user_link() {
         "$user" "$pass" "$ip" "$port" "$obfs" "$sni" "$tag"
 }
 
+# Плоский список ВСЕХ прямых ссылок юзера: локальный hysteria2:// + локальные
+# доп. протоколы (VLESS/SS2022/TUIC/Trojan) + ключи всех остальных нод кластера
+# из кэшированных манифестов пиров. По одной ссылке на строку, дедуп по host:port
+# — ровно тот же контент, что кодируется в base64-подписку (см. regen_subscriptions),
+# только в открытом виде. Нужен Web API, чтобы отдать кабинету прямые ключи по
+# всем протоколам и всему доступному кластеру, а не только hysteria2 этой ноды.
+build_user_all_links() {
+    local user="$1"
+    local ip port obfs sni lp cst
+    # Отключённый/удалённый по кластеру не получает ссылок (как и в подписке).
+    cst=""
+    declare -F cstate_get >/dev/null 2>&1 && cst=$(cstate_get "$user")
+    [ "$cst" = "deleted" ] || [ "$cst" = "disabled" ] && return 0
+    lp=$(get_user_password "$user")
+    ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
+    {
+        [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
+        # Локальные ссылки доп. протоколов этого юзера.
+        [ -n "$lp" ] && declare -F proto_user_uris >/dev/null 2>&1 && \
+            proto_user_uris "$user" "$lp" "$ip" "$(render_tag "$user")"
+        # Ключи остальных нод кластера из манифестов пиров (все их протоколы).
+        [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
+            | awk -F'\t' -v u="$user" '$1==u{print $2}'
+    } | grep -v '^$' | awk '
+        {
+          # Санитайз {protocol} от старых нод (см. regen_subscriptions).
+          if (index($0,"{protocol}")>0) {
+            lbl="KEY"
+            if      ($0 ~ /^hysteria2:\/\//) lbl="HY2"
+            else if ($0 ~ /^vless:\/\//)     lbl="VLESS"
+            else if ($0 ~ /^ss:\/\//)        lbl="SS22"
+            else if ($0 ~ /^tuic:\/\//)      lbl="TUIC"
+            else if ($0 ~ /^trojan:\/\//)    lbl="TROJAN"
+            gsub(/\{protocol\}/, lbl)
+          }
+          s=$0
+          sub(/^[^/]*\/\//,"",s)   # убрать схему
+          sub(/\/.*/,"",s)          # оставить user:pass@host:port
+          n=split(s,p,"@"); hp=p[n] # host:port = после ПОСЛЕДНЕГО @
+          if (!seen[hp]++) print $0
+        }'
+}
+
 # Токен подписки юзера (создаёт при отсутствии). Высокоэнтропийный — он и есть
 # «секрет» в ссылке https://домен/sub/<token>.
 sub_token_for() {

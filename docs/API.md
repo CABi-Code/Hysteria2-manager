@@ -152,13 +152,27 @@ curl -H "$H" "$BASE/v1/users/alice"
 ### GET /v1/users/{name}/subscription — ссылки доступа (scope: read)
 
 `subscription_url` — основная ссылка-подписка (все серверы кластера,
-автообновление в клиенте); `links` — прямые `hysteria2://`-ключи этой ноды.
+автообновление в клиенте). Прямые ключи (для клиентов без подписок) отдаются
+двумя видами:
+
+- `links` — плоский список строк-URI; теперь по **всем протоколам и всем нодам
+  кластера** (не только `hysteria2://` этой ноды), тот же контент, что в подписке;
+- `direct_links` — те же ключи в разобранном виде: `{url, protocol,
+  protocol_name, host, port, label}`. `host`/`port` — для группировки по серверам,
+  `label` — подпись ключа (метка ноды из `SUB_TAG_TMPL`), `protocol` — схема URI
+  (`hysteria2`/`vless`/`ss`/`tuic`/`trojan`).
 
 ```json
 {"ok":true,"data":{"username":"alice",
   "subscription_url":"https://vpn.example.com/sub/tok...",
   "subscription_urls":["https://vpn.example.com/sub/tok..."],
-  "links":["hysteria2://alice:pass@1.2.3.4:443/?...#alice"]}}
+  "links":["hysteria2://alice:pass@node-a:443/?...#Нода-A | HY2",
+           "vless://uuid@node-a:8443?...#Нода-A | VLESS", "..."],
+  "direct_links":[
+    {"url":"hysteria2://...","protocol":"hysteria2","protocol_name":"Hysteria2",
+     "host":"node-a.example.com","port":"443","label":"Нода-A | HY2"},
+    {"url":"vless://...","protocol":"vless","protocol_name":"VLESS",
+     "host":"node-a.example.com","port":"8443","label":"Нода-A | VLESS"}]}}
 ```
 
 > Содержимое `data` включает секреты (токен подписки). Не логируйте его и не
