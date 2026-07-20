@@ -65,8 +65,11 @@ proto_trojan_port()    { local p; p=$(proto_get PROTO_TROJAN_PORT);    echo "${p
 proto_trojan_ws_path() { local p; p=$(proto_get PROTO_TROJAN_WS_PATH); echo "${p:-/}"; }
 proto_ss_method()  { local m; m=$(proto_get PROTO_SS_METHOD);  echo "${m:-2022-blake3-aes-128-gcm}"; }
 proto_ss_keylen()  { case "$(proto_ss_method)" in *aes-256*) echo 32 ;; *) echo 16 ;; esac; }
-proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-www.icloud.com:443}"; }
-proto_reality_sni()     { local s; s=$(proto_get PROTO_REALITY_SNI);    echo "${s:-www.icloud.com}"; }
+# REALITY-цель («домен-прикрытие»): apple/icloud Xray прямо помечает как рисковые
+# (могут привести к блокировке IP). Дефолт — нейтральный иностранный сайт с
+# TLS1.3+H2+X25519, не блокируемый в РФ. dest и sni ДОЛЖНЫ указывать на один хост.
+proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-www.samsung.com:443}"; }
+proto_reality_sni()     { local s; s=$(proto_get PROTO_REALITY_SNI);    echo "${s:-www.samsung.com}"; }
 proto_reality_privkey() { proto_get PROTO_REALITY_PRIVKEY; }
 proto_reality_pubkey()  { proto_get PROTO_REALITY_PUBKEY; }
 proto_reality_shortid() { proto_get PROTO_REALITY_SHORTID; }
@@ -191,13 +194,15 @@ proto_gen_tuic_cert() {
 }
 
 # ---------------- Генерация клиентских записей для конфигов ----------------
-# VLESS-клиенты Xray: [{ "id":UUID, "email":user, "flow":"" }, ...]
+# VLESS-клиенты Xray: [{ "id":UUID, "email":user, "flow":"xtls-rprx-vision" }, ...]
+# Vision требует raw-TCP инбаунд (network:tcp) — с XHTTP/WS flow невалиден и Xray
+# отвергнет клиента. flow ДОЛЖЕН совпадать в инбаунде и в share-ссылке.
 _proto_xray_vless_clients() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
         [ "$first" = 1 ] || printf ','
-        printf '{"id":"%s","email":"%s","flow":""}' "$(proto_uuid "$u" "$p")" "$u"
+        printf '{"id":"%s","email":"%s","flow":"xtls-rprx-vision"}' "$(proto_uuid "$u" "$p")" "$u"
         first=0
     done < "$USERS_DB"
 }
@@ -239,9 +244,13 @@ proto_write_xray_config() {
     mkdir -p "$PROTO_DIR"
     local inbounds="" comma=""
     if proto_vless_enabled; then
-        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]},"xhttpSettings":{"path":"%s","mode":"auto"}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
+        # VLESS + REALITY поверх raw TCP с XTLS-Vision (flow задаётся на клиенте).
+        # Vision splice'ит uplink напрямую в TCP → без отдельного стрима выгрузки
+        # (как было у XHTTP, где upload шёл POST'ом и мог вставать в 0). Это и
+        # самый совместимый (Happ/Hiddify/v2rayNG) и самый устойчивый к DPI РФ.
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
             "$(proto_vless_port)" "$(_proto_xray_vless_clients)" "$(proto_reality_dest)" \
-            "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)" "$(proto_xhttp_path)")
+            "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)")
         comma=","
     fi
     if proto_ss_enabled; then
@@ -417,10 +426,13 @@ proto_sync_users() {
 proto_build_vless() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4"
     tag=${tag//\{protocol\}/VLESS}   # {protocol} — метка этого ключа
-    printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%s&mode=auto#%s' \
+    # VLESS-Vision-REALITY поверх TCP. flow ОБЯЗАН совпадать с инбаундом
+    # (xtls-rprx-vision), иначе uplink рвётся/встаёт в 0. fp=firefox — uTLS-
+    # отпечаток ClientHello (маскировка под браузер); spx — spiderX (дефолт «/»).
+    printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&pbk=%s&sid=%s&fp=firefox&type=tcp&spx=%%2F#%s' \
         "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_vless_port)" \
         "$(proto_reality_sni)" "$(proto_reality_pubkey)" "$(proto_reality_shortid)" \
-        "$(_proto_urlenc "$(proto_xhttp_path)")" "$(_proto_urlenc "$tag")"
+        "$(_proto_urlenc "$tag")"
 }
 proto_build_ss() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4" userinfo
