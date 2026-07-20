@@ -20,6 +20,7 @@
 #
 # Документация API для разработчиков: docs/API.md.
 # ================================================
+import base64
 import hashlib
 import hmac
 import json
@@ -353,6 +354,64 @@ def is_online(user):
         return (now - _online_last_active.get(user, 0.0)) < ONLINE_GRACE_SEC
 
 
+# --- SSE live-пуш статуса онлайн ---
+# Браузер не хранит ключ менеджера, поэтому Laravel (по своему Bearer-ключу)
+# запрашивает у нас короткоживущий тикет на конкретного юзера, а EventSource
+# открывает /v1/stream/online?ticket=… Тикет подписан секретом процесса (живёт в
+# памяти, ротация на рестарте — тикеты короткие). Данные потока — только булев
+# online одного юзера, чувствительность низкая.
+_STREAM_SECRET = os.urandom(32)
+STREAM_TICKET_TTL = _env_int("HY2M_STREAM_TICKET_TTL", 1800)  # с
+STREAM_POLL_SEC = max(2, _env_int("HY2M_STREAM_POLL_SEC", 5))  # как часто watcher сверяет статус
+STREAM_PING_SEC = max(10, _env_int("HY2M_STREAM_PING_SEC", 20))  # keepalive-комментарий
+STREAM_HANDLED = object()  # сентинел: хендлер уже сам отдал ответ (стрим), respond() не нужен
+
+# Общий watcher вместо опроса на каждого клиента: считает is_online только для
+# юзеров, у кого есть активные подписчики, раз в STREAM_POLL_SEC, и будит хендлеры.
+_stream_cv = threading.Condition()
+_stream_subs = {}    # user -> число открытых SSE-подписчиков
+_stream_state = {}   # user -> последний известный online (bool)
+
+
+def make_stream_ticket(user):
+    exp = int(time.time()) + STREAM_TICKET_TTL
+    sig = hmac.new(_STREAM_SECRET, f"{user}:{exp}".encode(), hashlib.sha256).hexdigest()[:32]
+    return base64.urlsafe_b64encode(f"{user}:{exp}:{sig}".encode()).decode()
+
+
+def parse_stream_ticket(ticket):
+    """Вернуть username из валидного тикета либо None. username из [A-Za-z0-9_-]
+    (RE_USERNAME) — двоеточий не содержит, поэтому rsplit безопасен."""
+    try:
+        raw = base64.urlsafe_b64decode((ticket or "").encode()).decode()
+        user, exp_s, sig = raw.rsplit(":", 2)
+        exp = int(exp_s)
+    except Exception:
+        return None
+    if exp < time.time() or not RE_USERNAME.fullmatch(user):
+        return None
+    good = hmac.new(_STREAM_SECRET, f"{user}:{exp}".encode(), hashlib.sha256).hexdigest()[:32]
+    return user if hmac.compare_digest(sig, good) else None
+
+
+def _stream_watcher():
+    """Демонический тред: раз в STREAM_POLL_SEC пересчитывает online подписанных
+    юзеров (O(число подписанных), не на клиента) и будит хендлеры при изменении."""
+    while True:
+        time.sleep(STREAM_POLL_SEC)
+        try:
+            with _stream_cv:
+                users = list(_stream_subs.keys())
+            updates = {u: is_online(u) for u in users}
+            with _stream_cv:
+                changed = any(_stream_state.get(u) != v for u, v in updates.items())
+                _stream_state.update(updates)
+                if changed:
+                    _stream_cv.notify_all()
+        except Exception as e:
+            sys.stderr.write(f"stream watcher: {e!r}\n")
+
+
 def sub_tokens(user):
     """Локальные + пировые токены подписки (первый локальный — основной)."""
     tokens = list(colon_db(data_path("subtokens.db")).get(user, []))
@@ -583,6 +642,9 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
     ("POST", re.compile(r"^/v1/telegram/bind$"), "telegram", "h_bind"),
     ("POST", re.compile(r"^/v1/codes/redeem$"), "telegram", "h_redeem"),
+    # SSE: выдача тикета — по Bearer (Laravel); сам поток — по тикету (браузер).
+    ("POST", re.compile(r"^/v1/stream/ticket$"), "read", "h_stream_ticket"),
+    ("GET", re.compile(r"^/v1/stream/online$"), None, "h_stream_online"),
 ]
 
 
@@ -722,6 +784,62 @@ class Handler(BaseHTTPRequestHandler):
         return {"username": res.get("username"),
                 "bound": bool(tg_id)}
 
+    # -- SSE live-статус онлайн --
+
+    def h_stream_ticket(self):
+        user = need_username(self.body.get("username"))
+        return {"ticket": make_stream_ticket(user), "expires_in": STREAM_TICKET_TTL}
+
+    def h_stream_online(self):
+        user = parse_stream_ticket(self.query.get("ticket", ""))
+        if not user:
+            raise ApiError(401, "invalid_ticket", "плохой или просроченный тикет")
+        self._stream_online(user)
+        return STREAM_HANDLED
+
+    def _stream_online(self, user):
+        """Держит text/event-stream и пушит {online:bool} при изменении статуса
+        (+ keepalive-комментарии). Под HTTP/1.1 без Content-Length закрываем
+        keep-alive: клиент читает поток до закрытия сокета (EventSource — ок)."""
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")  # на случай буферизующих прокси
+        self.end_headers()
+        with _stream_cv:
+            _stream_subs[user] = _stream_subs.get(user, 0) + 1
+        try:
+            last = is_online(user)
+            with _stream_cv:
+                _stream_state[user] = last
+            self._sse(f'data: {{"online": {"true" if last else "false"}}}\n\n')
+            while True:
+                with _stream_cv:
+                    _stream_cv.wait_for(lambda: _stream_state.get(user) != last,
+                                        timeout=STREAM_PING_SEC)
+                    val = _stream_state.get(user, last)
+                if val != last:
+                    last = val
+                    self._sse(f'data: {{"online": {"true" if last else "false"}}}\n\n')
+                else:
+                    self._sse(": ping\n\n")   # keepalive: держим соединение живым
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # клиент отвалился — штатно
+        finally:
+            with _stream_cv:
+                n = _stream_subs.get(user, 0) - 1
+                if n <= 0:
+                    _stream_subs.pop(user, None)
+                    _stream_state.pop(user, None)
+                else:
+                    _stream_subs[user] = n
+
+    def _sse(self, text):
+        self.wfile.write(text.encode("utf-8"))
+        self.wfile.flush()
+
     # -- инфраструктура --
 
     def dispatch(self, verb, *args):
@@ -782,7 +900,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.body = {}
             data = getattr(self, handler)(*match.groups())
             status = 200
-            self.respond(200, {"ok": True, "data": data})
+            if data is not STREAM_HANDLED:   # SSE-хендлер уже сам отдал поток
+                self.respond(200, {"ok": True, "data": data})
         except ApiError as e:
             status = e.status
             self.respond(e.status, {"ok": False, "error": {"code": e.code, "message": e.message}},
@@ -860,6 +979,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     c = conf()
+    threading.Thread(target=_stream_watcher, daemon=True).start()
     server = ThreadingHTTPServer((c["bind"], c["port"]), Handler)
     sys.stderr.write(f"hy2-webapi: listening on {c['bind']}:{c['port']}, DATA_DIR={DATA_DIR}\n")
     try:
