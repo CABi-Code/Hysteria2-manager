@@ -602,6 +602,39 @@ proto_collect_traffic() {
     done <<< "$users_uniq"
 }
 
+# ---------------- Активность доп. протоколов ----------------
+# Печатает строки «user|cum» — КУМУЛЯТИВНЫЙ трафик (tx+rx, байт) юзера по доп.
+# протоколам, БЕЗ сброса счётчиков (в отличие от proto_collect_traffic с -reset).
+# Нужен collect_activity (lib/traffic.sh) для расчёта скорости за интервал и флага
+# «онлайн/активен» по всем протоколам, а не только Hysteria. best-effort: любой
+# сбой источника — просто нет его строк (Hysteria-активность не ломаем).
+#   Xray  — statsquery user>>>EMAIL>>>traffic>>>up|downlink, суммируем оба направления.
+#   TUIC  — sing-box /connections: upload+download по metadata.user (кумулятив за
+#           жизнь соединения; для «активен/нет» этого хватает — у стримящего юзера
+#           сумма растёт, у пинга стоит на месте).
+proto_activity_cum_lines() {
+    proto_any_enabled || return 0
+    if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
+        "$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -pattern "user>>>" 2>/dev/null \
+          | jq -r '
+                reduce ((.stat // [])[]
+                        | select(.name != null and (.name | startswith("user>>>")))) as $s
+                    ({}; .[($s.name | split(">>>"))[1]] += (($s.value // 0) | tonumber))
+                | to_entries[] | "\(.key)|\(.value)"' 2>/dev/null
+    fi
+    if proto_tuic_enabled; then
+        local secret conns
+        secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+        conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
+            "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
+        [ -n "$conns" ] && printf '%s' "$conns" | jq -r '
+            reduce ((.connections // [])[] | select(.metadata.user != null and .metadata.user != "")) as $c
+                ({}; .[$c.metadata.user] += (($c.upload // 0) + ($c.download // 0)))
+            | to_entries[] | "\(.key)|\(.value)"' 2>/dev/null
+    fi
+    return 0
+}
+
 # ---------------- Онлайн доп. протоколов ----------------
 # Возвращает JSON {user: conns} по доп. протоколам (best-effort; при любой ошибке
 # — пустой {}, чтобы никогда не ломать основной онлайн Hysteria).

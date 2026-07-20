@@ -66,10 +66,21 @@ collect_traffic() {
 # сбой мониторинга не привёл к ложным обрезаниям и не терял «первенство» ноды.
 collect_activity() {
     local response now user cum prevline prevcum prevts elapsed delta rate \
-          old_line old_active old_since active since thr
+          old_line old_active old_since active since thr merged
     response=$(api_get "/traffic")   # без clear=1 — не мешаем 30-мин сбору
     { [ -z "$response" ] || [ "$response" = "null" ]; } && return 0
     echo "$response" | jq empty 2>/dev/null || return 0
+
+    # Суммарный кумулятив per-user по ВСЕМ протоколам: Hysteria (/traffic) +
+    # доп. протоколы (proto_activity_cum_lines: Xray statsquery + TUIC /connections).
+    # awk складывает дубли юзеров. Fail-safe сохранён: если Hysteria API отдал
+    # пусто — мы уже вышли выше и НЕ трогаем activity.dat (без ложных обрезаний).
+    merged=$(
+        {
+            echo "$response" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
+            declare -F proto_activity_cum_lines >/dev/null 2>&1 && proto_activity_cum_lines 2>/dev/null
+        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%s\n", u, s[u]}'
+    )
 
     now=$(date +%s)
     thr="${ACTIVITY_THRESHOLD_BPS:-4096}"
@@ -113,7 +124,7 @@ collect_activity() {
             active=0; since=0
         fi
         printf '%s|%s|%s|%s\n' "$user" "$active" "$since" "$rate" >> "$newact"
-    done < <(echo "$response" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null)
+    done <<< "$merged"
 
     mv "$newprev" "$ACTIVITY_PREV_FILE" 2>/dev/null
     mv "$newact" "$ACTIVITY_FILE" 2>/dev/null
