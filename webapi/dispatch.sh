@@ -161,6 +161,17 @@ case "$verb" in
         printf 'link=%s\n' "$(build_user_link "$1" "$pass")"
         ;;
 
+    user-all-links)  # <user> → link=<uri> построчно (все протоколы + все ноды
+                     # кластера). Read-verb: сборка ссылок требует config/get_ip.
+        [ $# -eq 1 ] || fail 64 bad_args "user-all-links <user>"
+        valid_user "$1"
+        # Печатаем по строке «link=<uri>»: контракт stdout = key=value,
+        # демон читает повторяющийся ключ как список (run_dispatch_lines).
+        while IFS= read -r _uri; do
+            [ -n "$_uri" ] && printf 'link=%s\n' "$_uri"
+        done < <(build_user_all_links "$1")
+        ;;
+
     *)
         fail 64 unknown_verb "неизвестная команда: ${verb:-<пусто>}"
         ;;

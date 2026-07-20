@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -492,17 +493,50 @@ def run_dispatch(verb, *args):
             out[k] = v
     if proc.returncode == 0:
         return out, None
+    return None, _dispatch_error(proc, verb, out)
+
+
+def run_dispatch_lines(verb, *args):
+    """Как run_dispatch, но для read-verb'ов, печатающих ПОВТОРЯЮЩИЙСЯ ключ
+    (link=… построчно). Возвращает (list[str] значений первого ключа, None)
+    либо (None, (http, code, msg[, headers])). Обычный run_dispatch схлопнул бы
+    повторы в одну запись dict — здесь сохраняем порядок и все значения."""
+    env = dict(os.environ, HY2M_DATA_DIR=DATA_DIR, HY2M_CONFIG=CONFIG_YAML)
+    try:
+        proc = subprocess.run([DISPATCH, verb, *args], capture_output=True,
+                              text=True, timeout=60, env=env)
+    except subprocess.TimeoutExpired:
+        return None, (504, "dispatch_timeout", "менеджер не ответил за 60 секунд")
+    except OSError as e:
+        sys.stderr.write(f"dispatch {verb}: запуск не удался: {e!r}\n")
+        return None, (500, "dispatch_unavailable", "менеджер недоступен")
+    if proc.returncode == 0:
+        values = []
+        for line in proc.stdout.splitlines():
+            k, sep, v = line.partition("=")
+            if sep and k not in ("error", "message"):
+                values.append(v)
+        return values, None
+    return None, _dispatch_error(proc, verb, {
+        k: v for k, _, v in (l.partition("=") for l in proc.stdout.splitlines()) if _
+    })
+
+
+def _dispatch_error(proc, verb, out):
+    """Единая трактовка ненулевых кодов возврата dispatch.sh (см. контракт).
+    Возвращает кортеж ошибки (http, code, msg[, headers]); заворачивание в
+    (None, err) — на вызывающем."""
     if proc.returncode == 2:
-        return None, (404, out.get("error", "not_found"), out.get("message", "объект не найден"))
+        return (404, out.get("error", "not_found"), out.get("message", "объект не найден"))
     if proc.returncode == 3:
-        return None, (409, out.get("error", "conflict"), out.get("message", "конфликт состояния"))
+        return (409, out.get("error", "conflict"), out.get("message", "конфликт состояния"))
     if proc.returncode == 75:
         # flock -w в dispatch.sh не дождался блокировки: менеджер занят другой
         # мутацией. Это не ошибка менеджера, а «попробуйте позже» — 503 + Retry-After.
-        return None, (503, "busy", "менеджер занят, повторите позже",
-                      {"Retry-After": "15"})
+        return (503, "busy", "менеджер занят, повторите позже",
+                {"Retry-After": "15"})
     sys.stderr.write(f"dispatch {verb} rc={proc.returncode}: {proc.stderr.strip()}\n")
-    return None, (502, "manager_error", "внутренняя ошибка менеджера")
+    return (502, "manager_error", "внутренняя ошибка менеджера")
 
 
 # ---------- данные для info/tariffs/nodes/payments ----------
@@ -607,6 +641,42 @@ def payments(since_charge, limit):
     return {"payments": out, "next_since_charge": out[-1]["charge_id"] if out else since_charge}
 
 
+# Человекочитаемые названия протоколов по схеме URI ключа.
+PROTO_NAMES = {
+    "hysteria2": "Hysteria2",
+    "vless": "VLESS",
+    "ss": "Shadowsocks 2022",
+    "tuic": "TUIC v5",
+    "trojan": "Trojan",
+}
+
+
+def parse_direct_link(uri):
+    """Разбирает share-ссылку в {url, protocol, protocol_name, host, port, label}.
+    Хост:порт — источник группировки по серверам на фронте; label (#фрагмент) —
+    подпись ключа (обычно метка ноды). Пароль может содержать '@', поэтому хост
+    берём после ПОСЛЕДНЕГО '@'."""
+    scheme, _, rest = uri.partition("://")
+    scheme = scheme.lower()
+    body, _, frag = rest.partition("#")
+    label = urllib.parse.unquote(frag) if frag else None
+    hostpart = body.split("/", 1)[0].split("?", 1)[0]
+    hostport = hostpart.rsplit("@", 1)[-1]
+    if hostport.startswith("["):            # IPv6-литерал [::1]:443
+        host, _, port = hostport[1:].partition("]")
+        port = port.lstrip(":")
+    else:
+        host, _, port = hostport.partition(":")
+    return {
+        "url": uri,
+        "protocol": scheme,
+        "protocol_name": PROTO_NAMES.get(scheme, scheme.upper() or "KEY"),
+        "host": host,
+        "port": port or None,
+        "label": label,
+    }
+
+
 def subscription_payload(user):
     active, disabled = user_exists(user)
     if not active and not disabled:
@@ -614,15 +684,16 @@ def subscription_payload(user):
     node = read_kv(data_path("node.conf"))
     host = node.get("NODE_HOST")
     urls = [f"https://{host}/sub/{t}" for t in sub_tokens(user)] if host else []
-    links = []
-    res, err = run_dispatch("user-links", user)
-    if res and res.get("link"):
-        links.append(res["link"])
+    # Прямые ключи по ВСЕМ протоколам и всем нодам кластера (см. build_user_all_links).
+    raw, err = run_dispatch_lines("user-all-links", user)
+    raw = raw or []
+    direct = [parse_direct_link(u) for u in raw]
     return {
         "username": user,
         "subscription_urls": urls,
         "subscription_url": urls[0] if urls else None,
-        "links": links,   # прямые hysteria2:// (эта нода; остальные — внутри подписки)
+        "links": raw,               # плоский список строк (обратная совместимость)
+        "direct_links": direct,     # структурированные (протокол/хост/метка)
     }
 
 
