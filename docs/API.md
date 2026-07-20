@@ -264,6 +264,34 @@ curl -H "$H" "$BASE/v1/payments?since_charge=ch_001&limit=100"
  "next_since_charge":"ch_002"}}
 ```
 
+### POST /v1/stream/ticket — тикет для SSE-потока онлайна (scope: read)
+
+Выдаёт короткоживущий тикет для потока статуса онлайн. Нужен, потому что браузер
+не может слать `Authorization` в `EventSource` — сервер (напр. Laravel) берёт
+тикет по Bearer-ключу и передаёт его в браузер. Тикет подписан секретом процесса
+webapi (ротация на рестарте), TTL 1800с, привязан к username.
+
+```bash
+curl -H "$H" -X POST "$BASE/v1/stream/ticket" -d '{"username":"alice"}'
+```
+```json
+{"ok":true,"data":{"ticket":"<opaque>","expires_in":1800}}
+```
+
+### GET /v1/stream/online — live-статус онлайн (SSE, по тикету)
+
+`text/event-stream`. Аутентификация — параметром `?ticket=` (не Bearer). Шлёт
+`data: {"online": bool}` при подключении и при КАЖДОМ изменении статуса, плюс
+keepalive-комментарии `: ping`. Семантика `online` — «реально пользуется сейчас»
+(см. `online` в статусе пользователя). Держите одно соединение; при разрыве
+берите свежий тикет и переоткрывайте.
+
+```bash
+curl -N "$BASE/v1/stream/online?ticket=<opaque>"
+# data: {"online": false}
+# data: {"online": true}
+```
+
 ---
 
 ## Приём платежей Telegram Stars из своего приложения
