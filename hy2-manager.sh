@@ -98,6 +98,10 @@ if [ "$1" = "--online-sync" ]; then
     # Частый обмен онлайном + применение лимита устройств по кластеру (cron, 1 мин).
     setup_stats_api
     migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
+    # TUIC-трафик считаем ЗДЕСЬ (раз в минуту): по дельтам соединений, иначе они
+    # успеют закрыться между снимками. До cluster_online_sync — чтобы publish_stats
+    # уже включил свежие байты. Xray/Hysteria учитываются в --collect (30 мин).
+    declare -F proto_collect_tuic_traffic >/dev/null 2>&1 && proto_collect_tuic_traffic
     cluster_online_sync
     write_authlimits    # снимок для жёсткой проверки (работает и на одиночной ноде)
     klimit_reconcile    # разложить активные IP по тарифным классам скорости (tc)

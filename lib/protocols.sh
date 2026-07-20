@@ -557,8 +557,8 @@ proto_disable_protocol() {   # name
 # с момента прошлого сброса (аналог hysteria /traffic?clear=1) и обнуляет счётчики.
 # Суммируем uplink+downlink по каждому юзеру (email) и ДОКЛАДЫВАЕМ в STATS_FILE —
 # ровно как collect_traffic для Hysteria, чтобы квоты/статистика учитывали и VLESS/SS.
-# TUIC (sing-box) в побайтный учёт пока не входит — clash_api не даёт устойчивого
-# per-user трафика; это задокументировано (docs/08-multiprotocol.md).
+# TUIC (sing-box) считается отдельно (proto_collect_tuic_traffic) — приближённо,
+# по дельтам соединений, т.к. StatsService у sing-box нет (см. ту функцию).
 proto_collect_traffic() {
     proto_xray_needed || return 0
     [ -x "$XRAY_BIN" ] || return 0
@@ -600,6 +600,61 @@ proto_collect_traffic() {
             echo "${u}|${tx}|${rx}" >> "$STATS_FILE"
         fi
     done <<< "$users_uniq"
+}
+
+# TUIC-трафик в общий учёт (STATS_FILE). У sing-box 1.13 нет StatsService
+# (v2ray_api убрали в 1.8), поэтому кумулятива per-user нет — считаем ПРИБЛИЖЁННО
+# по дельтам байт каждого соединения (clash_api /connections отдаёт upload/download
+# на соединение) между двумя снимками. Совпадающие по id соединения дают дельту;
+# закрывшиеся между снимками выпадают (их хвост теряется). Для доминирующего
+# объёма (стриминг/загрузки = долгие соединения) это ловится хорошо; короткие
+# запросы недосчитываются. ВАЖНО: вызывать ЧАСТО (раз в минуту, из --online-sync),
+# иначе почти все соединения успеют закрыться между снимками и учёт занулится.
+# Снимок id->bytes храним в PROTO_DIR/tuic_conn_prev.
+proto_collect_tuic_traffic() {
+    proto_tuic_enabled || return 0
+    local secret conns prev="$PROTO_DIR/tuic_conn_prev" newprev="$PROTO_DIR/tuic_conn_prev.tmp"
+    secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+    conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
+        "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
+    [ -n "$conns" ] || return 0
+    echo "$conns" | jq empty 2>/dev/null || return 0
+
+    declare -A _prev _du
+    if [ -f "$prev" ]; then
+        while IFS=$'\t' read -r id bytes; do
+            [ -n "$id" ] && [[ "$bytes" =~ ^[0-9]+$ ]] && _prev[$id]=$bytes
+        done < "$prev"
+    fi
+    : > "$newprev"
+    local id user bytes p d
+    while IFS=$'\t' read -r id user bytes; do
+        [ -n "$id" ] && [ -n "$user" ] || continue
+        [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+        printf '%s\t%s\n' "$id" "$bytes" >> "$newprev"
+        p=${_prev[$id]:-0}
+        if [ "$bytes" -ge "$p" ]; then d=$(( bytes - p )); else d=$bytes; fi   # d<0 = переоткрытый id
+        [ "$d" -gt 0 ] && _du[$user]=$(( ${_du[$user]:-0} + d ))
+    done < <(echo "$conns" | jq -r '(.connections // [])[]
+        | select(.metadata.user != null and .metadata.user != "")
+        | "\(.id)\t\(.metadata.user)\t\((.upload // 0) + (.download // 0))"' 2>/dev/null)
+    mv "$newprev" "$prev" 2>/dev/null
+
+    # Докладываем дельты в STATS_FILE (всё в rx: клиент преимущественно качает,
+    # для суммарной квоты сторона не важна — как в proto_collect_traffic).
+    local u old_tx old_rx new_rx
+    for u in "${!_du[@]}"; do
+        d=${_du[$u]}
+        [ "$d" -gt 0 ] || continue
+        if grep -q "^${u}|" "$STATS_FILE" 2>/dev/null; then
+            old_tx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
+            old_rx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
+            new_rx=$(( ${old_rx:-0} + d ))
+            sed -i "s#^${u}|.*#${u}|${old_tx:-0}|${new_rx}#" "$STATS_FILE"
+        else
+            echo "${u}|0|${d}" >> "$STATS_FILE"
+        fi
+    done
 }
 
 # ---------------- Активность доп. протоколов ----------------
