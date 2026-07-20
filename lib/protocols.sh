@@ -664,9 +664,8 @@ proto_collect_tuic_traffic() {
 # «онлайн/активен» по всем протоколам, а не только Hysteria. best-effort: любой
 # сбой источника — просто нет его строк (Hysteria-активность не ломаем).
 #   Xray  — statsquery user>>>EMAIL>>>traffic>>>up|downlink, суммируем оба направления.
-#   TUIC  — sing-box /connections: upload+download по metadata.user (кумулятив за
-#           жизнь соединения; для «активен/нет» этого хватает — у стримящего юзера
-#           сумма растёт, у пинга стоит на месте).
+#   TUIC  — sing-box /connections по sourceIP (user в API пуст), см.
+#           proto_tuic_activity_lines. Best-effort, только для онлайна.
 proto_activity_cum_lines() {
     proto_any_enabled || return 0
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
@@ -677,16 +676,47 @@ proto_activity_cum_lines() {
                     ({}; .[($s.name | split(">>>"))[1]] += (($s.value // 0) | tonumber))
                 | to_entries[] | "\(.key)|\(.value)"' 2>/dev/null
     fi
-    if proto_tuic_enabled; then
-        local secret conns
-        secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
-        conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
-            "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
-        [ -n "$conns" ] && printf '%s' "$conns" | jq -r '
-            reduce ((.connections // [])[] | select(.metadata.user != null and .metadata.user != "")) as $c
-                ({}; .[$c.metadata.user] += (($c.upload // 0) + ($c.download // 0)))
-            | to_entries[] | "\(.key)|\(.value)"' 2>/dev/null
-    fi
+    proto_tuic_activity_lines   # TUIC — отдельно, по sourceIP (user в API пуст)
+    return 0
+}
+
+# TUIC-активность best-effort. sing-box (clash_api) НЕ отдаёт user в метадате
+# соединения (проверено эмпирически) — атрибутируем по sourceIP: берём юзера с
+# самым свежим last_seen на этом IP из ips.dat (+ peers/*.ips). Печатает user|cum
+# (сумма upload+download открытых TUIC-соединений юзера). ТОЛЬКО для онлайна:
+# на общем CGNAT-IP изредка попадёт не тот юзер — для индикатора приемлемо, в
+# трафик/квоты это НЕ идёт. См. docs/09-online-activity.md.
+proto_tuic_activity_lines() {
+    proto_tuic_enabled || return 0
+    local secret conns
+    secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+    conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
+        "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
+    [ -n "$conns" ] || return 0
+    echo "$conns" | jq empty 2>/dev/null || return 0
+
+    # ip -> самый свежий user (ips.dat + peers/*.ips: user|ip|first|last|count).
+    declare -A _ipuser
+    local ip user last
+    while IFS=$'\t' read -r ip user; do
+        [ -n "$ip" ] && [ -n "$user" ] && _ipuser[$ip]=$user
+    done < <( { cat "$IPS_FILE" 2>/dev/null; cat "$PEERS_DIR"/*.ips 2>/dev/null; } \
+        | awk -F'|' 'NF>=4 && $1!="" && $2!="" {
+            ls=($4 ~ /^[0-9]+$/)?$4+0:0; if(ls>=s[$2]){s[$2]=ls; u[$2]=$1} }
+          END{ for(x in u) print x"\t"u[x] }' )
+
+    # sourceIP+bytes каждого TUIC-соединения -> резолв в юзера -> сумма.
+    declare -A _du
+    local bytes u2
+    while IFS=$'\t' read -r ip bytes; do
+        [ -n "$ip" ] || continue
+        u2=${_ipuser[$ip]:-}; [ -n "$u2" ] || continue
+        [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+        _du[$u2]=$(( ${_du[$u2]:-0} + bytes ))
+    done < <(echo "$conns" | jq -r '(.connections // [])[]
+        | select(.metadata.sourceIP != null)
+        | "\(.metadata.sourceIP)\t\((.upload // 0) + (.download // 0))"' 2>/dev/null)
+    for u2 in "${!_du[@]}"; do echo "${u2}|${_du[$u2]}"; done
     return 0
 }
 

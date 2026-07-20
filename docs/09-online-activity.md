@@ -20,10 +20,15 @@
 
 - **Hysteria** — `api_get "/traffic"`.
 - **Xray** (VLESS/SS/Trojan) — `xray api statsquery -pattern "user>>>"` (без reset).
-- **TUIC** (sing-box) — сумма `upload+download` по `metadata.user` из
-  `/connections`.
+- **TUIC** (sing-box) — best-effort по `sourceIP`. sing-box (clash_api) НЕ отдаёт
+  `metadata.user` (проверено эмпирически), поэтому сумму `upload+download` по
+  соединению атрибутируем на юзера с самым свежим `last_seen` на этом IP из
+  `ips.dat` (`proto_tuic_activity_lines`). На общем CGNAT-IP изредка попадёт не
+  тот юзер — для индикатора онлайн приемлемо; в трафик/квоты это НЕ идёт. Точный
+  per-user TUIC невозможен (нет user в API + общие CGNAT-IP), см.
+  памятку tuic-no-per-user-attribution.
 
-Последние два даёт `proto_activity_cum_lines` (`lib/protocols.sh`); всё
+Xray и TUIC даёт `proto_activity_cum_lines` (`lib/protocols.sh`); всё
 складывается в один кумулятив (`awk`). До этой правки активность считалась только
 по Hysteria — TUIC/Xray-юзеры показывались оффлайн при реальном использовании.
 
