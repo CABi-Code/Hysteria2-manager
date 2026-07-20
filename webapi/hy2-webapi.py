@@ -318,13 +318,17 @@ def hysteria_online(user):
 
 
 def user_active_raw(user):
-    """True, если менеджер СЕЙЧАС считает юзера активным хоть на одной ноде.
-    Локально — activity.dat (поле active, формат user|active|since|rate);
-    по кластеру — peers/*.stats (TAB, поле active = индекс 6). Без пересчёта."""
+    """True, если менеджер СЕЙЧАС считает юзера активным хоть на ОДНОЙ ноде.
+    Профиль = весь кластер, поэтому OR: локальный activity.dat (user|active|...)
+    ИЛИ любой peers/*.stats (TAB, active = индекс 6). ВАЖНО: локальный active=0 НЕ
+    прерывает проверку пиров — юзер простаивает тут, но может быть активен на
+    другой ноде (иначе онлайн «ломался» при подключении к другой ноде)."""
     for line in read_lines(data_path("activity.dat")):
         parts = line.split("|")
         if parts and parts[0] == user:
-            return len(parts) >= 2 and parts[1] == "1"
+            if len(parts) >= 2 and parts[1] == "1":
+                return True
+            break   # нашли локально, но неактивен — идём проверять пиров
     try:
         names = os.listdir(PEERS_DIR)
     except OSError:
