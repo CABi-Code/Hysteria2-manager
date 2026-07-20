@@ -226,8 +226,8 @@ klimit_active() {
 #   • IPv4 шейпится через tc; IPv6-клиентов (редко) добираем лёгким nft-дропом, чтобы
 #     они не проходили мимо лимита.
 # down_mbit — скачивание клиента (сервер -> клиент), up_mbit — отдача клиента.
-_klimit_write_script() {   # down_mbit up_mbit port [tariffs]
-    local down="$1" up="$2" port="$3" tariffs="$4"
+_klimit_write_script() {   # down_mbit up_mbit port [tariffs] [shape]
+    local down="$1" up="$2" port="$3" tariffs="$4" shape="$5"
     # Для дроп-фолбэка (nft/iptables): Мбит/с -> KiB/s (~13% запас на заголовки).
     local dkb=$(( down * 138 ))
     local ukb=$(( up * 138 ))
@@ -239,6 +239,7 @@ _klimit_write_script() {   # down_mbit up_mbit port [tariffs]
         echo "# Сгенерировано hy2-manager. Пер-IP ПОТОЛОК скорости (шейпинг, без потерь) для порта ${port}/udp."
         echo "# apply — включить, clear — выключить. Идемпотентно."
         echo "PORT=${port}"
+        echo "SHAPE=\"${shape}\"   # protonum:port всех шейпимых протоколов (17=udp,6=tcp); пусто -> 17:PORT"
         echo "DMBIT=${down}    # Мбит/с на IP: скачивание клиента, дефолт-класс туннеля (0 = без лимита)"
         echo "UMBIT=${up}      # Мбит/с на IP: отдача клиента,     дефолт-класс туннеля (0 = без лимита)"
         echo "TARIFFS=\"${tariffs}\"   # тарифные тиры (Мбит) — по классу на каждый; пер-IP раскладку ставит klimit_reconcile"
@@ -300,9 +301,16 @@ build_dev() {   # dev global_mbit portsel portval
         tc class add dev "$D" parent 1: classid "$cid" htb rate "${T}mbit" ceil "${T}mbit" || return 1
         tc qdisc add dev "$D" parent "$cid" fq_codel
     done
-    # catch-all: весь туннель (udp/PORT) без пер-IP правила -> глобальный класс 1:1.
-    tc filter add dev "$D" parent 1: prio 2 protocol ip u32 \
-        match ip protocol 17 0xff match ip "$PSEL" "$PV" 0xffff flowid 1:1 || return 1
+    # catch-all: весь туннель (все протоколы/порты из SHAPE) без пер-IP правила
+    # -> глобальный класс 1:1. SHAPE = список "protonum:port" (17=udp, 6=tcp);
+    # фолбэк на один udp/PORT, если SHAPE пуст (старый конфиг без мультипротокола).
+    local _tok _pr _po
+    [ -n "$SHAPE" ] || SHAPE="17:${PORT}"
+    for _tok in $SHAPE; do
+        _pr=${_tok%%:*}; _po=${_tok##*:}
+        tc filter add dev "$D" parent 1: prio 2 protocol ip u32 \
+            match ip protocol "$_pr" 0xff match ip "$PSEL" "$_po" 0xffff flowid 1:1 || return 1
+    done
 }
 
 # Ingress реального DEV зеркалим на IFB, чтобы ШЕЙПИТЬ отдачу (иначе только дроп).
@@ -312,9 +320,15 @@ setup_ifb() {
     ip link show "$IFB" >/dev/null 2>&1 || ip link add "$IFB" type ifb 2>/dev/null || return 1
     ip link set "$IFB" up 2>/dev/null || return 1
     tc qdisc add dev "$DEV" handle ffff: ingress 2>/dev/null
-    tc filter add dev "$DEV" parent ffff: protocol ip prio 1 u32 \
-        match ip protocol 17 0xff match ip dport "$PORT" 0xffff \
-        action mirred egress redirect dev "$IFB" 2>/dev/null || return 1
+    # Зеркалим ingress по всем протоколам/портам из SHAPE (dport = порт сервера).
+    local _tok _pr _po
+    [ -n "$SHAPE" ] || SHAPE="17:${PORT}"
+    for _tok in $SHAPE; do
+        _pr=${_tok%%:*}; _po=${_tok##*:}
+        tc filter add dev "$DEV" parent ffff: protocol ip prio 1 u32 \
+            match ip protocol "$_pr" 0xff match ip dport "$_po" 0xffff \
+            action mirred egress redirect dev "$IFB" 2>/dev/null || return 1
+    done
 }
 
 tc_clear() {
@@ -479,10 +493,32 @@ _all_rates() {   # tiers_list
     } | grep -E '^[0-9]+$' | awk '$1>0' | sort -n -u | tr '\n' ' ' | sed 's/ *$//'
 }
 
+# Список "protonum:port" всех протоколов, которые шейпим (17=udp, 6=tcp).
+# Hysteria всегда (udp, $1=порт). Доп. протоколы — только включённые. По этому
+# списку строятся catch-all и пер-IP tc-фильтры, поэтому лимит скорости (и
+# глобальный, и пер-IP тариф) действует на VLESS/SS/Trojan/TUIC так же, как на
+# Hysteria. Раньше шейпился только udp-порт Hysteria — остальные шли мимо лимита.
+_klimit_shape_ports() {   # hysteria_port
+    local out="17:$1" p
+    if declare -F proto_tuic_enabled >/dev/null 2>&1 && proto_tuic_enabled; then
+        p=$(proto_tuic_port); out="$out 17:$p"
+    fi
+    if declare -F proto_ss_enabled >/dev/null 2>&1 && proto_ss_enabled; then
+        p=$(proto_ss_port); out="$out 17:$p 6:$p"       # SS: tcp+udp
+    fi
+    if declare -F proto_vless_enabled >/dev/null 2>&1 && proto_vless_enabled; then
+        p=$(proto_vless_port); out="$out 6:$p"
+    fi
+    if declare -F proto_trojan_enabled >/dev/null 2>&1 && proto_trojan_enabled; then
+        p=$(proto_trojan_port); out="$out 6:$p"
+    fi
+    echo "$out"
+}
+
 # Включить/обновить kernel-лимит. Применяется НЕМЕДЛЕННО + переживает ребут.
 # Строится, если задан глобальный лимит ЛИБО у кого-то есть персональный тариф.
 klimit_apply() {   # down_mbit up_mbit
-    local down="$1" up="$2" port tiers tariffs
+    local down="$1" up="$2" port tiers tariffs shape
     [[ "$down" =~ ^[0-9]+$ ]] || down=0
     [[ "$up"   =~ ^[0-9]+$ ]] || up=0
     tiers="${KLIMIT_SET_TIERS:-$(klimit_tiers)}"; unset KLIMIT_SET_TIERS
@@ -492,13 +528,15 @@ klimit_apply() {   # down_mbit up_mbit
     fi
     port=$(get_port)
     tariffs=$(_all_rates "$tiers")
+    shape=$(_klimit_shape_ports "$port")
     {   echo "DOWN_MBIT=$down"
         echo "UP_MBIT=$up"
         echo "PORT=$port"
+        echo "SHAPE=$shape"
         echo "TIERS=$tiers"
         echo "TARIFFS=$tariffs"
     } > "$KLIMIT_CONF"
-    _klimit_write_script "$down" "$up" "$port" "$tariffs"
+    _klimit_write_script "$down" "$up" "$port" "$tariffs" "$shape"
     _klimit_write_unit
     systemctl enable hy2-limit.service &>/dev/null
     bash "$KLIMIT_SCRIPT" apply 2>/dev/null
@@ -535,17 +573,21 @@ klimit_clear() {
 # накладные расходы минимальны (не-udp пакеты отсекаются на первом селекторе).
 # Бонус: `tc filter del prio 1` начисто сносит флат-фильтры (у хеша divisor-таблица
 # «залипала» в ядре и ломала пересборку).
-_reconcile_dev() {   # dev ipkey portsel portval
-    local D="$1" IPK="$2" PSEL="$3" PV="$4" ip rate cid
+_reconcile_dev() {   # dev ipkey portsel shape("protonum:port ...")
+    local D="$1" IPK="$2" PSEL="$3" SH="$4" ip rate cid tok pr po
     tc qdisc show dev "$D" 2>/dev/null | grep -q 'htb 1:' || return 0   # каркас классов есть?
     tc filter del dev "$D" parent 1: prio 1 2>/dev/null                 # снести старые пер-IP
     for ip in "${!DES[@]}"; do
         rate="${DES[$ip]}"
         case "$ip" in *:*) continue ;; esac      # IPv6 не шейпим на tc (→ глобальный класс)
         cid=$(printf '1:%x' $(( 0x1000 + rate )))
-        tc filter add dev "$D" parent 1: prio 1 protocol ip u32 \
-            match ip protocol 17 0xff match ip "$PSEL" "$PV" 0xffff \
-            match ip "$IPK" "${ip}/32" flowid "$cid" 2>/dev/null
+        # по фильтру на каждый (proto,port): один IP шейпится на всех протоколах.
+        for tok in $SH; do
+            pr=${tok%%:*}; po=${tok##*:}
+            tc filter add dev "$D" parent 1: prio 1 protocol ip u32 \
+                match ip protocol "$pr" 0xff match ip "$PSEL" "$po" 0xffff \
+                match ip "$IPK" "${ip}/32" flowid "$cid" 2>/dev/null
+        done
     done
     return 0
 }
@@ -555,10 +597,11 @@ _reconcile_dev() {   # dev ipkey portsel portval
 klimit_reconcile() {
     [ -f "$KLIMIT_CONF" ] || return 0
     command -v tc >/dev/null 2>&1 || return 0
-    local tariffs port dev ifb
+    local tariffs port dev ifb shape
     tariffs=$(klimit_get TARIFFS)
     [ -n "$tariffs" ] || return 0                 # нет тарифных классов — раскладывать нечего
     port=$(klimit_get PORT); [ -n "$port" ] || return 0
+    shape=$(klimit_get SHAPE); [ -n "$shape" ] || shape="17:${port}"   # фолбэк: старый конфиг
     dev=$(ip -o route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
     [ -n "$dev" ] || return 0
     ifb="ifb-hy2"
@@ -581,13 +624,13 @@ klimit_reconcile() {
     # 2) подпись; если не изменилась — ничего не трогаем (0 команд tc).
     local sig stored=""
     sig=$( { for ip in "${!DES[@]}"; do echo "${ip}=${DES[$ip]}"; done | sort
-            echo "T=$tariffs P=$port"; } | md5sum 2>/dev/null | cut -d' ' -f1)
+            echo "T=$tariffs P=$port S=$shape"; } | md5sum 2>/dev/null | cut -d' ' -f1)
     [ -f "$KLIMIT_SIG" ] && stored=$(cat "$KLIMIT_SIG" 2>/dev/null)
     [ -n "$sig" ] && [ "$sig" = "$stored" ] && return 0
 
-    # 3) пересобрать пер-IP раскладку на обоих направлениях.
-    _reconcile_dev "$dev" dst sport "$port"       # скачивание: клиент — получатель
-    _reconcile_dev "$ifb" src dport "$port"       # отдача: клиент — источник (через IFB)
+    # 3) пересобрать пер-IP раскладку на обоих направлениях (по всем портам SHAPE).
+    _reconcile_dev "$dev" dst sport "$shape"      # скачивание: клиент — получатель
+    _reconcile_dev "$ifb" src dport "$shape"      # отдача: клиент — источник (через IFB)
     [ -n "$sig" ] && echo "$sig" > "$KLIMIT_SIG"
     return 0
 }
