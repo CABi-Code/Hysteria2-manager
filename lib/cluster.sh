@@ -483,11 +483,17 @@ cluster_apply_roster() {
 }
 
 # Пометить юзера кластерным и разослать (peers заведут у себя на своём sync).
-cluster_share_user() {   # user
+# nosync — только пометить и опубликовать, без обхода пиров: публикация
+# локальная и мгновенная, а забирают её пиры всё равно сами (их cron, ~5 мин).
+# Нужно там, где вызов делается в ответе клиенту (провижининг из API/бота) и
+# лишние секунды похода по нодам он ждать не может.
+cluster_share_user() {   # user [nosync]
+    sub_enabled || return 0
     roster_add "$1"
     cstate_set "$1" active            # точка правды: юзер активен по кластеру
     publish_roster
     publish_cluster_state
+    [ "${2:-}" = nosync ] && return 0
     cluster_sync
 }
 
