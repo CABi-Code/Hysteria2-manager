@@ -11,6 +11,7 @@ mkdir -p "$HY2M_WEBROOT/cluster" "$HY2M_DATA_DIR/peers"
 trap 'rm -rf "$HY2M_DATA_DIR"' EXIT
 
 source "$SCRIPT_DIR/lib/config.sh"
+source "$SCRIPT_DIR/lib/expiry.sh"      # настоящий expiry_days_left: принимает ДАТУ
 source "$SCRIPT_DIR/lib/freeplan.sh"
 
 # Тариф-конструктор: бесплатный, 5 ГБ в неделю, 15 ГБ в месяц, старт по онлайну.
@@ -21,11 +22,12 @@ tariff_list() { grep -vE '^\s*(#|$)' "$TARIFFS_CONF"; }
 tariff_get()  { tariff_list | awk -F'|' -v c="$1" '$1==c{print; exit}'; }
 
 # Заглушки окружения: трафик, онлайн, состояние юзера.
-BYTES=0; ONLINE=0; DISABLED=0; DAYS_LEFT=-5
+BYTES=0; ONLINE=0; DISABLED=0; EXPIRY=$(date -d '5 days ago' +%Y-%m-%d)
 NOTIFY=""
 freeplan_user_bytes() { printf '%s' "$BYTES"; }
 get_user_active()     { printf '%s' "$ONLINE"; }
-expiry_days_left()    { printf '%s' "$DAYS_LEFT"; }
+# Заглушка ровно та, что в проде: срок хранится ДАТОЙ, дни считает expiry.sh.
+get_user_expiry()     { printf '%s' "$EXPIRY"; }
 is_user_disabled()    { [ "$DISABLED" = 1 ]; }
 disable_user()        { DISABLED=1; }
 enable_user()         { DISABLED=0; }
@@ -93,7 +95,7 @@ freeplan_tick
 [ "$DISABLED" = 1 ] || fail "месячный лимит не сработал"
 
 # --- оплатил снова → бесплатный тариф снимается ---
-DAYS_LEFT=30
+EXPIRY=$(date -d '+30 days' +%Y-%m-%d)
 freeplan_tick
 [ -n "$(freeplan_row user1)" ] && fail "строка free не удалена после оплаты"
 [ "$DISABLED" = 0 ] || fail "после оплаты юзер должен быть включён"

@@ -98,6 +98,24 @@ freeplan_enter() {   # user
     declare -F bot_notify_free_entered >/dev/null 2>&1 && bot_notify_free_entered "$1"
 }
 
+# Подключить бесплатный тариф ПО ЖЕЛАНИЮ (кнопка в кабинете), а не по истечении
+# платного. Возврат 3 — платный доступ ещё действует: перебивать его бесплатным
+# нельзя, иначе юзер сам себе обрежет оплаченное. Юзер без срока (провижининг без
+# оплаты) тоже попадает сюда — ему проставляем вчерашнюю дату, чтобы состояние
+# было тем же, что и у естественно истёкшего.
+freeplan_activate() {   # user -> 0 ок · 1 нельзя · 3 подписка активна
+    local user="$1" left
+    free_enabled || return 1
+    db_user_exists "$user" || is_user_disabled "$user" || return 1
+    left=$(expiry_days_left "$(get_user_expiry "$user")" 2>/dev/null)
+    if [[ "$left" =~ ^-?[0-9]+$ ]] && [ "$left" -ge 0 ]; then
+        freeplan_has "$user" || return 3
+    fi
+    [ -n "$(get_user_expiry "$user")" ] || set_user_expiry "$user" "$(date -d 'yesterday' +%Y-%m-%d)"
+    is_user_disabled "$user" && enable_user "$user" >/dev/null 2>&1
+    freeplan_enter "$user"
+}
+
 # ---------- учёт трафика ----------
 
 # Суммарные байты юзера ПО ВСЕМУ КЛАСТЕРУ (tx+rx, кумулятивно с момента заведения).
@@ -154,8 +172,10 @@ freeplan_tick() {
         [ -n "$user" ] || continue
         [[ "$user" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
 
-        # Снова оплатил — бесплатный тариф больше не при чём.
-        if [ "$(expiry_days_left "$user")" -ge 0 ] 2>/dev/null; then
+        # Снова оплатил — бесплатный тариф больше не при чём. expiry_days_left
+        # принимает ДАТУ, а не юзера: с именем она молча возвращала пусто, и
+        # оплативший навсегда оставался на квоте бесплатного.
+        if [ "$(expiry_days_left "$(get_user_expiry "$user")")" -ge 0 ] 2>/dev/null; then
             is_user_disabled "$user" && enable_user "$user" >/dev/null 2>&1
             freeplan_remove "$user"
             continue
