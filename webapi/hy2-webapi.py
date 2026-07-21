@@ -418,6 +418,43 @@ def user_active_raw(user):
     return False
 
 
+def active_users_raw():
+    """Кто активен СЕЙЧАС хоть на одной ноде — один проход по тем же файлам,
+    что читает user_active_raw() поштучно. Нужен, когда статус спрашивают
+    сразу про многих (дерево рефералов в мини-аппе)."""
+    users = set()
+    for line in read_lines(data_path("activity.dat")):
+        parts = line.split("|")
+        if len(parts) >= 2 and parts[1] == "1" and parts[0]:
+            users.add(parts[0])
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".stats"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("\t")
+            if len(parts) >= 7 and parts[0] and parts[6].isdigit() and int(parts[6]) > 0:
+                users.add(parts[0])
+    return users
+
+
+def online_users():
+    """Список онлайн с тем же гистерезисом, что и is_online(): активные сейчас
+    плюс те, кто был активен в последние ONLINE_GRACE_SEC."""
+    now = time.time()
+    active = active_users_raw()
+    with _online_lock:
+        for user in active:
+            _online_last_active[user] = now
+        return sorted(
+            user for user, seen in _online_last_active.items()
+            if now - seen < ONLINE_GRACE_SEC
+        )
+
+
 def is_online(user):
     """«Онлайн сейчас» с гистерезисом: active сейчас ИЛИ active наблюдался в
     последние ONLINE_GRACE_SEC. Гистерезис держится в памяти демона (сбрасывается
@@ -791,6 +828,7 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/info$"), "read", "h_info"),
     ("GET", re.compile(r"^/v1/tariffs$"), "read", "h_tariffs"),
     ("GET", re.compile(r"^/v1/nodes$"), "read", "h_nodes"),
+    ("GET", re.compile(r"^/v1/online$"), "read", "h_online"),
     ("GET", re.compile(r"^/v1/users/([^/]+)$"), "read", "h_user"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/subscription$"), "read", "h_user_sub"),
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
@@ -858,6 +896,10 @@ class Handler(BaseHTTPRequestHandler):
     def h_nodes(self):
         return {"nodes": nodes()}
 
+    def h_online(self):
+        users = online_users()
+        return {"users": users, "count": len(users)}
+
     def h_user(self, name):
         payload = user_payload(need_username(name))
         if payload is None:
@@ -902,8 +944,10 @@ class Handler(BaseHTTPRequestHandler):
     def h_extend(self, name):
         user = need_username(name)
         days = self.body.get("days")
-        if not (is_int(days) and 1 <= days <= 3650):
-            raise ApiError(400, "invalid_days", "days: целое 1..3650")
+        # Отрицательные дни укорачивают срок: так мини-апп забирает дни в
+        # эскроу подарочной ссылки. Ноль запрещён — это не операция.
+        if not (is_int(days) and days != 0 and -3650 <= days <= 3650):
+            raise ApiError(400, "invalid_days", "days: целое -3650..3650, кроме 0")
         res = self.dispatch("extend", user, str(days))
         return {"username": user, "expiry": res.get("expiry"),
                 "days_left": days_left(res.get("expiry"))}

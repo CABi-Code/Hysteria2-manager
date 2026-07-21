@@ -311,12 +311,17 @@ tariff_ask_prices() {   # [cur_default] [price_default]
 # ---------- продление/выдача доступа (общее для оплат и админ-команд) ----------
 # Продлить срок юзера на N дней ОТ максимума(сегодня, текущий срок).
 bot_extend_user() {   # user days [nonotify] -> печатает новую дату
-    local user="$1" days="$2" quiet="$3" cur base new
+    local user="$1" days="$2" quiet="$3" cur base new today
     cur=$(get_user_expiry "$user")
     base=$(date +%Y-%m-%d)
     if [ -n "$cur" ] && [[ "$cur" > "$base" ]]; then base="$cur"; fi
-    new=$(date -d "$base +${days} days" +%Y-%m-%d 2>/dev/null)
+    # Знак обязателен: days бывает отрицательным (эскроу подарочных дней —
+    # срок у дарителя укорачивается). Ниже сегодняшней даты не опускаемся,
+    # иначе «подарок» молча отключил бы доступ дарителю.
+    new=$(date -d "$base $(printf '%+d' "$days") days" +%Y-%m-%d 2>/dev/null)
     [ -n "$new" ] || return 1
+    today=$(date +%Y-%m-%d)
+    if [[ "$new" < "$today" ]]; then new="$today"; fi
     set_user_expiry "$user" "$new"
     # Длина текущего периода — для гейтов порогов «за 7 дней / за 1 день».
     declare -F period_days_set >/dev/null && period_days_set "$user" "$days"
