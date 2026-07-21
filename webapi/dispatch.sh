@@ -29,7 +29,7 @@ LOG_DIR="/var/log/hy2-manager"                  # tgbot.sh читает при �
 LOG_FILE="$LOG_DIR/error.log"
 
 # Тот же набор модулей, что грузит hy2-manager.sh (без ui — интерактив не нужен).
-for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot freeplan; do
+for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot freeplan demo; do
     # shellcheck disable=SC1090
     source "$MANAGER_DIR/lib/${_lib}.sh"
 done
@@ -130,6 +130,15 @@ case "$verb" in
         url=$(reset_subscription "$1") || fail 1 reset_failed "не удалось сбросить подписку"
         [ -n "$url" ] || fail 1 reset_failed "пустая ссылка после сброса"
         printf 'sub_url=%s\n' "$url"
+        ;;
+
+    demo-create)  # → user=… sub_url=… expires=… cap=… rate=…
+        [ $# -eq 0 ] || fail 64 bad_args "demo-create"
+        sub_enabled || fail 3 sub_disabled "подписка на ноде не настроена"
+        take_lock
+        out=$(demo_create) || fail 1 demo_failed "не удалось выдать демо"
+        [ -n "$out" ] || fail 1 demo_failed "пустой ответ demo_create"
+        printf '%s\n' "$out"
         ;;
 
     tg-bind)     # <tg_id> <user>

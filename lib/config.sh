@@ -99,6 +99,9 @@ PWRESET_FILE="$DATA_DIR/cluster_pwreset.dat"
 # Файл кластерный (LWW по ts): окна и базы считаются от ОБЩЕГО трафика по всем
 # нодам, иначе переключение ноды обнуляло бы израсходованную квоту.
 FREEPLAN_FILE="$DATA_DIR/freeplan.dat"
+# Демо-профили (см. lib/demo.sh): «user|state|created|expires|cap|base|used».
+# Локальные для ЭТОЙ ноды — по кластеру не публикуются (демо принимает одна нода).
+DEMOS_DB="$DATA_DIR/demos.db"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
