@@ -1310,22 +1310,24 @@ enforce_device_limits() {
     refresh_online          # заполнит CACHED_ONLINE для get_user_online_count
     local online_json="$CACHED_ONLINE"
     [ -z "$online_json" ] && online_json='{}'
-    local gpool gnode; gpool=$(get_device_limit); gnode=$(get_node_limit)
-    if [ "${gpool:-0}" -gt 0 ] || [ "${gnode:-0}" -gt 0 ] 2>/dev/null; then
-        local user localn total
-        while IFS= read -r user; do
-            [ -n "$user" ] || continue
-            [ "$(get_user_hardcheck_effective "$user")" = "1" ] && continue   # ведёт traffic-based энфорсер
-            localn=$(get_user_online_count "$user")
-            [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
-            total=$(cluster_user_connections "$user")
-            if user_over_limit "$user" "$total" "$localn"; then
-                api_post "/kick" "[\"$user\"]" &>/dev/null
-                echo "$(date '+%F %T') $user: cluster=$total local=$localn pool_cap=$(pool_cap "$user") node_cap=$(node_cap "$user") — кик на $(node_name)" \
-                    >> "$DATA_DIR/limit.log" 2>/dev/null
-            fi
-        done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
-    fi
+    # Гейта «есть ли ГЛОБАЛЬНЫЙ лимит» здесь нет намеренно: pool_cap/node_cap
+    # уже отдают персональное число устройств (а 0 = ∞), и user_over_limit при
+    # нулях ничего не находит. С гейтом же обнуление POOL_LIMIT молча снимало
+    # лимит и с персональных тарифов, и с демо (у них devices=1) — а именно на
+    # него они и рассчитаны.
+    local user localn total
+    while IFS= read -r user; do
+        [ -n "$user" ] || continue
+        [ "$(get_user_hardcheck_effective "$user")" = "1" ] && continue   # ведёт traffic-based энфорсер
+        localn=$(get_user_online_count "$user")
+        [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
+        total=$(cluster_user_connections "$user")
+        if user_over_limit "$user" "$total" "$localn"; then
+            api_post "/kick" "[\"$user\"]" &>/dev/null
+            echo "$(date '+%F %T') $user: cluster=$total local=$localn pool_cap=$(pool_cap "$user") node_cap=$(node_cap "$user") — кик на $(node_name)" \
+                >> "$DATA_DIR/limit.log" 2>/dev/null
+        fi
+    done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
     enforce_active_node_limit
     write_authlimits
 }
