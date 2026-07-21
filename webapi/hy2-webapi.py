@@ -223,6 +223,78 @@ def user_limits(user):
     return {"devices": 1, "hardcheck": False, "rate_mbps": 0}
 
 
+FREE_WEEK_SEC = 604800      # окна бесплатного тарифа — как в lib/freeplan.sh
+FREE_MONTH_SEC = 2592000
+
+
+def size_bytes(value):
+    """«5G» / «500M» / «100K» / «123» → байты (как free_size_bytes в bash)."""
+    s = (value or "").strip().upper()
+    mult = {"G": 1024 ** 3, "M": 1024 ** 2, "K": 1024}.get(s[-1:], 1)
+    if mult != 1:
+        s = s[:-1]
+    return int(s) * mult if s.isdigit() else 0
+
+
+def tariff_options(row):
+    """7-е поле tariffs.conf — конструктор тарифа «k=v;k=v» (см. lib/freeplan.sh)."""
+    out = {}
+    for part in (row[6] if len(row) > 6 else "").split(";"):
+        key, sep, val = part.partition("=")
+        if sep and key.strip():
+            out[key.strip()] = val.strip()
+    return out
+
+
+def free_tariff():
+    """(код, опции) бесплатного тарифа или (None, {}) — фича выключена."""
+    for r in pipe_rows(data_path("tariffs.conf"), 6):
+        opts = tariff_options(r)
+        if opts.get("free") == "1":
+            return r[0], opts
+    return None, {}
+
+
+def window_reset(start, window, now):
+    """Конец текущего окна: катим старт шагами по длине окна (как freeplan_window_start)."""
+    if not start or start <= 0:
+        return None
+    return start + ((now - start) // window + 1) * window
+
+
+def free_status(user, total_bytes):
+    """Состояние бесплатного тарифа юзера или None. Расход = общий трафик по
+    кластеру минус база, зафиксированная на старте окна (lib/freeplan.sh)."""
+    row = next((r for r in pipe_rows(data_path("freeplan.dat"), 9) if r[0] == user), None)
+    if row is None:
+        return None
+    code, opts = free_tariff()
+    if code is None:
+        return None
+    nums = [int(x) if x.lstrip("-").isdigit() else 0 for x in row[2:8]]
+    _start, wk_start, wk_base, mo_start, mo_base, _notified = nums
+    pending = row[1] == "pending"
+    now = int(time.time())
+
+    def window(start, base, limit_key, window_sec):
+        limit = size_bytes(opts.get(limit_key))
+        used = 0 if pending else max(0, total_bytes - base)
+        return {
+            "used_bytes": used,
+            "limit_bytes": limit,
+            "left_bytes": max(0, limit - used) if limit else None,
+            # null = окна ещё не запущены (ждём первого выхода в онлайн).
+            "reset_at": None if pending else window_reset(start, window_sec, now),
+        }
+
+    return {
+        "tariff": code,
+        "state": row[1],
+        "week": window(wk_start, wk_base, "wk", FREE_WEEK_SEC),
+        "month": window(mo_start, mo_base, "mo", FREE_MONTH_SEC),
+    }
+
+
 def peer_stats(user):
     """Суммы по кэшам пиров $DATA_DIR/peers/*.stats:
     user \t online \t tx \t rx \t sptx \t sprx \t active \t active_since"""
@@ -450,8 +522,12 @@ def user_payload(user):
     ponline, ptx, prx = peer_stats(user)
     lonline = hysteria_online(user)
     limits = user_limits(user)
+    total = ltx + ptx + lrx + prx
     return {
         "username": user,
+        # Бесплатный тариф (idea 02): null — юзер не на нём. Расход показываем
+        # по данным сбора: он до 30 мин отстаёт от того, что видит отключение.
+        "free": free_status(user, total),
         "status": "active" if active else "disabled",
         "expiry": expiry,                      # null = бессрочно
         "days_left": days_left(expiry),
@@ -460,7 +536,7 @@ def user_payload(user):
         "traffic": {
             "tx_bytes": ltx + ptx,
             "rx_bytes": lrx + prx,
-            "total_bytes": ltx + ptx + lrx + prx,
+            "total_bytes": total,
         },
         # online_connections — сырое число соединений всех движков (включая пинги),
         # оставлено для совместимости API. online — «реально пользуется сейчас»
@@ -601,11 +677,21 @@ def tariffs():
                 prices.append({"currency": c, "price": p})
         if not prices:
             continue
+        # Конструктор (7-е поле): бесплатность и лимиты трафика. Для обычных
+        # тарифов free=false и лимитов нет — клиенты, не знающие про поля,
+        # продолжают работать как раньше.
+        opts = tariff_options(r)
         out.append({
             "code": r[0], "title": r[1], "days": int(r[2]),
             "devices": int(r[3]) if r[3].isdigit() else 0,
             "price": prices[0]["price"], "currency": prices[0]["currency"],
             "prices": prices,
+            "free": opts.get("free") == "1",
+            "traffic_limits": {
+                "week_bytes": size_bytes(opts.get("wk")),
+                "month_bytes": size_bytes(opts.get("mo")),
+            },
+            "period_start": opts.get("start", "paid"),
         })
     return out
 

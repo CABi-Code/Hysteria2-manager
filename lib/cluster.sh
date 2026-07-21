@@ -119,7 +119,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state pwreset ips expiry settings userlimits subips abuse tgbind version"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state pwreset freeplan ips expiry settings userlimits subips abuse tgbind version"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -127,6 +127,7 @@ _section_label() {
         roster)     echo "реестр юзеров" ;;
         state)      echo "состояния (вкл/выкл/удал.)" ;;
         pwreset)    echo "сбросы ключей" ;;
+        freeplan)   echo "бесплатный тариф (квоты)" ;;
         ips)        echo "IP-адреса" ;;
         expiry)     echo "сроки действия" ;;
         settings)   echo "настройки/лимиты" ;;
@@ -158,6 +159,7 @@ cluster_sync() {
     publish_roster
     publish_cluster_state
     publish_cluster_pwreset
+    declare -F publish_cluster_freeplan >/dev/null 2>&1 && publish_cluster_freeplan
     publish_cluster_expiry
     publish_cluster_settings
     publish_cluster_userlimits
@@ -229,6 +231,7 @@ cluster_sync() {
     _vp "  🔧 Применяю изменения локально..."
     cluster_apply_state      # точка правды: вкл/выкл/удаление с других нод
     cluster_apply_pwreset    # сброс ключей, начатый на другой ноде
+    declare -F cluster_apply_freeplan >/dev/null 2>&1 && cluster_apply_freeplan   # окна/расход бесплатного тарифа
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
     cluster_apply_settings   # подтянуть общее оформление подписки

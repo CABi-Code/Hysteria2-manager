@@ -86,6 +86,18 @@ check_expired_users() {
         if [[ "$exp_date" < "$today" ]]; then
             # Пользователь активен (есть в базе) и ещё не отключён — отключаем.
             # Применяется сразу (база + kick), рестарт Hysteria не нужен.
+            # Настроен бесплатный тариф (free=1) — не отключаем, а переводим
+            # на него: доступ продолжает работать в рамках лимитов трафика.
+            # См. lib/freeplan.sh (idea 02).
+            if declare -F freeplan_enter >/dev/null && free_enabled; then
+                if db_user_exists "$user" && ! freeplan_has "$user"; then
+                    freeplan_enter "$user"
+                    echo "🆓 Перевод на бесплатный тариф: $user (срок: $exp_date)"
+                fi
+                continue
+            fi
+            # Пользователь активен (есть в базе) и ещё не отключён — отключаем.
+            # Применяется сразу (база + kick), рестарт Hysteria не нужен.
             if ! is_user_disabled "$user" && db_user_exists "$user"; then
                 disable_user "$user" silent
                 echo "⏰ Автоотключение: $user (срок: $exp_date)"

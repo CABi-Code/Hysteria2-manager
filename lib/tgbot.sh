@@ -163,18 +163,28 @@ bot_code_lookup() {   # code -> username (и гасит код)
 tariff_list()   { grep -vE '^\s*(#|$)' "$TARIFFS_CONF" 2>/dev/null; }
 tariff_get()    { tariff_list | awk -F'|' -v c="$1" '$1==c{print; exit}'; }
 tariff_count()  { tariff_list | grep -c '^'; }
-tariff_add()    {   # code title days devices price currency
+tariff_add()    {   # code title days devices price currency [opts]
     touch "$TARIFFS_CONF"
     sed -i "/^${1}|/d" "$TARIFFS_CONF" 2>/dev/null
-    printf '%s|%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" "$6" >> "$TARIFFS_CONF"
+    # 7-е поле — конструктор тарифа «k=v;k=v» (free/wk/mo/start, см. lib/freeplan.sh).
+    # Пустое не пишем: строка остаётся в старом 6-польном формате.
+    if [ -n "$7" ]; then
+        printf '%s|%s|%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" >> "$TARIFFS_CONF"
+    else
+        printf '%s|%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" "$6" >> "$TARIFFS_CONF"
+    fi
 }
 tariff_del()    { sed -i "/^${1}|/d" "$TARIFFS_CONF" 2>/dev/null; }
 
 # Заменить строку тарифа НА МЕСТЕ (позиция в файле = порядок в /buy и в webapp
 # сохраняется). Код тоже можно сменить: ищем по СТАРОМУ коду, пишем новую строку.
-tariff_update() {   # oldcode newcode title days devices price currency
+tariff_update() {   # oldcode newcode title days devices price currency [opts]
     local old="$1"; shift
-    local new="$1|$2|$3|$4|$5|$6" tmp line
+    # Опции (7-е поле) сохраняем, если их не передали: правка тарифа из меню не
+    # должна молча снимать с него лимиты/флаг бесплатности.
+    local opts="${7:-$(tariff_opts "$old")}"
+    local new="$1|$2|$3|$4|$5|$6"; [ -n "$opts" ] && new="$new|$opts"
+    local tmp line
     tmp=$(mktemp) || return 1
     while IFS= read -r line || [ -n "$line" ]; do
         if [[ "$line" == "$old|"* ]]; then printf '%s\n' "$new"; else printf '%s\n' "$line"; fi
@@ -988,6 +998,38 @@ bot_notify_expired() {   # user
 Продлить и включить снова: /buy" )"
     done
     bot_notify_admins "⏰ Автоотключение по сроку: $(tg_esc "$user")"
+}
+
+# ---------- бесплатный тариф (lib/freeplan.sh) ----------
+# Единая отправка клиенту: у бесплатного тарифа четыре события — перевод,
+# «осталось немного» (три порога), исчерпание и обновление лимита.
+_bot_free_send() {   # user html
+    bot_enabled || return 0
+    BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
+    local c
+    for c in $(tg_user_chats "$1"); do tg_send "$c" "$2"; done
+}
+
+bot_notify_free_entered() {   # user
+    _bot_free_send "$1" "🆓 Платный доступ закончился — вы переведены на <b>бесплатный тариф</b>.
+Интернет продолжает работать в пределах лимита трафика; лимит обновляется автоматически.
+Вернуть полную скорость и объём: /buy"
+}
+
+bot_notify_free_low() {   # user left_bytes
+    _bot_free_send "$1" "⚠️ Бесплатный трафик заканчивается: осталось <b>$(format_bytes "$2")</b>.
+Когда закончится — доступ приостановится до обновления лимита. Продлить: /buy"
+}
+
+bot_notify_free_blocked() {   # user reset_ts
+    _bot_free_send "$1" "⛔ Бесплатный трафик закончился — доступ приостановлен.
+Лимит обновится: <b>$(date -d "@$2" '+%d.%m %H:%M' 2>/dev/null)</b>.
+Не ждать и подключиться сразу: /buy"
+}
+
+bot_notify_free_reset() {   # user left_bytes
+    _bot_free_send "$1" "✅ Лимит бесплатного тарифа обновлён — доступ снова работает.
+Доступно: <b>$(format_bytes "$2")</b>."
 }
 
 # ---------- systemd-юнит ----------

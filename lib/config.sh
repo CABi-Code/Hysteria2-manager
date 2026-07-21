@@ -94,6 +94,11 @@ CLUSTER_STATE_FILE="$DATA_DIR/cluster_state.dat"
 # на каждой ноде СВОЙ, поэтому «сбросить всё утёкшее» = попросить все ноды
 # прокрутить свой пароль. См. pwreset_mark/cluster_apply_pwreset в lib/cluster.sh.
 PWRESET_FILE="$DATA_DIR/cluster_pwreset.dat"
+# Бесплатный тариф с лимитами трафика (см. lib/freeplan.sh). Строки:
+# «user|state|start|wk_start|wk_base|mo_start|mo_base|notified|ts».
+# Файл кластерный (LWW по ts): окна и базы считаются от ОБЩЕГО трафика по всем
+# нодам, иначе переключение ноды обнуляло бы израсходованную квоту.
+FREEPLAN_FILE="$DATA_DIR/freeplan.dat"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров

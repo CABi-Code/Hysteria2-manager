@@ -29,7 +29,7 @@ LOG_DIR="/var/log/hy2-manager"                  # tgbot.sh читает при �
 LOG_FILE="$LOG_DIR/error.log"
 
 # Тот же набор модулей, что грузит hy2-manager.sh (без ui — интерактив не нужен).
-for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot; do
+for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot freeplan; do
     # shellcheck disable=SC1090
     source "$MANAGER_DIR/lib/${_lib}.sh"
 done
