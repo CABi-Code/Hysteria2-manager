@@ -636,6 +636,17 @@ setup_caddy() {
     }"
     fi
 
+    # Чужие вирт-хосты (мини-апп, редирект основного домена) живут отдельными
+    # файлами и подключаются import'ом: setup_caddy переписывает Caddyfile
+    # целиком, и блок, дописанный руками В САМ файл, потерялся бы при первой же
+    # смене домена ноды. Импорт добавляем только когда файлы есть — Caddy падает
+    # на глобе, который ничего не нашёл.
+    local extra_block=""
+    if compgen -G "${CADDY_EXTRA_DIR}/*.caddy" >/dev/null 2>&1; then
+        extra_block="import ${CADDY_EXTRA_DIR}/*.caddy
+"
+    fi
+
     # Бэкап текущего конфига — чтобы при ошибке не уронить уже работающий Caddy.
     bak=""
     [ -f "$CADDYFILE" ] && { bak=$(mktemp); cp -f "$CADDYFILE" "$bak"; }
@@ -644,7 +655,7 @@ setup_caddy() {
     # токеном строки, иначе Caddy не парсит конфиг и не стартует. handle-блоки
     # взаимоисключающие и проверяются в порядке записи.
     cat > "$CADDYFILE" <<EOF
-${domain} {
+${extra_block}${domain} {
     root * ${WEBROOT}
 ${bind_line}
     log {
