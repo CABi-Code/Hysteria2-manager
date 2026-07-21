@@ -42,6 +42,8 @@ fail() {   # exit_code api_code message
 valid_user()  { [[ "$1" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || fail 64 bad_username "недопустимое имя пользователя"; }
 valid_tgid()  { [[ "$1" =~ ^[0-9]{1,20}$ ]] || fail 64 bad_tg_id "недопустимый tg_id"; }
 valid_num()   { [[ "$1" =~ ^[0-9]{1,7}$ ]] || fail 64 bad_number "ожидалось число"; }
+# Со знаком: extend умеет и укорачивать срок (эскроу подарочных дней в мини-аппе).
+valid_snum()  { [[ "$1" =~ ^-?[0-9]{1,7}$ ]] || fail 64 bad_number "ожидалось число"; }
 valid_code()  { [[ "$1" =~ ^[A-Za-z0-9]{4,64}$ ]] || fail 64 bad_code "недопустимый код"; }
 
 # Мутации сериализуются между собой. -w 15: лучше отдать 503 busy (rc 75,
@@ -71,7 +73,7 @@ case "$verb" in
 
     extend)      # <user> <days> → expiry=YYYY-MM-DD
         [ $# -eq 2 ] || fail 64 bad_args "extend <user> <days>"
-        valid_user "$1"; valid_num "$2"
+        valid_user "$1"; valid_snum "$2"
         db_user_exists "$1" || is_user_disabled "$1" || fail 2 user_not_found "пользователь не найден"
         take_lock
         new=$(bot_extend_user "$1" "$2") || fail 1 extend_failed "не удалось продлить"
