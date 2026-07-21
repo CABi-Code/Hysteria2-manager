@@ -100,4 +100,22 @@ freeplan_tick
 [ -n "$(freeplan_row user1)" ] && fail "строка free не удалена после оплаты"
 [ "$DISABLED" = 0 ] || fail "после оплаты юзер должен быть включён"
 
+# --- срок кончился ВЧЕРА: перевод на free держится, а не гоняется туда-сюда ---
+# Регрессия: expiry_days_left резала деление к нулю и на вчерашней дате давала
+# 0 («ещё действует»), поэтому freeplan_tick снимал юзера с бесплатного, а
+# check_expired_users тут же возвращал — с уведомлением на КАЖДЫЙ прогон.
+[ "$(expiry_days_left "$(date -d yesterday +%Y-%m-%d)")" = "-1" ] \
+    || fail "вчерашний срок: expiry_days_left = $(expiry_days_left "$(date -d yesterday +%Y-%m-%d)"), ждали -1"
+[ "$(expiry_days_left "$(date +%Y-%m-%d)")" = "0" ] || fail "сегодняшний срок должен давать 0"
+expiry_is_over "$(date -d yesterday +%Y-%m-%d)" || fail "вчерашний срок не считается истёкшим"
+expiry_is_over "$(date +%Y-%m-%d)" && fail "сегодняшний срок посчитан истёкшим"
+
+EXPIRY=$(date -d yesterday +%Y-%m-%d); DISABLED=0; NOTIFY=""
+freeplan_enter user2
+[ -n "$(freeplan_row user2)" ] || fail "не перевели на бесплатный вчерашний срок"
+freeplan_tick
+[ -n "$(freeplan_row user2)" ] || fail "freeplan_tick снял с бесплатного вчера истёкшего"
+freeplan_enter user2
+[ "$NOTIFY" = "entered " ] || fail "повторное уведомление о переводе: '$NOTIFY'"
+
 echo "✅ freeplan: окна, лимиты и пороги ок"
