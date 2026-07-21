@@ -121,6 +121,17 @@ case "$verb" in
         printf 'devices=%s\nrate=%s\n' "$(get_user_devices "$1")" "$(get_user_rate "$1")"
         ;;
 
+    reset-subscription)  # <user> → sub_url=… (новая ссылка + новые ключи везде)
+        [ $# -eq 1 ] || fail 64 bad_args "reset-subscription <user>"
+        valid_user "$1"
+        db_user_exists "$1" || is_user_disabled "$1" || fail 2 user_not_found "пользователь не найден"
+        sub_enabled || fail 3 sub_disabled "подписка на ноде не настроена"
+        take_lock
+        url=$(reset_subscription "$1") || fail 1 reset_failed "не удалось сбросить подписку"
+        [ -n "$url" ] || fail 1 reset_failed "пустая ссылка после сброса"
+        printf 'sub_url=%s\n' "$url"
+        ;;
+
     tg-bind)     # <tg_id> <user>
         [ $# -eq 2 ] || fail 64 bad_args "tg-bind <tg_id> <user>"
         valid_tgid "$1"; valid_user "$2"

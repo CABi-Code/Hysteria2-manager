@@ -715,6 +715,7 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/enable$"), "users", "h_enable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/disable$"), "users", "h_disable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/reset-subscription$"), "users", "h_reset_sub"),
     ("POST", re.compile(r"^/v1/telegram/bind$"), "telegram", "h_bind"),
     ("POST", re.compile(r"^/v1/codes/redeem$"), "telegram", "h_redeem"),
     # SSE: выдача тикета — по Bearer (Laravel); сам поток — по тикету (браузер).
@@ -840,6 +841,13 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "invalid_rate", "rate_mbps: целое 0..100000")
         self.dispatch("set-limits", user, str(devices), str(rate))
         return {"username": user, "limits": user_limits(user)}
+
+    def h_reset_sub(self, name):
+        # Новая ссылка + новый пароль (а значит и все производные ключи протоколов).
+        # На пирах пароль прокрутится на их ближайшем cluster_sync (~5 мин).
+        user = need_username(name)
+        res = self.dispatch("reset-subscription", user)
+        return {"username": user, "subscription_url": res.get("sub_url")}
 
     def h_bind(self):
         tg_id = need_tg_id(self.body.get("tg_id"))
