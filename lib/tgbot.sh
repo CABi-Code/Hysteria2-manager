@@ -421,6 +421,14 @@ bot_provision_user() {   # username -> pass
         pass=$(bot_gen_pass)
         [ -n "$pass" ] || return 1     # ни в коем случае не заводим юзера с пустым паролем
         db_add_user "$user" "$pass"
+        # Клиент купил доступ — он должен работать на ВСЕХ нодах, а не только на
+        # этой. Помечаем кластерным и публикуем сразу: раньше это была ручная
+        # кнопка в меню, и каждый заведённый ботом или мини-аппом профиль
+        # оставался локальным. nosync — обход пиров тут не нужен, они забирают
+        # ростер своей синхронизацией (~5 мин). Вывод глушим: функция отдаёт
+        # пароль через stdout.
+        declare -F cluster_share_user >/dev/null 2>&1 \
+            && cluster_share_user "$user" nosync >/dev/null 2>&1
     fi
     [ -n "$pass" ] || return 1
     printf '%s' "$pass"
@@ -602,9 +610,27 @@ bot_fulfill_topup() {   # chat_id tg_id amount currency charge_id
     bot_notify_admins "💎 <b>Пополнение баланса</b>: tg:${tgid} · ${amount} ${cur} · charge: <code>$(tg_esc "$charge")</code>"
 }
 
+# Имя для НОВОГО профиля: @username Telegram, если он есть и свободен, иначе
+# tg<ID>. Так в списке пользователей видно живых людей, а не столбик из цифр;
+# @username необязателен и меняется, поэтому уникальность гарантирует только
+# запасное имя. Занятое чужим профилем имя не забираем — это чужой доступ.
+bot_pick_username() {   # tg_id [handle]
+    local tgid="$1" handle="${2:-}" name n=2
+    handle="${handle#@}"
+    if [[ "$handle" =~ ^[A-Za-z0-9_-]{1,64}$ ]] \
+       && ! db_user_exists "$handle" && ! is_user_disabled "$handle"; then
+        printf '%s' "$handle"; return 0
+    fi
+    name="tg${tgid}"
+    while db_user_exists "$name" || is_user_disabled "$name"; do
+        name="tg${tgid}_$n"; n=$((n+1))
+    done
+    printf '%s' "$name"
+}
+
 # Оплата прошла — выдать/продлить доступ.
-bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_id
-    local chat="$1" tgid="$2" payload="$3" amount="$4" cur="$5" charge="$6"
+bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_id [tg_handle]
+    local chat="$1" tgid="$2" payload="$3" amount="$4" cur="$5" charge="$6" handle="${7:-}"
     local code user row title days devices price tcur _opts newexp
     # Пополнение баланса — отдельная ветка, тариф не ищем.
     if [ "${payload#topup:}" != "$payload" ]; then
@@ -624,13 +650,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
 
     # Аккаунт: привязанный, из payload, либо новый (tg<ID>).
     [ "$user" = "-" ] && user=$(tg_bound_user "$tgid")
-    if [ -z "$user" ]; then
-        user="tg${tgid}"
-        local n=2
-        while db_user_exists "$user" || is_user_disabled "$user"; do
-            user="tg${tgid}_$n"; n=$((n+1))
-        done
-    fi
+    [ -z "$user" ] && user=$(bot_pick_username "$tgid" "$handle")
 
     if ! bot_provision_user "$user" >/dev/null; then
         bot_notify_admins "🛑 Оплата от tg:$tgid получена, но создать пользователя «$(tg_esc "$user")» НЕ удалось. Разберитесь вручную (charge: <code>$(tg_esc "$charge")</code>)."
@@ -889,7 +909,8 @@ ${tl:-нет тарифов}
         amount=$(echo "$upd" | jq -r '.message.successful_payment.total_amount // 0')
         cur=$(echo "$upd" | jq -r '.message.successful_payment.currency // ""')
         charge=$(echo "$upd" | jq -r '.message.successful_payment.telegram_payment_charge_id // ""')
-        bot_fulfill_payment "$chat" "$from" "$sp" "$amount" "$cur" "$charge"
+        bot_fulfill_payment "$chat" "$from" "$sp" "$amount" "$cur" "$charge" \
+            "$(echo "$upd" | jq -r '.message.from.username // empty')"
         return 0
     fi
 
