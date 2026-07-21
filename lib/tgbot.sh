@@ -479,7 +479,11 @@ bot_client_status() {   # chat_id
     local st exp exps tl tx rx dev oc
     if is_user_disabled "$user"; then st="⛔ отключён"; else st="✅ активен"; fi
     exp=$(get_user_expiry "$user")
-    if [ -n "$exp" ]; then
+    # На бесплатном тарифе платный срок в прошлом по замыслу: показывать
+    # «истёк» тому, у кого доступ работает, — вранью в чистом виде.
+    if declare -F freeplan_has >/dev/null 2>&1 && freeplan_has "$user"; then
+        exps="🆓 бесплатный тариф$(freeplan_limits_line)"
+    elif [ -n "$exp" ]; then
         exps="$exp ($(format_remaining "$exp" 2>/dev/null || echo '—'))"
     else
         exps="бессрочно"
@@ -691,7 +695,11 @@ bot_admin_user_card() {   # chat_id username [message_id]
     elif db_user_exists "$user"; then st="✅ активен"
     else st="❓ не найден"; fi
     exp=$(get_user_expiry "$user")
-    [ -n "$exp" ] && exps="$exp ($(format_remaining "$exp" 2>/dev/null || echo '—'))" || exps="бессрочно"
+    if declare -F freeplan_has >/dev/null 2>&1 && freeplan_has "$user"; then
+        exps="🆓 бесплатный тариф$(freeplan_limits_line) · платный был до ${exp:-—}"
+    else
+        [ -n "$exp" ] && exps="$exp ($(format_remaining "$exp" 2>/dev/null || echo '—'))" || exps="бессрочно"
+    fi
     tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
     dev=$(get_user_devices "$user")
     oc=$(api_get "/online" | jq -r --arg u "$user" '.[$u] // 0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0

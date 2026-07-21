@@ -190,10 +190,16 @@ load_user_list() {
 }
 
 # Короткое представление срока действия для таблицы: «30д», «истёк», «—».
-expiry_cell() {
-    local exp="$1" dl
+expiry_cell() {   # expiry [user]
+    local exp="$1" user="${2:-}" dl
+    # На бесплатном тарифе платный срок в прошлом по замыслу — «истёк» в
+    # таблице читалось как «доступа нет», хотя он работает.
+    if [ -n "$user" ] && declare -F freeplan_has >/dev/null 2>&1 && freeplan_has "$user"; then
+        printf 'free'
+        return
+    fi
     if [ -z "$exp" ]; then
-        printf '—'
+        printf '∞'
         return
     fi
     dl=$(expiry_days_left "$exp")
@@ -291,7 +297,7 @@ render_user_table() {
 
         local ipc exp
         ipc=${SNAP_IPC[$user]:-0}
-        exp=$(expiry_cell "${SNAP_EXP[$user]:-}")
+        exp=$(expiry_cell "${SNAP_EXP[$user]:-}" "$user")
 
         printf '  '
         print_cell "$num"     3  0 r;           printf ' '
@@ -840,7 +846,12 @@ _render_user_action() {
 
     local exp rem
     exp=$(get_user_expiry "$user")
-    if [ -n "$exp" ]; then
+    if declare -F freeplan_has >/dev/null 2>&1 && freeplan_has "$user"; then
+        # На бесплатном тарифе платный срок в прошлом ПО ЗАМЫСЛУ — писать
+        # «истёк» поверх работающего доступа было прямой ложью.
+        echo "  Срок действия: 🆓 бесплатный тариф$(freeplan_limits_line)"
+        echo "                 (платный был до $exp, состояние: $(freeplan_field "$user" 2))"
+    elif [ -n "$exp" ]; then
         rem=$(format_remaining "$exp")
         if [ "$rem" = "истёк" ]; then
             echo "  Срок действия: $exp (истёк)"
@@ -848,7 +859,7 @@ _render_user_action() {
             echo "  Срок действия: $exp (осталось $rem)"
         fi
     else
-        echo "  Срок действия: не установлен"
+        echo "  Срок действия: бессрочно (срок не задан)"
     fi
 
     local _tgids

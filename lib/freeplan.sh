@@ -66,6 +66,17 @@ free_size_bytes() {   # size -> bytes
 free_wk_limit() { free_size_bytes "$(tariff_opt "$(free_tariff_code)" wk)"; }
 free_mo_limit() { free_size_bytes "$(tariff_opt "$(free_tariff_code)" mo)"; }
 
+# «: 5G в неделю, 15G в месяц» для карточек пользователя. Пусто, если лимитов
+# нет вовсе (бесплатный тариф без ограничений трафика — тоже допустимая настройка).
+freeplan_limits_line() {
+    local code wk mo out=""
+    code=$(free_tariff_code) || return 0
+    wk=$(tariff_opt "$code" wk); mo=$(tariff_opt "$code" mo)
+    [ -n "$wk" ] && out="$wk в неделю"
+    [ -n "$mo" ] && out="${out:+$out, }$mo в месяц"
+    [ -n "$out" ] && printf ': %s' "$out"
+}
+
 FREE_WEEK_SEC=604800     # 7 суток
 FREE_MONTH_SEC=2592000   # 30 суток
 
@@ -107,11 +118,13 @@ freeplan_enter() {   # user [quiet]
 # оплаты) тоже попадает сюда — ему проставляем вчерашнюю дату, чтобы состояние
 # было тем же, что и у естественно истёкшего.
 freeplan_activate() {   # user -> 0 ок · 1 нельзя · 3 подписка активна
-    local user="$1" left
+    local user="$1" exp
     free_enabled || return 1
     db_user_exists "$user" || is_user_disabled "$user" || return 1
-    left=$(expiry_days_left "$(get_user_expiry "$user")" 2>/dev/null)
-    if [[ "$left" =~ ^-?[0-9]+$ ]] && [ "$left" -ge 0 ]; then
+    exp=$(get_user_expiry "$user")
+    # Оплаченный срок ещё идёт — перебивать его бесплатным нельзя (та же
+    # проверка, что у check_expired_users и freeplan_tick).
+    if [ -n "$exp" ] && ! expiry_is_over "$exp"; then
         freeplan_has "$user" || return 3
     fi
     [ -n "$(get_user_expiry "$user")" ] || set_user_expiry "$user" "$(date -d 'yesterday' +%Y-%m-%d)"
@@ -175,10 +188,11 @@ freeplan_tick() {
         [ -n "$user" ] || continue
         [[ "$user" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
 
-        # Снова оплатил — бесплатный тариф больше не при чём. expiry_days_left
-        # принимает ДАТУ, а не юзера: с именем она молча возвращала пусто, и
-        # оплативший навсегда оставался на квоте бесплатного.
-        if [ "$(expiry_days_left "$(get_user_expiry "$user")")" -ge 0 ] 2>/dev/null; then
+        # Снова оплатил — бесплатный тариф больше не при чём. Проверка общая с
+        # check_expired_users (expiry_is_over): раньше здесь было своё сравнение,
+        # и на сутках расхождения юзер каждую минуту слетал с тарифа и тут же
+        # возвращался обратно — с уведомлением «платный доступ закончился».
+        if ! expiry_is_over "$(get_user_expiry "$user")"; then
             is_user_disabled "$user" && enable_user "$user" >/dev/null 2>&1
             freeplan_remove "$user"
             continue
