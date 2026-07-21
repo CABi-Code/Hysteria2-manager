@@ -108,6 +108,10 @@ PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и о�
 MANAGER_REPO_RAW="${HY2M_REPO_RAW:-https://raw.githubusercontent.com/CABi-Code/Hysteria2-manager/main}"
 MANAGER_VERSION_CACHE="$DATA_DIR/.remote_version"   # кэш проверки версии: «ver|ts»
 CADDYFILE="/etc/caddy/Caddyfile"
+# Чужие вирт-хосты (мини-апп надстройка, редирект основного домена). Менеджер
+# их не генерирует и не трогает — только подключает import'ом, чтобы перегенерация
+# Caddyfile (setup_caddy) их не стирала.
+CADDY_EXTRA_DIR="/etc/caddy/extra"
 # Заголовок profile-title для /sub/* — отдельным сниппетом, который Caddyfile
 # импортирует. Когда в названии профиля есть плейсхолдеры ({user} и др.), название
 # у каждого юзера своё, и сниппет держит map «токен → название». Его перепекает
