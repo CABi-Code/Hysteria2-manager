@@ -178,11 +178,14 @@ tariff_del()    { sed -i "/^${1}|/d" "$TARIFFS_CONF" 2>/dev/null; }
 
 # Заменить строку тарифа НА МЕСТЕ (позиция в файле = порядок в /buy и в webapp
 # сохраняется). Код тоже можно сменить: ищем по СТАРОМУ коду, пишем новую строку.
-tariff_update() {   # oldcode newcode title days devices price currency [opts]
+tariff_update() {   # oldcode newcode title days devices price currency [opts] [force_opts]
     local old="$1"; shift
     # Опции (7-е поле) сохраняем, если их не передали: правка тарифа из меню не
-    # должна молча снимать с него лимиты/флаг бесплатности.
+    # должна молча снимать с него лимиты/флаг бесплатности. Редактор опций
+    # (tariff_ask_opts) передаёт force_opts — там пустая строка означает
+    # «лимитов больше нет», и подставлять старые нельзя.
     local opts="${7:-$(tariff_opts "$old")}"
+    [ "${8:-}" = force_opts ] && opts="$7"
     local new="$1|$2|$3|$4|$5|$6"; [ -n "$opts" ] && new="$new|$opts"
     local tmp line
     tmp=$(mktemp) || return 1
@@ -273,9 +276,9 @@ tariff_currencies_of() {   # code
 # Диалог ввода набора валют и цены для каждой. Результат в _TPRICE/_TCUR
 # ('/'-списки). Возврат 1 при ошибке ввода (сообщение уже напечатано).
 # Необязательные аргументы cur_default/price_default показываются как текущие.
-tariff_ask_prices() {   # [cur_default] [price_default]
+tariff_ask_prices() {   # [cur_default] [price_default] [zero_ok]
     _TPRICE=""; _TCUR=""
-    local dcur="${1:-}" dprice="${2:-}" raw
+    local dcur="${1:-}" dprice="${2:-}" zero_ok="${3:-0}" raw
     local hint="  Валюты через пробел/запятую/слеш (XTR — Stars; RUB/USD/...)"
     if [ -n "$dcur" ]; then
         ask raw "$hint [$(printf '%s' "$dcur" | tr '/' ' ')]: "; raw="${raw:-$dcur}"
@@ -300,11 +303,74 @@ tariff_ask_prices() {   # [cur_default] [price_default]
             ask p "  Цена в $cur (целое, осн. единицы)${def:+ [$def]}: "
         fi
         p="${p:-$def}"
-        [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -gt 0 ] || { echo "  ❌ Цена в $cur — целое число > 0."; return 1; }
+        # У бесплатного тарифа цена 0 — законная (zero_ok), у остальных нет.
+        [[ "$p" =~ ^[0-9]+$ ]] && { [ "$p" -gt 0 ] || [ "$zero_ok" = 1 ]; } \
+            || { echo "  ❌ Цена в $cur — целое число > 0."; return 1; }
         prices+=("$p")
     done
     local IFS='/'
     _TCUR="${curs[*]}"; _TPRICE="${prices[*]}"
+    return 0
+}
+
+# Значение ключа в строке опций «k=v;k=v» (в отличие от tariff_opt берёт саму
+# строку, а не код тарифа — опции могут быть ещё не сохранены).
+tariff_opt_of() {   # opts key -> значение или пусто
+    printf '%s' "$1" | tr ';' '\n' | awk -F= -v k="$2" '$1==k{print $2; exit}'
+}
+
+# Опции тарифа — 7-е поле строки («free=1;wk=5G;mo=15G;start=online», см.
+# lib/freeplan.sh). Спрашиваем по ключам, а не одной строкой: строку руками не
+# набрать без опечатки, а опечатка молча снимает лимит. Неизвестные ключи
+# (появятся в будущем) сохраняем как есть.
+tariff_ask_opts() {   # [current_opts] -> _TOPTS
+    _TOPTS=""
+    local cur="${1:-}" dfree dwk dmo dstart ans kv keep=""
+    dfree=$(tariff_opt_of "$cur" free)
+    dwk=$(tariff_opt_of "$cur" wk); dmo=$(tariff_opt_of "$cur" mo)
+    dstart=$(tariff_opt_of "$cur" start)
+    for kv in $(printf '%s' "$cur" | tr ';' ' '); do
+        case "${kv%%=*}" in free|wk|mo|start) ;; *) [ -n "$kv" ] && keep="$keep;$kv" ;; esac
+    done
+
+    ask ans "  Бесплатный тариф — на него переводят по истечении платного (да/нет) [$([ "$dfree" = 1 ] && echo да || echo нет)]: "
+    local free=0
+    case "${ans:-$([ "$dfree" = 1 ] && echo да || echo нет)}" in
+        да|yes|y|д|1) free=1 ;;
+        нет|no|n|н|0|"") free=0 ;;
+        *) echo "  ❌ Ответьте «да» или «нет»."; return 1 ;;
+    esac
+
+    ask ans "  Лимиты трафика «неделя месяц» (напр. «5G 15G»; пусто — без лимитов) [${dwk:-—} ${dmo:-—}]: "
+    local wk mo
+    if [ -z "$ans" ]; then
+        wk="$dwk"; mo="$dmo"
+    else
+        read -r wk mo <<< "$(printf '%s' "$ans" | tr ',/' '  ')"
+        # «-» и «0» — явный способ снять лимит, не выходя из редактора.
+        [ "$wk" = "-" ] || [ "$wk" = "0" ] && wk=""
+        [ "$mo" = "-" ] || [ "$mo" = "0" ] && mo=""
+    fi
+    local size
+    for size in "$wk" "$mo"; do
+        [ -z "$size" ] && continue
+        [[ "${size^^}" =~ ^[0-9]+[GMK]?$ ]] || { echo "  ❌ Лимит «$size»: число с G/M/K (5G, 500M) или пусто."; return 1; }
+    done
+
+    local start=""
+    if [ -n "$wk" ] || [ -n "$mo" ]; then
+        ask ans "  Отсчёт окон: online — с первого выхода в сеть, paid — с оплаты [${dstart:-online}]: "
+        start="${ans:-${dstart:-online}}"
+        case "$start" in online|paid) ;; *) echo "  ❌ Только online или paid."; return 1 ;; esac
+    fi
+
+    local out=""
+    [ "$free" = 1 ] && out="$out;free=1"
+    [ -n "$wk" ] && out="$out;wk=${wk^^}"
+    [ -n "$mo" ] && out="$out;mo=${mo^^}"
+    [ -n "$start" ] && out="$out;start=$start"
+    out="$out$keep"
+    _TOPTS="${out#;}"
     return 0
 }
 
@@ -439,7 +505,7 @@ bot_buy_menu() {   # chat_id
     local kb rows code title days devices price cur
     # Бесплатный тариф (free=1) в витрину покупки не показываем: на него не
     # покупают, а падают по истечении платного (см. lib/freeplan.sh).
-    rows=$(tariff_list | while IFS='|' read -r code title days devices price cur; do
+    rows=$(tariff_list | while IFS='|' read -r code title days devices price cur _opts; do
         [ -n "$code" ] || continue
         [ "$(tariff_opt "$code" free)" = "1" ] && continue
         jq -nc --arg t "$title — $(tariff_price_str "$price" "$cur")" --arg d "buy:$code" '[{text:$t,callback_data:$d}]'
@@ -451,10 +517,10 @@ bot_buy_menu() {   # chat_id
 
 # Выставить счёт по тарифу.
 bot_send_invoice() {   # chat_id tariff_code [currency]
-    local chat="$1" code="$2" want="${3:-}" row title days devices price cur user payload prices provider
+    local chat="$1" code="$2" want="${3:-}" row title days devices price cur _opts user payload prices provider
     row=$(tariff_get "$code")
     [ -z "$row" ] && { tg_send "$chat" "Тариф не найден (возможно, удалён)."; return; }
-    IFS='|' read -r code title days devices price cur <<< "$row"
+    IFS='|' read -r code title days devices price cur _opts <<< "$row"
     # Мультивалютный тариф: берём указанную валюту, иначе первую в списке.
     local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
     local pick=0 k
@@ -490,10 +556,10 @@ bot_send_invoice() {   # chat_id tariff_code [currency]
 
 # Меню выбора валюты оплаты для мультивалютного тарифа (кнопка на валюту).
 bot_buy_currency_menu() {   # chat_id tariff_code
-    local chat="$1" code="$2" row title price cur
+    local chat="$1" code="$2" row title price cur _opts
     row=$(tariff_get "$code")
     [ -z "$row" ] && { tg_send "$chat" "Тариф не найден."; return; }
-    IFS='|' read -r _ title _ _ price cur <<< "$row"
+    IFS='|' read -r _ title _ _ price cur _opts <<< "$row"
     local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
     local rows i c p label
     rows=$(for i in "${!ca[@]}"; do
@@ -535,7 +601,7 @@ bot_fulfill_topup() {   # chat_id tg_id amount currency charge_id
 # Оплата прошла — выдать/продлить доступ.
 bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_id
     local chat="$1" tgid="$2" payload="$3" amount="$4" cur="$5" charge="$6"
-    local code user row title days devices price tcur newexp
+    local code user row title days devices price tcur _opts newexp
     # Пополнение баланса — отдельная ветка, тариф не ищем.
     if [ "${payload#topup:}" != "$payload" ]; then
         bot_fulfill_topup "$chat" "$tgid" "$amount" "$cur" "$charge"
@@ -550,7 +616,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
         tg_send "$chat" "Оплата получена, но тариф не найден. Администратор уведомлён и выдаст доступ вручную."
         return
     fi
-    IFS='|' read -r code title days devices price tcur <<< "$row"
+    IFS='|' read -r code title days devices price tcur _opts <<< "$row"
 
     # Аккаунт: привязанный, из payload, либо новый (tg<ID>).
     [ "$user" = "-" ] && user=$(tg_bound_user "$tgid")
@@ -734,7 +800,7 @@ bot_handle_update() {   # json
                     a:codehelp) tg_send "$chat" "Код привязки: <code>/code имя</code> — бот выдаст одноразовый код, клиент отправит его боту командой /start КОД." ;;
                     a:tariffs)
                         local tl
-                        tl=$(tariff_list | while IFS='|' read -r c t d dv p cur; do
+                        tl=$(tariff_list | while IFS='|' read -r c t d dv p cur _opts; do
                             [ -n "$c" ] && echo "• <code>$c</code> — $(tg_esc "$t"): ${d} дн., устройств ${dv}, $(tariff_price_str "$p" "$cur")"
                         done)
                         tg_send "$chat" "💰 <b>Тарифы</b>
@@ -1235,13 +1301,14 @@ bot_tariffs_menu() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  💰 Тарифы бота (что видит клиент в /buy)"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        local i=0 code title days devices price cur
+        local i=0 code title days devices price cur topts
         local -a t_codes=()
-        while IFS='|' read -r code title days devices price cur; do
+        while IFS='|' read -r code title days devices price cur topts; do
             [ -n "$code" ] || continue
             i=$((i+1)); t_codes[$i]="$code"
-            printf "    %d. [%s] %s — %s дн., устройств: %s, цена: %s\n" \
-                "$i" "$code" "$title" "$days" "$devices" "$(tariff_price_str "$price" "$cur")"
+            printf "    %d. [%s] %s — %s дн., устройств: %s, цена: %s%s\n" \
+                "$i" "$code" "$title" "$days" "$devices" "$(tariff_price_str "$price" "$cur")" \
+                "${topts:+ · $topts}"
         done < <(tariff_list)
         [ "$i" -eq 0 ] && echo "    (тарифов нет — клиенты не смогут купить доступ)"
         echo ""
@@ -1250,7 +1317,7 @@ bot_tariffs_menu() {
         echo "  можно задать НЕСКОЛЬКО цен (напр. XTR и RUB) — клиент выберет способ."
         echo ""
         echo "  1. ➕ Добавить тариф"
-        echo "  2. ✏️  Редактировать тариф (цены/название/дни/устройства/валюты/код)"
+        echo "  2. ✏️  Редактировать тариф (цены/дни/устройства/лимиты трафика/код)"
         echo "  3. ↕️  Переместить тариф (вверх/вниз или на позицию N)"
         echo "  4. ➖ Удалить тариф (по номеру)"
         echo "  5. 🧩 Создать типовые тарифы-примеры (Stars: 30/90/365 дней)"
@@ -1270,11 +1337,13 @@ bot_tariffs_menu() {
                 [[ "$d" =~ ^[0-9]+$ ]] && [ "$d" -gt 0 ] || { echo "  ❌ Дни — число > 0."; pause; continue; }
                 ask dv "  Лимит устройств (0 — не менять при покупке): "
                 [[ "$dv" =~ ^[0-9]+$ ]] || dv=0
-                tariff_ask_prices || { pause; continue; }
+                tariff_ask_opts || { pause; continue; }
+                tariff_ask_prices "" "" "$([ -n "$(tariff_opt_of "$_TOPTS" free)" ] && echo 1 || echo 0)" \
+                    || { pause; continue; }
                 if printf '%s' "$_TCUR" | tr '/' '\n' | grep -qvx 'XTR' && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
                     echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5)."
                 fi
-                tariff_add "$c" "$t" "$d" "$dv" "$_TPRICE" "$_TCUR"
+                tariff_add "$c" "$t" "$d" "$dv" "$_TPRICE" "$_TCUR" "$_TOPTS"
                 echo "  ✅ Тариф [$c] сохранён ($(tariff_price_str "$_TPRICE" "$_TCUR"))."
                 bot_restart
                 pause ;;
@@ -1283,8 +1352,10 @@ bot_tariffs_menu() {
                 if ! [[ "$sel" =~ ^[0-9]+$ ]] || [ -z "${t_codes[$sel]:-}" ]; then
                     echo "  ❌ Неверный номер."; pause; continue
                 fi
-                local ocode="${t_codes[$sel]}" ec et ed edv ep ecu
-                IFS='|' read -r ec et ed edv ep ecu <<<"$(tariff_get "$ocode")"
+                # 7-е поле (опции) читаем ОБЯЗАТЕЛЬНО: без него «RUB|free=1;…»
+                # уезжало в валюту и редактор ругался на «валюту из 3 букв».
+                local ocode="${t_codes[$sel]}" ec et ed edv ep ecu eopts
+                IFS='|' read -r ec et ed edv ep ecu eopts <<<"$(tariff_get "$ocode")"
                 echo ""
                 echo "  Редактирование [$ocode]. Enter — оставить текущее значение."
                 local nc nt nd ndv np ncu
@@ -1298,19 +1369,23 @@ bot_tariffs_menu() {
                 # У бесплатного тарифа (free=1) срока нет по определению — его
                 # строка хранит 0 дней, и запрет «> 0» делал её нередактируемой.
                 local zero_ok=0
-                [ "$(tariff_opt "$ocode" free)" = "1" ] && zero_ok=1
+                [ -n "$(tariff_opt_of "$eopts" free)" ] && zero_ok=1
                 ask nd  "  Дней доступа [$ed]$([ "$zero_ok" = 1 ] && echo ' (0 — бесплатный, без срока)'): "; nd="${nd:-$ed}"
                 [[ "$nd" =~ ^[0-9]+$ ]] && { [ "$nd" -gt 0 ] || [ "$zero_ok" = 1 ]; } \
                     || { echo "  ❌ Дни — число > 0."; pause; continue; }
                 ask ndv "  Лимит устройств [$edv] (0 — не менять при покупке): "; ndv="${ndv:-$edv}"
                 [[ "$ndv" =~ ^[0-9]+$ ]] || ndv=0
+                tariff_ask_opts "$eopts" || { pause; continue; }
+                [ -n "$(tariff_opt_of "$_TOPTS" free)" ] && zero_ok=1 || zero_ok=0
                 echo "  Текущие цены: $(tariff_price_str "$ep" "$ecu")"
-                tariff_ask_prices "$ecu" "$ep" || { pause; continue; }
+                tariff_ask_prices "$ecu" "$ep" "$zero_ok" || { pause; continue; }
                 if printf '%s' "$_TCUR" | tr '/' '\n' | grep -qvx 'XTR' && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
                     echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5)."
                 fi
-                tariff_update "$ocode" "$nc" "$nt" "$nd" "$ndv" "$_TPRICE" "$_TCUR"
-                echo "  ✅ Тариф [$nc] обновлён ($(tariff_price_str "$_TPRICE" "$_TCUR"))."
+                # Опции передаём ВСЕГДА (в т.ч. пустые): иначе tariff_update
+                # подставит старые, и снять лимит из меню было бы нельзя.
+                tariff_update "$ocode" "$nc" "$nt" "$nd" "$ndv" "$_TPRICE" "$_TCUR" "$_TOPTS" force_opts
+                echo "  ✅ Тариф [$nc] обновлён ($(tariff_price_str "$_TPRICE" "$_TCUR"))${_TOPTS:+ · $_TOPTS}."
                 bot_restart
                 pause ;;
             3)
