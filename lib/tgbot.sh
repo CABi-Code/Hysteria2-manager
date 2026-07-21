@@ -432,8 +432,11 @@ bot_buy_menu() {   # chat_id
         return
     fi
     local kb rows code title days devices price cur
+    # Бесплатный тариф (free=1) в витрину покупки не показываем: на него не
+    # покупают, а падают по истечении платного (см. lib/freeplan.sh).
     rows=$(tariff_list | while IFS='|' read -r code title days devices price cur; do
         [ -n "$code" ] || continue
+        [ "$(tariff_opt "$code" free)" = "1" ] && continue
         jq -nc --arg t "$title — $(tariff_price_str "$price" "$cur")" --arg d "buy:$code" '[{text:$t,callback_data:$d}]'
     done | jq -sc '.')
     kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:$r}')
