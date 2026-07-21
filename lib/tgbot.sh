@@ -1295,8 +1295,13 @@ bot_tariffs_menu() {
                 fi
                 ask nt  "  Название [$et]: ";   nt="${nt:-$et}"; nt=$(printf '%s' "$nt" | tr -d '|')
                 [ -n "$nt" ] || { echo "  ❌ Название пустое."; pause; continue; }
-                ask nd  "  Дней доступа [$ed]: "; nd="${nd:-$ed}"
-                [[ "$nd" =~ ^[0-9]+$ ]] && [ "$nd" -gt 0 ] || { echo "  ❌ Дни — число > 0."; pause; continue; }
+                # У бесплатного тарифа (free=1) срока нет по определению — его
+                # строка хранит 0 дней, и запрет «> 0» делал её нередактируемой.
+                local zero_ok=0
+                [ "$(tariff_opt "$ocode" free)" = "1" ] && zero_ok=1
+                ask nd  "  Дней доступа [$ed]$([ "$zero_ok" = 1 ] && echo ' (0 — бесплатный, без срока)'): "; nd="${nd:-$ed}"
+                [[ "$nd" =~ ^[0-9]+$ ]] && { [ "$nd" -gt 0 ] || [ "$zero_ok" = 1 ]; } \
+                    || { echo "  ❌ Дни — число > 0."; pause; continue; }
                 ask ndv "  Лимит устройств [$edv] (0 — не менять при покупке): "; ndv="${ndv:-$edv}"
                 [[ "$ndv" =~ ^[0-9]+$ ]] || ndv=0
                 echo "  Текущие цены: $(tariff_price_str "$ep" "$ecu")"

@@ -61,10 +61,20 @@ case "$verb" in
         [ $# -eq 1 ] || fail 64 bad_args "provision <user>"
         valid_user "$1"
         take_lock
+        # Ручка идемпотентная, и мини-апп зовёт её перед каждой выдачей доступа.
+        # Уже заведённому юзеру перегенерация не нужна: sub_refresh правит
+        # конфиги Xray/sing-box и РЕСТАРТУЕТ их (рвутся живые сессии платящих),
+        # а весь блок занимает ~20 с — клиент отваливался по таймауту 5 с и
+        # получал «сервер недоступен». Снятому с отключённых sub_refresh делает
+        # сам enable_user внутри bot_provision_user.
+        existed=0
+        { db_user_exists "$1" || is_user_disabled "$1"; } && existed=1
         pass=$(bot_provision_user "$1") || fail 1 provision_failed "не удалось создать пользователя"
         [ -n "$pass" ] || fail 1 provision_failed "пустой пароль"
-        write_authlimits >/dev/null 2>&1 || true
-        sub_refresh >/dev/null 2>&1 || true
+        if [ "$existed" = 0 ]; then
+            write_authlimits >/dev/null 2>&1 || true
+            sub_refresh >/dev/null 2>&1 || true
+        fi
         printf 'password=%s\n' "$pass"
         if sub_enabled; then
             printf 'sub_url=%s\n' "$(subscription_url "$1")"
