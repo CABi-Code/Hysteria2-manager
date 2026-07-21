@@ -358,6 +358,25 @@ sub_link_remove() {   # user token
     return 0
 }
 
+# Полный перевыпуск доступа: новая ссылка + новые ключи ВСЕХ протоколов на ВСЕХ
+# нодах. Жмут при утечке, поэтому убиваем ВСЕ токены юзера (включая доп. ссылки —
+# розданное считаем скомпрометированным). Печатает новую ссылку.
+reset_subscription() {   # user -> url
+    local user="$1" tok
+    sub_enabled || return 1
+    db_user_exists "$user" || is_user_disabled "$user" || return 1
+    while IFS= read -r tok; do
+        [ -n "$tok" ] && rm -f "$WEBROOT/sub/$tok" 2>/dev/null
+    done < <(sub_tokens_all "$user")
+    sub_token_remove "$user"
+    sub_token_for "$user" >/dev/null                    # новый основной токен
+    # Ключи всех протоколов производны от пароля (proto_uuid/proto_upsk), так что
+    # ротация пароля инвалидирует их разом; внутри — кик и sub_refresh.
+    change_user_password "$user" >/dev/null || return 1
+    declare -F pwreset_mark >/dev/null 2>&1 && pwreset_mark "$user"
+    subscription_url "$user"
+}
+
 # Готовая ссылка-подписка для юзера.
 subscription_url() {
     local user="$1"

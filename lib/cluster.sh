@@ -119,13 +119,14 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state ips expiry settings userlimits subips abuse tgbind version"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state pwreset ips expiry settings userlimits subips abuse tgbind version"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
         subtokens)  echo "токены подписки" ;;
         roster)     echo "реестр юзеров" ;;
         state)      echo "состояния (вкл/выкл/удал.)" ;;
+        pwreset)    echo "сбросы ключей" ;;
         ips)        echo "IP-адреса" ;;
         expiry)     echo "сроки действия" ;;
         settings)   echo "настройки/лимиты" ;;
@@ -156,6 +157,7 @@ cluster_sync() {
     publish_subtokens
     publish_roster
     publish_cluster_state
+    publish_cluster_pwreset
     publish_cluster_expiry
     publish_cluster_settings
     publish_cluster_userlimits
@@ -226,6 +228,7 @@ cluster_sync() {
     _vp ""
     _vp "  🔧 Применяю изменения локально..."
     cluster_apply_state      # точка правды: вкл/выкл/удаление с других нод
+    cluster_apply_pwreset    # сброс ключей, начатый на другой ноде
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
     cluster_apply_settings   # подтянуть общее оформление подписки
@@ -294,6 +297,60 @@ publish_cluster_state() {
     cp -f "$CLUSTER_STATE_FILE" "$WEBROOT/cluster/state" 2>/dev/null || : > "$WEBROOT/cluster/state"
     chmod 640 "$WEBROOT/cluster/state" 2>/dev/null || true
     secure_web_files
+}
+
+# ---- СБРОС КЛЮЧЕЙ ПО КЛАСТЕРУ (ротация пароля на ВСЕХ нодах) ----
+# Пароль одного и того же юзера на каждой ноде СВОЙ (см. cluster_apply_state:
+# нода заводит юзера локально со своим pwgen), а подписка склеивает ключи всех
+# нод. Значит локальный change_user_password гасит только «свою треть» утёкшего.
+# Поэтому нода, где нажали «Сбросить ссылку», пишет «user|ts» и публикует, а
+# остальные на своём sync видят ts новее применённого и крутят пароль у себя.
+# LWW, как и cstate: применённый ts запоминаем — обратной волны не будет.
+pwreset_get_ts() { local t; t=$(awk -F'|' -v u="$1" '$1==u{print $2; exit}' "$PWRESET_FILE" 2>/dev/null); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
+pwreset_set() {   # user ts
+    mkdir -p "$DATA_DIR"; touch "$PWRESET_FILE"
+    sed -i "/^${1}|/d" "$PWRESET_FILE" 2>/dev/null
+    printf '%s|%s\n' "$1" "$2" >> "$PWRESET_FILE"
+}
+
+# Объявить сброс: у нас пароль уже прокручен (reset_subscription), пиры узнают на sync.
+pwreset_mark() {   # user
+    sub_enabled || return 0
+    pwreset_set "$1" "$(date +%s)"
+    publish_cluster_pwreset
+}
+
+publish_cluster_pwreset() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"; touch "$PWRESET_FILE"
+    cp -f "$PWRESET_FILE" "$WEBROOT/cluster/pwreset" 2>/dev/null || : > "$WEBROOT/cluster/pwreset"
+    chmod 640 "$WEBROOT/cluster/pwreset" 2>/dev/null || true
+    secure_web_files
+}
+
+cluster_apply_pwreset() {
+    sub_enabled || return 0
+    local merged u t changed=0
+    merged=$(
+        { [ -f "$PWRESET_FILE" ] && cat "$PWRESET_FILE"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.pwreset 2>/dev/null; } \
+        | awk -F'|' 'NF>=2 && $1!="" { if (($2+0) > (ts[$1]+0)) ts[$1]=$2 }
+                     END { for (u in ts) printf "%s|%s\n", u, ts[u] }'
+    )
+    [ -n "$merged" ] || return 0
+    while IFS='|' read -r u t; do
+        [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        [ "${t:-0}" -gt "$(pwreset_get_ts "$u")" ] 2>/dev/null || continue
+        # Юзера у нас нет (ещё не завели/уже удалён) — только запоминаем ts,
+        # иначе после появления юзера сброс сработал бы задним числом.
+        if db_user_exists "$u" || is_user_disabled "$u"; then
+            change_user_password "$u" >/dev/null 2>&1   # каскад по протоколам + кик + sub_refresh
+            changed=1
+        fi
+        pwreset_set "$u" "$t"
+    done <<< "$merged"
+    [ "$changed" = 1 ] && publish_cluster_pwreset
+    return 0
 }
 
 # --- Обмен версиями между нодами ---

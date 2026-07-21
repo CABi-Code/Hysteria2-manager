@@ -90,6 +90,10 @@ CLUSTER_USERS_FILE="$DATA_DIR/cluster_users"    # имена «кластерн�
 # произошло действие, бампает ts=now и публикует — остальные применяют у себя.
 # deleted — это tombstone: не даёт roster/манифесту пира воскресить удалённого.
 CLUSTER_STATE_FILE="$DATA_DIR/cluster_state.dat"
+# Сбросы ключей по кластеру (тоже LWW по ts): строки «user|ts». Пароль у юзера
+# на каждой ноде СВОЙ, поэтому «сбросить всё утёкшее» = попросить все ноды
+# прокрутить свой пароль. См. pwreset_mark/cluster_apply_pwreset в lib/cluster.sh.
+PWRESET_FILE="$DATA_DIR/cluster_pwreset.dat"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
