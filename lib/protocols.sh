@@ -194,6 +194,13 @@ proto_gen_tuic_cert() {
 }
 
 # ---------------- Генерация клиентских записей для конфигов ----------------
+# Демо-профили (lib/demo.sh) в доп. протоколы НЕ попадают: демо живёт на одной
+# Hysteria2, чья аутентификация читает users.db на каждом подключении — выдача
+# мгновенна и никого не задевает. Любая правка конфигов Xray/sing-box означала бы
+# их РЕСТАРТ на каждое нажатие гостевой кнопки (рвутся живые сессии платящих),
+# а TUIC демо противопоказан и сам по себе — там нет пер-юзерного учёта трафика,
+# то есть квоту не проверить.
+_proto_skip_user() { declare -F demo_is >/dev/null 2>&1 && demo_is "$1"; }
 # VLESS-клиенты Xray: [{ "id":UUID, "email":user, "flow":"xtls-rprx-vision" }, ...]
 # Vision требует raw-TCP инбаунд (network:tcp) — с XHTTP/WS flow невалиден и Xray
 # отвергнет клиента. flow ДОЛЖЕН совпадать в инбаунде и в share-ссылке.
@@ -201,6 +208,7 @@ _proto_xray_vless_clients() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
+        _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"id":"%s","email":"%s","flow":"xtls-rprx-vision"}' "$(proto_uuid "$u" "$p")" "$u"
         first=0
@@ -211,6 +219,7 @@ _proto_xray_ss_clients() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
+        _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"password":"%s","email":"%s"}' "$(proto_upsk "$u" "$p")" "$u"
         first=0
@@ -222,6 +231,7 @@ _proto_xray_trojan_clients() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
+        _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"password":"%s","email":"%s"}' "$(proto_uuid "$u" "$p")" "$u"
         first=0
@@ -232,6 +242,7 @@ _proto_singbox_tuic_users() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
+        _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"name":"%s","uuid":"%s","password":"%s"}' "$u" "$(proto_uuid "$u" "$p")" "$p"
         first=0

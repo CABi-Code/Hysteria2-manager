@@ -65,15 +65,20 @@ demo_create() {
 
     now=$(date +%s); expires=$(( now + DEMO_TTL_MIN * 60 ))
 
-    # Одно устройство и урезанная скорость. klimit_apply нужен, чтобы под тариф
-    # скорости реально появился HTB-класс (иначе лимит игнорируется) — так же
-    # это делает set-limits в webapi/dispatch.sh.
+    # Гость ждёт ответа, поэтому всё тяжёлое здесь либо выкинуто, либо сделано
+    # ровно один раз. Общекластерный write_authlimits (снимок для жёсткой
+    # проверки) не зовём: его и так перестраивает --online-sync раз в минуту, а
+    # у демо всё равно дефолтное одно устройство.
+    local had_rate
+    had_rate=$(_all_rates "$(klimit_tiers)" 2>/dev/null | tr ' ' '\n' | grep -cx "$DEMO_RATE_MBPS")
     set_user_limits "$user" 1 0 "" "$DEMO_RATE_MBPS" >/dev/null 2>&1
-    write_authlimits >/dev/null 2>&1 || true
-    klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1 || true
+    # HTB-класс под демо-скорость создаём только когда его ещё нет: без класса
+    # klimit_reconcile проигнорирует тариф, а с ним — разложит сам, за минуту.
+    if [ "${had_rate:-0}" -eq 0 ]; then
+        klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1 || true
+    fi
 
-    # Ключи всех локальных протоколов + токен подписки.
-    sub_refresh >/dev/null 2>&1 || true
+    demo_write_sub "$user" "$pass"
 
     demo_set "$user" active "$now" "$expires" "$DEMO_CAP_BYTES" "$(demo_user_bytes "$user")" 0
 
@@ -82,6 +87,18 @@ demo_create() {
     printf 'expires=%s\n' "$expires"
     printf 'cap=%s\n' "$DEMO_CAP_BYTES"
     printf 'rate=%s\n' "$DEMO_RATE_MBPS"
+}
+
+# Файл подписки ровно для этого демо. Полный regen_subscriptions перебирает всех
+# юзеров кластера (секунды), а sub_refresh вдобавок дёргает Xray/sing-box и
+# публикацию по кластеру — для локального одноразового профиля это лишнее.
+demo_write_sub() {   # user pass
+    local user="$1" pass="$2" token
+    token=$(sub_token_for "$user") || return 1
+    mkdir -p "$WEBROOT/sub"
+    build_user_link "$user" "$pass" "" "" "" "" "$(render_tag "$user")" \
+        | grep '^hysteria2://' | base64 -w0 > "$WEBROOT/sub/$token"
+    secure_web_files 2>/dev/null || true
 }
 
 # Трафик демо-юзера. Демо локальное, но считаем той же функцией, что и квоты

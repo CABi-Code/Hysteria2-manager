@@ -1076,6 +1076,11 @@ class Handler(BaseHTTPRequestHandler):
                         self.body = json.loads(raw.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
                         raise ApiError(400, "invalid_json", "тело должно быть валидным JSON")
+                    # Пустой список — это «параметров нет»: так сериализуется
+                    # пустой массив в PHP/Laravel (json_encode([]) → "[]").
+                    # Отвергать такой запрос к ручке без параметров незачем.
+                    if self.body == []:
+                        self.body = {}
                     if not isinstance(self.body, dict):
                         raise ApiError(400, "invalid_json", "ожидается JSON-объект")
                 else:
