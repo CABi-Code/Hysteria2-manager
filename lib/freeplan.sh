@@ -91,10 +91,13 @@ freeplan_remove() {
 
 # Перевод на бесплатный тариф: срок кончился, но доступ не отключаем. Окна ещё
 # не идут (pending) — они стартуют с первого выхода в онлайн (start=online).
-freeplan_enter() {   # user
+freeplan_enter() {   # user [quiet]
     free_enabled || return 1
     freeplan_has "$1" && return 0          # уже на free — идемпотентно
     freeplan_set "$1" pending 0 0 0 0 0 0
+    # quiet — юзер включил тариф сам кнопкой в кабинете: он видит результат на
+    # экране, а «платный доступ закончился» в такой момент прямая ложь.
+    [ "${2:-}" = quiet ] && return 0
     declare -F bot_notify_free_entered >/dev/null 2>&1 && bot_notify_free_entered "$1"
 }
 
@@ -113,7 +116,7 @@ freeplan_activate() {   # user -> 0 ок · 1 нельзя · 3 подписка
     fi
     [ -n "$(get_user_expiry "$user")" ] || set_user_expiry "$user" "$(date -d 'yesterday' +%Y-%m-%d)"
     is_user_disabled "$user" && enable_user "$user" >/dev/null 2>&1
-    freeplan_enter "$user"
+    freeplan_enter "$user" quiet
 }
 
 # ---------- учёт трафика ----------
