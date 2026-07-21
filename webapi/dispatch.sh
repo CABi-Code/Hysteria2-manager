@@ -132,6 +132,20 @@ case "$verb" in
         printf 'sub_url=%s\n' "$url"
         ;;
 
+    free-activate)  # <user> — подключить бесплатный тариф по кнопке
+        [ $# -eq 1 ] || fail 64 bad_args "free-activate <user>"
+        valid_user "$1"
+        db_user_exists "$1" || is_user_disabled "$1" || fail 2 user_not_found "пользователь не найден"
+        free_enabled || fail 3 free_disabled "бесплатный тариф не настроен"
+        take_lock
+        freeplan_activate "$1"
+        case $? in
+            0) printf 'state=%s\n' "$(freeplan_field "$1" 2)" ;;
+            3) fail 3 subscription_active "платная подписка ещё действует" ;;
+            *) fail 1 free_failed "не удалось подключить бесплатный тариф" ;;
+        esac
+        ;;
+
     demo-create)  # → user=… sub_url=… expires=… cap=… rate=…
         [ $# -eq 0 ] || fail 64 bad_args "demo-create"
         sub_enabled || fail 3 sub_disabled "подписка на ноде не настроена"

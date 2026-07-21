@@ -803,6 +803,7 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/reset-subscription$"), "users", "h_reset_sub"),
     ("POST", re.compile(r"^/v1/demo$"), "users", "h_demo"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/free-plan$"), "users", "h_free_plan"),
     ("POST", re.compile(r"^/v1/telegram/bind$"), "telegram", "h_bind"),
     ("POST", re.compile(r"^/v1/codes/redeem$"), "telegram", "h_redeem"),
     # SSE: выдача тикета — по Bearer (Laravel); сам поток — по тикету (браузер).
@@ -935,6 +936,13 @@ class Handler(BaseHTTPRequestHandler):
         user = need_username(name)
         res = self.dispatch("reset-subscription", user)
         return {"username": user, "subscription_url": res.get("sub_url")}
+
+    def h_free_plan(self, name):
+        # Подключить бесплатный тариф по кнопке в кабинете (idea 02): окна
+        # трафика стартуют с первого выхода в онлайн, поэтому сразу — pending.
+        user = need_username(name)
+        res = self.dispatch("free-activate", user)
+        return {"username": user, "state": res.get("state"), "free": free_status(user, sum(local_traffic(user)) + sum(peer_stats(user)[1:]))}
 
     def h_demo(self):
         # Демо-профиль гостю (idea 13): рабочий доступ до регистрации, жёстко
