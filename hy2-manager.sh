@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster update tgbot notify webapi freeplan ui)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster update tgbot notify webapi freeplan demo ui)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -106,6 +106,7 @@ if [ "$1" = "--online-sync" ]; then
     # Бесплатный тариф: расход по окнам считается минутно — на этой ноде байты
     # видны сразу, а отключение по исчерпанию не должно ждать 30-мин сбора.
     freeplan_tick
+    demo_tick           # выдохшиеся демо-профили: TTL в минутах, а не в сутках
     write_authlimits    # снимок для жёсткой проверки (работает и на одиночной ноде)
     klimit_reconcile    # разложить активные IP по тарифным классам скорости (tc)
     exit 0

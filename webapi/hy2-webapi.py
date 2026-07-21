@@ -802,6 +802,7 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/disable$"), "users", "h_disable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/reset-subscription$"), "users", "h_reset_sub"),
+    ("POST", re.compile(r"^/v1/demo$"), "users", "h_demo"),
     ("POST", re.compile(r"^/v1/telegram/bind$"), "telegram", "h_bind"),
     ("POST", re.compile(r"^/v1/codes/redeem$"), "telegram", "h_redeem"),
     # SSE: выдача тикета — по Bearer (Laravel); сам поток — по тикету (браузер).
@@ -934,6 +935,18 @@ class Handler(BaseHTTPRequestHandler):
         user = need_username(name)
         res = self.dispatch("reset-subscription", user)
         return {"username": user, "subscription_url": res.get("sub_url")}
+
+    def h_demo(self):
+        # Демо-профиль гостю (idea 13): рабочий доступ до регистрации, жёстко
+        # закапанный по скорости/трафику/времени. Кого пускать (один раз на
+        # устройство) решает веб-апп — менеджер просто выдаёт профиль.
+        res = self.dispatch("demo-create")
+        expires = res.get("expires")
+        return {"username": res.get("user"),
+                "subscription_url": res.get("sub_url"),
+                "expires_at": int(expires) if str(expires).isdigit() else None,
+                "cap_bytes": int(res.get("cap") or 0),
+                "rate_mbps": int(res.get("rate") or 0)}
 
     def h_bind(self):
         tg_id = need_tg_id(self.body.get("tg_id"))
