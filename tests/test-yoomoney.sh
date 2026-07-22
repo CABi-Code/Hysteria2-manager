@@ -58,6 +58,8 @@ url=$(ym_link "$l1" "1030.93" "1 месяц")
 [[ "$url" == *"quickpay-form=shop"* ]] || fail "форма не shop: $url"
 [[ "$url" == *"confirm.xml"* ]] || fail "адрес формы не confirm.xml: $url"
 [[ "$url" == *"targets=1%20"* ]] || fail "назначение платежа не закодировано: $url"
+# Плательщику назначение показывают formcomment/short-dest, а не targets.
+[[ "$url" == *"formcomment=1%20"* && "$url" == *"short-dest=1%20"* ]] || fail "нет назначения для плательщика: $url"
 
 # --- оплата найдена и достаточна → выдаём доступ ровно один раз ---
 ym_pending_add "$l1" 777 m1 vasya "1030.93" 1000

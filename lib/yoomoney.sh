@@ -90,8 +90,12 @@ ym_urlenc() {
 ym_link() {   # label sum [назначение]
     local label="$1" sum="$2" targets="${3:-Оплата доступа}" wallet
     wallet=$(bot_get YM_WALLET)
-    printf '%s?receiver=%s&quickpay-form=shop&targets=%s&paymentType=%s&sum=%s&label=%s' \
-        "$YM_QUICKPAY_URL" "$wallet" "$(ym_urlenc "$targets")" "$(ym_type)" "$sum" "$label"
+    # targets видит получатель (название операции в истории кошелька),
+    # formcomment/short-dest — плательщик на странице оплаты; без них там
+    # дежурное «Перевод по кнопке» вместо названия тарифа.
+    local enc; enc=$(ym_urlenc "$targets")
+    printf '%s?receiver=%s&quickpay-form=shop&targets=%s&formcomment=%s&short-dest=%s&paymentType=%s&sum=%s&label=%s' \
+        "$YM_QUICKPAY_URL" "$wallet" "$enc" "$enc" "$enc" "$(ym_type)" "$sum" "$label"
 }
 
 # ---------- ждущие оплаты счета ----------
