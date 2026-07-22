@@ -141,13 +141,93 @@ get_user_active_since() {
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 
-# Мгновенная скорость юзера на ЭТОЙ ноде (байт/сек) — поле 4 activity.dat,
-# которое collect_activity считает раз в минуту по дельте кумулятива ВСЕХ
-# протоколов. В отличие от get_user_speed (SPEED_FILE, 30-мин сбор Hysteria)
-# годится для «скорости прямо сейчас».
+# ---- Спидометр: «скорость прямо сейчас» (RATES_FILE) ----
+# Отдельный узкий тик раз в RATES_TICK_SEC секунд. Почему не переиспользовать
+# collect_activity: тот считает ещё active/active_since для жёсткой проверки и
+# делает grep на КАЖДОГО юзера — на минутной каденции это нормально, на
+# 15-секундной растёт с числом юзеров. Здесь всё одним проходом awk, поэтому
+# стоимость тика — это стоимость опроса API протоколов (~0.45 c), почти не
+# зависящая от размера базы.
+collect_rates() {
+    local now merged hy
+    now=$(date +%s)
+    hy=$(api_get "/traffic")   # без clear=1: сброс делает 30-минутный collect_traffic
+    # Fail-safe как в collect_activity: API молчит — файлы НЕ трогаем, спидометр
+    # покажет прошлое значение, а не фальшивый ноль.
+    { [ -z "$hy" ] || [ "$hy" = "null" ]; } && return 0
+    echo "$hy" | jq empty 2>/dev/null || return 0
+
+    merged=$(
+        {
+            echo "$hy" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
+            declare -F proto_activity_cum_lines >/dev/null 2>&1 && proto_activity_cum_lines 2>/dev/null
+        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%s\n", u, s[u]}'
+    )
+    [ -n "$merged" ] || return 0
+
+    # Дельта с прошлым снимком одним проходом. Счётчик УМЕНЬШИЛСЯ (30-минутный
+    # ?clear=1 обнулил Hysteria; закрылись TUIC-соединения) — считаем 0, а не
+    # дельту от нуля: на спидометре фантомный всплеск заметнее, чем один
+    # пропущенный тик раз в полчаса. Этим и отличаемся от collect_activity,
+    # которому важнее не пропустить активность.
+    printf '%s\n' "$merged" | awk -F'|' -v now="$now" -v prevf="$RATES_PREV_FILE" \
+        -v rates="${RATES_FILE}.tmp" -v prevout="${RATES_PREV_FILE}.tmp" '
+        BEGIN {
+            while ((getline line < prevf) > 0) {
+                n = split(line, p, "|")
+                if (n >= 3) { pc[p[1]] = p[2] + 0; pt[p[1]] = p[3] + 0 }
+            }
+        }
+        NF >= 2 && $1 != "" {
+            cum = $2 + 0
+            rate = 0
+            if ($1 in pt) {
+                el = now - pt[$1]
+                if (el < 1) el = 1
+                if (cum > pc[$1]) rate = int((cum - pc[$1]) / el)
+            }
+            printf "%s|%d|%d\n", $1, rate, now > rates
+            printf "%s|%d|%d\n", $1, cum, now > prevout
+        }'
+    mv "${RATES_FILE}.tmp" "$RATES_FILE" 2>/dev/null
+    mv "${RATES_PREV_FILE}.tmp" "$RATES_PREV_FILE" 2>/dev/null
+}
+
+# Мгновенная скорость юзера на ЭТОЙ ноде (байт/сек) из RATES_FILE.
 get_user_rate() {
-    local v; v=$(grep "^${1}|" "$ACTIVITY_FILE" 2>/dev/null | head -1 | cut -d'|' -f4)
+    local v; v=$(grep "^${1}|" "$RATES_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
+}
+
+# Юнит-таймер тика. Ставится сам при первом же прогоне после обновления —
+# отдельного шага установки на нодах не нужно.
+RATES_UNIT="/etc/systemd/system/hy2-rates.service"
+RATES_TIMER="/etc/systemd/system/hy2-rates.timer"
+rates_timer_ensure() {
+    local want="OnUnitActiveSec=${RATES_TICK_SEC}s"
+    grep -q "^${want}$" "$RATES_TIMER" 2>/dev/null && return 0
+    cat > "$RATES_UNIT" <<EOF
+[Unit]
+Description=hy2-manager: пересчёт текущей скорости юзеров (спидометр мини-аппа)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${SCRIPT_DIR}/hy2-manager.sh --rates-tick
+EOF
+    cat > "$RATES_TIMER" <<EOF
+[Unit]
+Description=hy2-manager: тик скорости каждые ${RATES_TICK_SEC}s
+
+[Timer]
+OnBootSec=30s
+${want}
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload 2>/dev/null
+    systemctl enable --now hy2-rates.timer &>/dev/null
 }
 
 # Текущая скорость пользователя: "user|tx_rate|rx_rate" в байт/сек

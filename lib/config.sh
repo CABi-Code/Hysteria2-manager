@@ -39,6 +39,16 @@ SPEED_TS_FILE="$DATA_DIR/speed_ts"
 # прошлый снимок кумулятивного трафика (для расчёта скорости за минуту).
 ACTIVITY_FILE="$DATA_DIR/activity.dat"
 ACTIVITY_PREV_FILE="$DATA_DIR/activity_prev.dat"
+# Спидометр мини-аппа: «скорость прямо сейчас» отдельно от минутного
+# collect_activity. RATES_FILE «user|bps|ts» пересчитывается таймером каждые
+# RATES_TICK_SEC секунд и публикуется пирам (см. collect_rates в traffic.sh).
+# RATES_PREV_FILE «user|cum|ts» — прошлый снимок кумулятива для дельты.
+RATES_FILE="$DATA_DIR/rates.dat"
+RATES_PREV_FILE="$DATA_DIR/rates_prev.dat"
+# Каденс тика. 15 с ≈ 3% ядра на ноде (доминируют вызовы API протоколов, а не
+# число юзеров — тик идёт одним проходом awk, без grep на каждого). Увеличьте,
+# если нода тесная: спидометр сгладит разницу.
+RATES_TICK_SEC="${RATES_TICK_SEC:-15}"
 # Порог «активного» трафика (байт/сек, усреднённо за последнюю минуту). Всё, что
 # НИЖЕ порога, считаем фоном (пинги/keepalive/health-check) и НЕ обрезаем жёсткой
 # проверкой. 4096 B/s ≈ 240 KiB за минуту — этого не набрать пингами, но легко
