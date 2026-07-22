@@ -88,6 +88,17 @@ if [ "$1" = "--collect" ]; then
     exit 0
 fi
 
+if [ "$1" = "--rates-tick" ]; then
+    # Тик спидометра (systemd-таймер hy2-rates, раз в RATES_TICK_SEC): пересчёт
+    # своей скорости + обмен с пирами. flock -n: если предыдущий тик ещё жив
+    # (тормозящий API протокола), пропускаем — очередь тиков нам не нужна.
+    exec 9>"$DATA_DIR/.rates.lock"
+    flock -n 9 || exit 0
+    collect_rates
+    cluster_rates_sync
+    exit 0
+fi
+
 if [ "$1" = "--cluster-sync" ]; then
     # Периодический обмен ключами с пирами + пересборка подписок (cron).
     cluster_sync
@@ -98,6 +109,7 @@ if [ "$1" = "--online-sync" ]; then
     # Частый обмен онлайном + применение лимита устройств по кластеру (cron, 1 мин).
     setup_stats_api
     migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
+    rates_timer_ensure      # таймер спидометра ставится сам после обновления ноды
     # TUIC-трафик считаем ЗДЕСЬ (раз в минуту): по дельтам соединений, иначе они
     # успеют закрыться между снимками. До cluster_online_sync — чтобы publish_stats
     # уже включил свежие байты. Xray/Hysteria учитываются в --collect (30 мин).
@@ -132,6 +144,7 @@ fi
 migrate_auth
 migrate_to_command_auth
 migrate_device_limit        # старый device_limit -> общекластерный POOL_LIMIT
+rates_timer_ensure          # таймер тика скорости (спидометр мини-аппа)
 setup_stats_api
 collect_traffic
 collect_ips

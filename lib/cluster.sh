@@ -748,6 +748,27 @@ cluster_apply_tgbind() {
     fi
 }
 
+# Обмен ТОЛЬКО скоростью (спидометр мини-аппа): публикуем свою и стягиваем
+# чужую. Отдельно от cluster_online_sync, потому что каденс в 4 раза чаще
+# (RATES_TICK_SEC), а тянуть ради спидометра остальные шесть файлов пира незачем.
+# Пиры опрашиваются параллельно: две последовательные HTTPS-ходки съели бы
+# заметную часть 15-секундного окна. Недоступный пир -> пустой файл (= 0), а не
+# залипшая старая скорость.
+cluster_rates_sync() {
+    sub_enabled || return 0
+    mkdir -p "$PEERS_DIR"
+    publish_rates
+    local host name
+    while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
+        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        { cluster_call "$host" "/cluster/rates" 5 > "$PEERS_DIR/${name}.rates.tmp" 2>/dev/null
+          mv "$PEERS_DIR/${name}.rates.tmp" "$PEERS_DIR/${name}.rates" 2>/dev/null; } &
+    done < <(cluster_peers)
+    wait
+}
+
 # Частая синхронизация СТАТИСТИКИ (онлайн/трафик/скорость по кластеру + лимит
 # устройств). Публикует свою статистику, стягивает статистику пиров, применяет
 # лимит. Лёгкая — гоняется по cron чаще (раз в минуту), чем полная cluster_sync.

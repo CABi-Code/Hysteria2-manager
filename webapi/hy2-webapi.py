@@ -508,33 +508,39 @@ def parse_stream_ticket(ticket):
     return user if hmac.compare_digest(sig, good) else None
 
 
-def user_rate_bps(user):
-    """Текущая скорость юзера (байт/с) по ВСЕМУ кластеру: локальный activity.dat
-    (поле 4 — дельта кумулятива всех протоколов, пересчёт раз в минуту) плюс
-    колонка 9 из peers/*.stats (её публикует publish_stats пиров, тоже минутно).
-    Профиль у юзера один на кластер, а коннектится он к любой ноде — поэтому
-    складываем: без пиров спидометр показывал бы 0 при работе через соседа."""
-    total = 0
-    for line in read_lines(data_path("activity.dat")):
+# Скорость считает таймер hy2-rates (см. collect_rates): свою — в rates.dat,
+# чужую мы стягиваем в peers/*.rates. Файл считается протухшим, если его давно
+# не обновляли (таймер упал, пир недоступен) — лучше показать 0, чем застывшую
+# скорость получасовой давности.
+RATES_MAX_AGE = _env_int("HY2M_RATES_MAX_AGE", 60)  # с
+
+
+def _rate_from(path, user):
+    try:
+        if time.time() - os.path.getmtime(path) > RATES_MAX_AGE:
+            return 0
+    except OSError:
+        return 0
+    for line in read_lines(path):
         parts = line.split("|")
         if parts and parts[0] == user:
-            if len(parts) >= 4 and parts[3].isdigit():
-                total += int(parts[3])
-            break
+            return int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+    return 0
+
+
+def user_rate_bps(user):
+    """Текущая скорость юзера (байт/с) по ВСЕМУ кластеру: своя нода плюс каждый
+    пир. Профиль у юзера один на кластер, а подключается он к любой ноде —
+    поэтому складываем: без пиров спидометр показывал бы 0 при работе через
+    соседа (а именно так обычно и есть)."""
+    total = _rate_from(data_path("rates.dat"), user)
     try:
         names = os.listdir(PEERS_DIR)
     except OSError:
         names = []
     for name in names:
-        if not name.endswith(".stats"):
-            continue
-        for line in read_lines(os.path.join(PEERS_DIR, name)):
-            parts = line.split("\t")
-            if parts and parts[0] == user:
-                # Старые ноды отдают 8 колонок — у них скорость просто 0.
-                if len(parts) >= 9 and parts[8].isdigit():
-                    total += int(parts[8])
-                break
+        if name.endswith(".rates"):
+            total += _rate_from(os.path.join(PEERS_DIR, name), user)
     return total
 
 

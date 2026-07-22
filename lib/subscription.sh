@@ -1131,11 +1131,9 @@ user_over_limit() {   # user [cluster_conn] [local_conn]
 }
 
 # Публикует статистику ЭТОЙ ноды для других нод (за X-Cluster-Auth). По строке на
-# юзера: «user<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx<TAB>active<TAB>active_since<TAB>rate».
-# rate (кол. 9) — мгновенная скорость по activity.dat (байт/с, все протоколы,
-# пересчёт раз в минуту): по ней спидометр мини-аппа показывает скорость по
-# ВСЕМУ кластеру, а не только на своей ноде. Старые ноды колонки не отдают — у
-# них rate читается как 0.
+# юзера: «user<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx<TAB>active<TAB>active_since».
+# Мгновенная скорость сюда НЕ входит: она живёт в отдельном cluster/rates,
+# который публикуется чаще (см. publish_rates).
 # Первые 6 колонок пиры подмешивают в общекластерные онлайн/трафик/скорость и в
 # разбивку по нодам; active/active_since (кол. 7-8) — для traffic-based жёсткой
 # проверки (enforce_active_node_limit): активен ли юзер по трафику на этой ноде и
@@ -1144,7 +1142,7 @@ user_over_limit() {   # user [cluster_conn] [local_conn]
 publish_stats() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx ac asince rate
+    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx ac asince
     online=$(api_get "/online")
     echo "$online" | jq empty 2>/dev/null || online='{}'
     : > "$tmp"
@@ -1154,11 +1152,25 @@ publish_stats() {
         tl=$(get_user_traffic "$u"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
         sp=$(get_user_speed "$u");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
         ac=$(get_user_active "$u");  asince=$(get_user_active_since "$u")
-        rate=$(get_user_rate "$u")
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" "${rate:-0}" >> "$tmp"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" >> "$tmp"
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/stats"
     secure_web_files
+}
+
+# Публикует мгновенную скорость юзеров ЭТОЙ ноды (RATES_FILE «user|bps|ts»).
+# Отдельно от publish_stats, потому что каденс другой: stats — раз в минуту в
+# --online-sync, rates — каждые RATES_TICK_SEC (15 с) из таймера hy2-rates.
+# Это просто копия файла: считает его collect_rates, здесь только выкладка.
+# Права правим точечно (а не secure_web_files): тот делает chown -R по всему
+# webroot и find по sub/ — раз в минуту это незаметно, каждые 15 с уже жалко.
+publish_rates() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    cp -f "$RATES_FILE" "$WEBROOT/cluster/rates" 2>/dev/null || : > "$WEBROOT/cluster/rates"
+    local cg=root; id caddy >/dev/null 2>&1 && cg=caddy
+    chown "root:${cg}" "$WEBROOT/cluster/rates" 2>/dev/null || true
+    chmod 640 "$WEBROOT/cluster/rates" 2>/dev/null || true
 }
 
 # Публикует IP-адреса локальных юзеров для других нод (за X-Cluster-Auth), чтобы
