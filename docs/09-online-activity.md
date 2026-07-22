@@ -124,7 +124,7 @@ active-тик, самокорректируется на следующей ми
 ## Файлы
 - `lib/traffic.sh` — `collect_activity` (мультипротокольный кумулятив),
   `collect_rates` + `get_user_rate` + `rates_timer_ensure` (тик скорости).
-- `lib/subscription.sh` — `publish_stats` (минутная статистика), `publish_rates`.
+- `lib/publish.sh` — `publish_stats` (минутная статистика), `publish_rates`.
 - `lib/cluster.sh` — `cluster_rates_sync` (обмен скоростью с пирами).
 - `lib/protocols.sh` — `proto_activity_cum_lines` (Xray + TUIC).
 - `webapi/hy2-webapi.py` — `user_active_raw`/`is_online` (гистерезис),

@@ -15,7 +15,7 @@
 |---|---|---|---|
 | Активация/продление подписки (с датой окончания) | **менеджер** `lib/notify.sh` | любой extend через `bot_extend_user` | ⭐ |
 | Напоминания об истечении (7д/3д/1д/12ч/1ч/30мин) | **менеджер** `lib/notify.sh` | cron `--notify-sweep` каждые 5 мин | ⭐ |
-| Автоотключение по истечении | менеджер `lib/tgbot.sh` `bot_notify_expired` | `check_expired_users` | 🚫 |
+| Автоотключение по истечении | менеджер `lib/tgbot_daemon.sh` `bot_notify_expired` | `check_expired_users` | 🚫 |
 | Зачисление на баланс | **cibpn-webapp** `TelegramNotifier` | обсервер `BalanceTransaction::created` | 💵 |
 | Списание с баланса | **cibpn-webapp** `TelegramNotifier` | тот же обсервер | 🪙 |
 
@@ -75,7 +75,7 @@
 | Файл | Что там |
 |---|---|
 | `lib/notify.sh` | **вся новая логика**: `CE_MAP`/`ce()`, `fmt_date_dmy`, `bot_username`, `period_days_set/get`, `notify_user`, `chandm_send`, `chandm_topic_set`, `bot_notify_activated`, `bot_notify_sweep` |
-| `lib/tgbot.sh` | `bot_extend_user` (хук активации + `period_days_set`, флаг `nonotify`); `bot_handle_update` (захват topic канала); базовые `tg_api/tg_send/tg_esc/tg_user_chats/bot_get/bot_set/bot_token/bot_enabled` |
+| `lib/tgbot_client.sh` / `lib/tgbot_daemon.sh` | `bot_extend_user` (хук активации + `period_days_set`, флаг `nonotify`); `bot_handle_update` (захват topic канала); базовые `tg_api/tg_send/tg_esc/tg_user_chats/bot_get/bot_set/bot_token/bot_enabled` |
 | `lib/expiry.sh` | `get_user_expiry`, `expiry_days_left`, `format_remaining`, `check_expired_users`→`bot_notify_expired` |
 | `hy2-manager.sh` | подключает `notify` в `_required_libs`; CLI `--check-expiry` (зовёт `bot_notify_sweep`) и `--notify-sweep` |
 | `lib/cron.sh` | ставит cron `*/5 --notify-sweep` (и `0 */6 --check-expiry`) |
@@ -189,7 +189,7 @@ HTML-тег `<tg-emoji emoji-id="ID">BASE</tg-emoji>` при `parse_mode=HTML`. 
 
 - **Новый тип уведомления (подписка):** добавить функцию в `lib/notify.sh` по образцу
   `bot_notify_activated` (собрать текст через `ce`/`fmt_date_dmy`, вызвать
-  `notify_user "$user" "$text"`), и дёрнуть её из нужной точки (`lib/tgbot.sh` или
+  `notify_user "$user" "$text"`), и дёрнуть её из нужной точки (`lib/tgbot_daemon.sh` или
   cron-ветки `hy2-manager.sh`).
 - **Новый тип уведомления (баланс/оплата):** в cibpn-webapp — метод в
   `TelegramNotifier`, вызвать из обсервера/сервиса **после коммита** (`DB::afterCommit`),
