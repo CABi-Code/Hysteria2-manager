@@ -312,18 +312,21 @@ curl -H "$H" -X POST "$BASE/v1/stream/ticket" -d '{"username":"alice"}'
 {"ok":true,"data":{"ticket":"<opaque>","expires_in":1800}}
 ```
 
-### GET /v1/stream/online — live-статус онлайн (SSE, по тикету)
+### GET /v1/stream/online — live-статус онлайн и скорость (SSE, по тикету)
 
 `text/event-stream`. Аутентификация — параметром `?ticket=` (не Bearer). Шлёт
-`data: {"online": bool}` при подключении и при КАЖДОМ изменении статуса, плюс
-keepalive-комментарии `: ping`. Семантика `online` — «реально пользуется сейчас»
-(см. `online` в статусе пользователя). Держите одно соединение; при разрыве
-берите свежий тикет и переоткрывайте.
+`data: {"online": bool, "bps": int}` при подключении и при КАЖДОМ изменении
+любого из полей, плюс keepalive-комментарии `: ping`. Семантика `online` —
+«реально пользуется сейчас» (см. `online` в статусе пользователя). `bps` —
+текущая скорость в байтах/с по ВСЕМУ кластеру (локальный `activity.dat` +
+колонка 9 из `peers/*.stats`); пересчёт на каждой ноде раз в минуту, поэтому
+значение меняется не чаще. Держите одно соединение; при разрыве берите свежий
+тикет и переоткрывайте.
 
 ```bash
 curl -N "$BASE/v1/stream/online?ticket=<opaque>"
-# data: {"online": false}
-# data: {"online": true}
+# data: {"online": false, "bps": 0}
+# data: {"online": true, "bps": 1240576}
 ```
 
 ---

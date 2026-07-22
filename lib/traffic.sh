@@ -141,6 +141,15 @@ get_user_active_since() {
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 
+# Мгновенная скорость юзера на ЭТОЙ ноде (байт/сек) — поле 4 activity.dat,
+# которое collect_activity считает раз в минуту по дельте кумулятива ВСЕХ
+# протоколов. В отличие от get_user_speed (SPEED_FILE, 30-мин сбор Hysteria)
+# годится для «скорости прямо сейчас».
+get_user_rate() {
+    local v; v=$(grep "^${1}|" "$ACTIVITY_FILE" 2>/dev/null | head -1 | cut -d'|' -f4)
+    [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
+}
+
 # Текущая скорость пользователя: "user|tx_rate|rx_rate" в байт/сек
 get_user_speed() {
     local line
