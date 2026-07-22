@@ -43,12 +43,14 @@ build_user_stats_snapshot() {
     while IFS='|' read -r u a; do [ -n "$u" ] && SNAP_EXP["$u"]=$a; done < "$EXPIRY_FILE"
 
     # Суммы по пирам — ОДИН awk на все *.stats (а не на каждого юзера × колонку).
+    # %.0f, а НЕ %s: mawk отдаёт числа > 2^31 в виде «2.15506e+11» (CONVFMT), и
+    # bash-арифметика ниже на таком падает — трафик по пирам терялся.
     if [ -d "$PEERS_DIR" ] && compgen -G "$PEERS_DIR/*.stats" >/dev/null 2>&1; then
         while IFS=$'\t' read -r u a b c d e; do
             [ -n "$u" ] || continue
             PEER_ON["$u"]=$a; PEER_TX["$u"]=$b; PEER_RX["$u"]=$c; PEER_STX["$u"]=$d; PEER_SRX["$u"]=$e
         done < <(awk -F'\t' '{on[$1]+=$2; tx[$1]+=$3; rx[$1]+=$4; stx[$1]+=$5; srx[$1]+=$6}
-                             END{for(k in on) printf "%s\t%s\t%s\t%s\t%s\t%s\n",k,on[k],tx[k],rx[k],stx[k],srx[k]}' \
+                             END{for(k in on) printf "%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n",k,on[k],tx[k],rx[k],stx[k],srx[k]}' \
                              "$PEERS_DIR"/*.stats 2>/dev/null)
     fi
 
