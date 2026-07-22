@@ -5,7 +5,7 @@
 #
 # Только stdlib (python3 ≥ 3.9): демон обязан работать на голом Debian/Ubuntu
 # без pip. Слушает localhost; наружу выставляется через Caddy (handle /api/* →
-# reverse_proxy), см. lib/webapi.sh и setup_caddy в lib/subscription.sh.
+# reverse_proxy), см. lib/webapi.sh и setup_caddy в lib/caddy.sh.
 #
 # Аутентификация: Authorization: Bearer hyk_<40 симв.>. В webapi.keys хранится
 # ТОЛЬКО sha256 ключа — утечка файла не раскрывает ключи. Scopes ограничивают,
