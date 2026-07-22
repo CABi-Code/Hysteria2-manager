@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+# ================================================
+# Онлайн-статус (с гистерезисом), скорость и SSE-поток статуса.
+# Часть hy2-webapi (точка входа — webapi/hy2-webapi.py, контракт — docs/API.md).
+# ================================================
+import base64
+import hashlib
+import hmac
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from wa_core import *  # noqa: F403
+from wa_core import _env_int, _online_lock, _online_last_active
+from wa_users import *  # noqa: F403
+
+
+
+def hysteria_online(user):
+    """Онлайн ЭТОЙ ноды из локального API Hysteria (см. lib/api.sh). None = недоступен."""
+    secret_file = data_path("api_secret")
+    try:
+        with open(secret_file, encoding="utf-8") as f:
+            secret = f.read().strip()
+    except OSError:
+        return None
+    port = 25580
+    try:
+        with open(CONFIG_YAML, encoding="utf-8", errors="replace") as f:
+            block = re.search(r"^trafficStats:.*?(?=^\S|\Z)", f.read(), re.S | re.M)
+        if block:
+            m = re.search(r"listen:\s*\S*?(\d+)\s*$", block.group(0), re.M)
+            if m:
+                port = int(m.group(1))
+    except OSError:
+        pass
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/online",
+                                 headers={"Authorization": secret})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        return int(data.get(user, 0))
+    except Exception:
+        return None
+
+
+def user_active_raw(user):
+    """True, если менеджер СЕЙЧАС считает юзера активным хоть на ОДНОЙ ноде.
+    Профиль = весь кластер, поэтому OR: локальный activity.dat (user|active|...)
+    ИЛИ любой peers/*.stats (TAB, active = индекс 6). ВАЖНО: локальный active=0 НЕ
+    прерывает проверку пиров — юзер простаивает тут, но может быть активен на
+    другой ноде (иначе онлайн «ломался» при подключении к другой ноде)."""
+    for line in read_lines(data_path("activity.dat")):
+        parts = line.split("|")
+        if parts and parts[0] == user:
+            if len(parts) >= 2 and parts[1] == "1":
+                return True
+            break   # нашли локально, но неактивен — идём проверять пиров
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".stats"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("\t")
+            if parts and parts[0] == user:
+                if len(parts) >= 7 and parts[6].isdigit() and int(parts[6]) > 0:
+                    return True
+                break
+    return False
+
+
+def active_users_raw():
+    """Кто активен СЕЙЧАС хоть на одной ноде — один проход по тем же файлам,
+    что читает user_active_raw() поштучно. Нужен, когда статус спрашивают
+    сразу про многих (дерево рефералов в мини-аппе)."""
+    users = set()
+    for line in read_lines(data_path("activity.dat")):
+        parts = line.split("|")
+        if len(parts) >= 2 and parts[1] == "1" and parts[0]:
+            users.add(parts[0])
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".stats"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("\t")
+            if len(parts) >= 7 and parts[0] and parts[6].isdigit() and int(parts[6]) > 0:
+                users.add(parts[0])
+    return users
+
+
+def online_users():
+    """Список онлайн с тем же гистерезисом, что и is_online(): активные сейчас
+    плюс те, кто был активен в последние ONLINE_GRACE_SEC."""
+    now = time.time()
+    active = active_users_raw()
+    with _online_lock:
+        for user in active:
+            _online_last_active[user] = now
+        return sorted(
+            user for user, seen in _online_last_active.items()
+            if now - seen < ONLINE_GRACE_SEC
+        )
+
+
+def is_online(user):
+    """«Онлайн сейчас» с гистерезисом: active сейчас ИЛИ active наблюдался в
+    последние ONLINE_GRACE_SEC. Гистерезис держится в памяти демона (сбрасывается
+    на рестарте — не критично)."""
+    now = time.time()
+    active = user_active_raw(user)
+    with _online_lock:
+        if active:
+            _online_last_active[user] = now
+            return True
+        return (now - _online_last_active.get(user, 0.0)) < ONLINE_GRACE_SEC
+
+
+# --- SSE live-пуш статуса онлайн ---
+# Браузер не хранит ключ менеджера, поэтому Laravel (по своему Bearer-ключу)
+# запрашивает у нас короткоживущий тикет на конкретного юзера, а EventSource
+# открывает /v1/stream/online?ticket=… Тикет подписан секретом процесса (живёт в
+# памяти, ротация на рестарте — тикеты короткие). Данные потока — только булев
+# online одного юзера, чувствительность низкая.
+_STREAM_SECRET = os.urandom(32)
+STREAM_TICKET_TTL = _env_int("HY2M_STREAM_TICKET_TTL", 1800)  # с
+STREAM_POLL_SEC = max(2, _env_int("HY2M_STREAM_POLL_SEC", 5))  # как часто watcher сверяет статус
+STREAM_PING_SEC = max(10, _env_int("HY2M_STREAM_PING_SEC", 20))  # keepalive-комментарий
+STREAM_HANDLED = object()  # сентинел: хендлер уже сам отдал ответ (стрим), respond() не нужен
+
+# Общий watcher вместо опроса на каждого клиента: считает is_online только для
+# юзеров, у кого есть активные подписчики, раз в STREAM_POLL_SEC, и будит хендлеры.
+_stream_cv = threading.Condition()
+_stream_subs = {}    # user -> число открытых SSE-подписчиков
+_stream_state = {}   # user -> последний известный (online: bool, bps: int)
+
+
+def make_stream_ticket(user):
+    exp = int(time.time()) + STREAM_TICKET_TTL
+    sig = hmac.new(_STREAM_SECRET, f"{user}:{exp}".encode(), hashlib.sha256).hexdigest()[:32]
+    return base64.urlsafe_b64encode(f"{user}:{exp}:{sig}".encode()).decode()
+
+
+def parse_stream_ticket(ticket):
+    """Вернуть username из валидного тикета либо None. username из [A-Za-z0-9_-]
+    (RE_USERNAME) — двоеточий не содержит, поэтому rsplit безопасен."""
+    try:
+        raw = base64.urlsafe_b64decode((ticket or "").encode()).decode()
+        user, exp_s, sig = raw.rsplit(":", 2)
+        exp = int(exp_s)
+    except Exception:
+        return None
+    if exp < time.time() or not RE_USERNAME.fullmatch(user):
+        return None
+    good = hmac.new(_STREAM_SECRET, f"{user}:{exp}".encode(), hashlib.sha256).hexdigest()[:32]
+    return user if hmac.compare_digest(sig, good) else None
+
+
+# Скорость считает таймер hy2-rates (см. collect_rates): свою — в rates.dat,
+# чужую мы стягиваем в peers/*.rates. Файл считается протухшим, если его давно
+# не обновляли (таймер упал, пир недоступен) — лучше показать 0, чем застывшую
+# скорость получасовой давности.
+RATES_MAX_AGE = _env_int("HY2M_RATES_MAX_AGE", 60)  # с
+
+
+def _rate_from(path, user):
+    try:
+        if time.time() - os.path.getmtime(path) > RATES_MAX_AGE:
+            return 0
+    except OSError:
+        return 0
+    for line in read_lines(path):
+        parts = line.split("|")
+        if parts and parts[0] == user:
+            return int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+    return 0
+
+
+def user_rate_bps(user):
+    """Текущая скорость юзера (байт/с) по ВСЕМУ кластеру: своя нода плюс каждый
+    пир. Профиль у юзера один на кластер, а подключается он к любой ноде —
+    поэтому складываем: без пиров спидометр показывал бы 0 при работе через
+    соседа (а именно так обычно и есть)."""
+    total = _rate_from(data_path("rates.dat"), user)
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".rates"):
+            total += _rate_from(os.path.join(PEERS_DIR, name), user)
+    return total
+
+
+def stream_snapshot(user):
+    return (is_online(user), user_rate_bps(user))
+
+
+def _stream_watcher():
+    """Демонический тред: раз в STREAM_POLL_SEC пересчитывает online и скорость
+    подписанных юзеров (O(число подписанных), не на клиента) и будит хендлеры
+    при изменении."""
+    while True:
+        time.sleep(STREAM_POLL_SEC)
+        try:
+            with _stream_cv:
+                users = list(_stream_subs.keys())
+            updates = {u: stream_snapshot(u) for u in users}
+            with _stream_cv:
+                changed = any(_stream_state.get(u) != v for u, v in updates.items())
+                _stream_state.update(updates)
+                if changed:
+                    _stream_cv.notify_all()
+        except Exception as e:
+            sys.stderr.write(f"stream watcher: {e!r}\n")
