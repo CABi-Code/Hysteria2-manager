@@ -161,6 +161,13 @@ curl -H "$H" "$BASE/v1/users/alice"
   "online_connections":2,"online":true,"devices_seen":2}}
 ```
 
+Поля `free` и `demo` — `null` у обычного пользователя. `demo` появляется у
+выданного демо-профиля (`POST /v1/demo`) и содержит ровно то, по чему
+`lib/demo.sh` отбирает доступ: `state` (`active`/`expired`), `created_at`,
+`expires_at`, `used_bytes` (трафик минус база на момент выдачи), `limit_bytes`
+(0 — без лимита) и `left_bytes`. Отсюда шкалу лимита и рисует публичная главная
+веб-аппа — отдельного эндпоинта для демо не заводим.
+
 ### GET /v1/users/{name}/subscription — ссылки доступа (scope: read)
 
 `subscription_url` — основная ссылка-подписка (все серверы кластера,
