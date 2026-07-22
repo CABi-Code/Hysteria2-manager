@@ -484,7 +484,7 @@ STREAM_HANDLED = object()  # сентинел: хендлер уже сам от
 # юзеров, у кого есть активные подписчики, раз в STREAM_POLL_SEC, и будит хендлеры.
 _stream_cv = threading.Condition()
 _stream_subs = {}    # user -> число открытых SSE-подписчиков
-_stream_state = {}   # user -> последний известный online (bool)
+_stream_state = {}   # user -> последний известный (online: bool, bps: int)
 
 
 def make_stream_ticket(user):
@@ -508,15 +508,50 @@ def parse_stream_ticket(ticket):
     return user if hmac.compare_digest(sig, good) else None
 
 
+def user_rate_bps(user):
+    """Текущая скорость юзера (байт/с) по ВСЕМУ кластеру: локальный activity.dat
+    (поле 4 — дельта кумулятива всех протоколов, пересчёт раз в минуту) плюс
+    колонка 9 из peers/*.stats (её публикует publish_stats пиров, тоже минутно).
+    Профиль у юзера один на кластер, а коннектится он к любой ноде — поэтому
+    складываем: без пиров спидометр показывал бы 0 при работе через соседа."""
+    total = 0
+    for line in read_lines(data_path("activity.dat")):
+        parts = line.split("|")
+        if parts and parts[0] == user:
+            if len(parts) >= 4 and parts[3].isdigit():
+                total += int(parts[3])
+            break
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".stats"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("\t")
+            if parts and parts[0] == user:
+                # Старые ноды отдают 8 колонок — у них скорость просто 0.
+                if len(parts) >= 9 and parts[8].isdigit():
+                    total += int(parts[8])
+                break
+    return total
+
+
+def stream_snapshot(user):
+    return (is_online(user), user_rate_bps(user))
+
+
 def _stream_watcher():
-    """Демонический тред: раз в STREAM_POLL_SEC пересчитывает online подписанных
-    юзеров (O(число подписанных), не на клиента) и будит хендлеры при изменении."""
+    """Демонический тред: раз в STREAM_POLL_SEC пересчитывает online и скорость
+    подписанных юзеров (O(число подписанных), не на клиента) и будит хендлеры
+    при изменении."""
     while True:
         time.sleep(STREAM_POLL_SEC)
         try:
             with _stream_cv:
                 users = list(_stream_subs.keys())
-            updates = {u: is_online(u) for u in users}
+            updates = {u: stream_snapshot(u) for u in users}
             with _stream_cv:
                 changed = any(_stream_state.get(u) != v for u, v in updates.items())
                 _stream_state.update(updates)
@@ -1032,9 +1067,10 @@ class Handler(BaseHTTPRequestHandler):
         return STREAM_HANDLED
 
     def _stream_online(self, user):
-        """Держит text/event-stream и пушит {online:bool} при изменении статуса
-        (+ keepalive-комментарии). Под HTTP/1.1 без Content-Length закрываем
-        keep-alive: клиент читает поток до закрытия сокета (EventSource — ок)."""
+        """Держит text/event-stream и пушит {online:bool, bps:int} при изменении
+        статуса или скорости (+ keepalive-комментарии). Под HTTP/1.1 без
+        Content-Length закрываем keep-alive: клиент читает поток до закрытия
+        сокета (EventSource — ок)."""
         self.close_connection = True
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1045,10 +1081,10 @@ class Handler(BaseHTTPRequestHandler):
         with _stream_cv:
             _stream_subs[user] = _stream_subs.get(user, 0) + 1
         try:
-            last = is_online(user)
+            last = stream_snapshot(user)
             with _stream_cv:
                 _stream_state[user] = last
-            self._sse(f'data: {{"online": {"true" if last else "false"}}}\n\n')
+            self._sse(f"data: {json.dumps(dict(zip(('online', 'bps'), last)))}\n\n")
             while True:
                 with _stream_cv:
                     _stream_cv.wait_for(lambda: _stream_state.get(user) != last,
@@ -1056,7 +1092,7 @@ class Handler(BaseHTTPRequestHandler):
                     val = _stream_state.get(user, last)
                 if val != last:
                     last = val
-                    self._sse(f'data: {{"online": {"true" if last else "false"}}}\n\n')
+                    self._sse(f"data: {json.dumps(dict(zip(('online', 'bps'), last)))}\n\n")
                 else:
                     self._sse(": ping\n\n")   # keepalive: держим соединение живым
         except (BrokenPipeError, ConnectionResetError, OSError):

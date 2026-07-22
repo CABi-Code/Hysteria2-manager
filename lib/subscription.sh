@@ -1131,7 +1131,11 @@ user_over_limit() {   # user [cluster_conn] [local_conn]
 }
 
 # Публикует статистику ЭТОЙ ноды для других нод (за X-Cluster-Auth). По строке на
-# юзера: «user<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx<TAB>active<TAB>active_since».
+# юзера: «user<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx<TAB>active<TAB>active_since<TAB>rate».
+# rate (кол. 9) — мгновенная скорость по activity.dat (байт/с, все протоколы,
+# пересчёт раз в минуту): по ней спидометр мини-аппа показывает скорость по
+# ВСЕМУ кластеру, а не только на своей ноде. Старые ноды колонки не отдают — у
+# них rate читается как 0.
 # Первые 6 колонок пиры подмешивают в общекластерные онлайн/трафик/скорость и в
 # разбивку по нодам; active/active_since (кол. 7-8) — для traffic-based жёсткой
 # проверки (enforce_active_node_limit): активен ли юзер по трафику на этой ноде и
@@ -1140,7 +1144,7 @@ user_over_limit() {   # user [cluster_conn] [local_conn]
 publish_stats() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx ac asince
+    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx ac asince rate
     online=$(api_get "/online")
     echo "$online" | jq empty 2>/dev/null || online='{}'
     : > "$tmp"
@@ -1150,7 +1154,8 @@ publish_stats() {
         tl=$(get_user_traffic "$u"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
         sp=$(get_user_speed "$u");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
         ac=$(get_user_active "$u");  asince=$(get_user_active_since "$u")
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" >> "$tmp"
+        rate=$(get_user_rate "$u")
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" "${rate:-0}" >> "$tmp"
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/stats"
     secure_web_files

@@ -61,10 +61,16 @@ active-тик, самокорректируется на следующей ми
 Дашборд получает статус живьём одним постоянным соединением:
 
 - **webapi** `GET /v1/stream/online?ticket=…` → `text/event-stream`, шлёт
-  `data: {"online": bool}` при изменении + keepalive `: ping`. Общий watcher-тред
-  (`_stream_watcher`) раз в `STREAM_POLL_SEC` (5с) пересчитывает `is_online`
-  ТОЛЬКО для юзеров с активными подписчиками и будит хендлеры — O(подписанных),
-  не на клиента.
+  `data: {"online": bool, "bps": int}` при изменении + keepalive `: ping`. Общий
+  watcher-тред (`_stream_watcher`) раз в `STREAM_POLL_SEC` (5с) пересчитывает
+  `is_online` и `user_rate_bps` ТОЛЬКО для юзеров с активными подписчиками и
+  будит хендлеры — O(подписанных), не на клиента.
+- **Скорость (`bps`)**: байт/с по ВСЕМУ кластеру = поле 4 локального
+  `activity.dat` (дельта кумулятива всех протоколов, минутный пересчёт в
+  `collect_activity`) + колонка 9 `peers/*.stats`, которую с той же минутной
+  каденцией публикует `publish_stats` каждой ноды (`get_user_rate`). Ноды со
+  старой версией колонку не отдают — у них она читается как 0. Мини-апп рисует
+  по этому значению спидометр (см. `надстройка/docs/DASHBOARD.md`).
 - **Тикет**: браузер не хранит ключ менеджера. Laravel (`GET /api/stream-ticket`,
   auth:sanctum) по своему Bearer-ключу берёт у webapi
   (`POST /v1/stream/ticket`) короткоживущий тикет (HMAC секретом процесса,
@@ -74,8 +80,8 @@ active-тик, самокорректируется на следующей ми
   `reverse_proxy 127.0.0.1:8787` c `flush_interval -1` (без буферизации);
   `encode` вынесен в fallback, чтобы gzip не буферил поток.
 - **Vue** (`Dashboard.vue`): `EventSource` на маунте, `liveOnline` перекрывает
-  снимок из `/me`; авто-реконнект со свежим тикетом при разрыве; закрытие на
-  unmount.
+  снимок из `/me`, `liveBps` кормит спидометр; авто-реконнект со свежим тикетом
+  при разрыве; закрытие на unmount.
 
 ## Настройки (env на юните webapi / lib/webapi.sh)
 
@@ -89,7 +95,9 @@ active-тик, самокорректируется на следующей ми
 сети** — это соответствует смыслу «онлайн = реально пользуется».
 
 ## Файлы
-- `lib/traffic.sh` — `collect_activity` (мультипротокольный кумулятив).
+- `lib/traffic.sh` — `collect_activity` (мультипротокольный кумулятив),
+  `get_user_rate` (скорость этой ноды из `activity.dat`).
+- `lib/subscription.sh` — `publish_stats`, колонка 9 = rate для пиров.
 - `lib/protocols.sh` — `proto_activity_cum_lines` (Xray + TUIC).
 - `webapi/hy2-webapi.py` — `user_active_raw`/`is_online` (гистерезис),
   тикеты + `_stream_watcher` + SSE-хендлеры, маршруты `/v1/stream/*`.
