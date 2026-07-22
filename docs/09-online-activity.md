@@ -45,7 +45,7 @@ active-тик, самокорректируется на следующей ми
 
 ## webapi: поле `online`
 
-`user_payload.online` (`webapi/hy2-webapi.py`) = `is_online(user)`:
+`user_payload.online` (`webapi/wa_payload.py`) = `is_online(user)`:
 - `user_active_raw` читает готовый `active` локально (`activity.dat`) ИЛИ по
   кластеру (`peers/*.stats`, поле индекс 6) — **без пересчёта**, нагрузку не
   добавляем.
@@ -124,10 +124,10 @@ active-тик, самокорректируется на следующей ми
 ## Файлы
 - `lib/traffic.sh` — `collect_activity` (мультипротокольный кумулятив),
   `collect_rates` + `get_user_rate` + `rates_timer_ensure` (тик скорости).
-- `lib/subscription.sh` — `publish_stats` (минутная статистика), `publish_rates`.
+- `lib/publish.sh` — `publish_stats` (минутная статистика), `publish_rates`.
 - `lib/cluster.sh` — `cluster_rates_sync` (обмен скоростью с пирами).
 - `lib/protocols.sh` — `proto_activity_cum_lines` (Xray + TUIC).
-- `webapi/hy2-webapi.py` — `user_active_raw`/`is_online` (гистерезис),
+- `webapi/wa_online.py` — `user_active_raw`/`is_online` (гистерезис),
   тикеты + `_stream_watcher` + SSE-хендлеры, маршруты `/v1/stream/*`.
 - `надстройка`: `MeController::streamTicket`, `ManagerClient::streamTicket`,
   роут `/api/stream-ticket`, `Dashboard.vue` (EventSource); `/etc/caddy/Caddyfile`.

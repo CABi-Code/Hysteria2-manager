@@ -54,7 +54,7 @@ name:pass:created_ts:expiry_ts:node:cap_bytes:state
 | Поле | Пример | Смысл |
 |---|---|---|
 | `name` | `demo-a1b2c3d4` | логин профиля, префикс `demo-` |
-| `pass` | `<64 симв.>` | пароль, из `bot_gen_pass` (`lib/tgbot.sh:323`) |
+| `pass` | `<64 симв.>` | пароль, из `bot_gen_pass` (`lib/tgbot_client.sh`, `bot_gen_pass`) |
 | `created_ts` | `1721500000` | когда выдан (unix) |
 | `expiry_ts` | `1721503600` | когда доступ кончается (`created + DEMO_TTL_SEC`) |
 | `node` | `node-a` | нода-приёмник (`DEMO_NODE`), куда коннектится клиент |
@@ -72,7 +72,7 @@ Purge-момент **не хранится отдельным полем** — �
 
 ## 3. `demo_create()`
 
-Новая функция в `lib/users.sh`, рядом с `bot_provision_user` (`lib/tgbot.sh:332`),
+Новая функция в `lib/users.sh`, рядом с `bot_provision_user` (`lib/tgbot_client.sh`),
 которую и берём за образец (та же генерация пароля и `db_add_user`).
 
 ```bash
@@ -194,7 +194,7 @@ fi
 
 ## 6. Отображение в UI (как у обычных клиентов)
 
-Отдельный раздел/фильтр «Демо» в списке (`lib/ui.sh`), тот же снапшот
+Отдельный раздел/фильтр «Демо» в списке (`lib/ui_users.sh`), тот же снапшот
 `build_user_stats_snapshot` (`:22`): онлайн, съеденный трафик из
 `get_user_traffic`, остаток времени (`format_remaining`, `expiry.sh:52`), нода,
 `state` (`active`/`expired`). На `DEMO_NODE` данные живые из своих файлов, на
@@ -228,7 +228,7 @@ DEMO_TRAFFIC_CAP=$((1024*1024*1024))  # 1 ГБ трафика на профил�
 | `lib/expiry.sh` | `demo_sweep()` + `days_to_date_from_ts` (обёртка над `days_to_date`) |
 | `lib/cron.sh` | ветка `--demo-sweep` (раз в минуту) |
 | `lib/cluster.sh` | `publish_cluster_demos` / `cluster_apply_demos` + раздача `DEMO_NODE` через настройки |
-| `lib/ui.sh` | раздел «Демо» в списке + выбор `DEMO_NODE` в настройках |
+| `lib/ui_users.sh` | раздел «Демо» в списке + выбор `DEMO_NODE` в настройках |
 | `hy2-manager.sh` | диспетчер флага `--demo-sweep` |
 | `lib/webapi.sh` / `API.md` | эндпоинт «выдать демо» для веб-аппа |
 

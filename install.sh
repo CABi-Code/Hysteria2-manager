@@ -66,7 +66,7 @@ LOG_DIR="/var/log/hy2-manager"
 SERVICE="hysteria-server.service"
 # ВАЖНО: держать список в синхроне с _required_libs в hy2-manager.sh — иначе после
 # обновления менеджер упадёт с «Модуль не найден» (файл не скачался).
-MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration subscription antiabuse perf cluster tgbot ui)
+MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish protocols antiabuse perf cluster update tgbot tariffs tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
 
 # === УТИЛИТА: скачивание файлов менеджера ===
 download_file() {
