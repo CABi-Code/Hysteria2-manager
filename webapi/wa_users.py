@@ -125,6 +125,28 @@ def free_status(user, total_bytes):
     }
 
 
+def demo_status(user, total_bytes):
+    """Состояние демо-профиля или None. Строка demos.db:
+    user|state|created|expires|cap|base|used (см. lib/demo.sh). Расход считаем
+    ровно как demo_tick, который и отбирает доступ: текущий трафик минус база
+    на момент выдачи. У отобранного демо (state=expired) расход уже записан в
+    строке — текущий трафик там ни при чём."""
+    row = next((r for r in pipe_rows(data_path("demos.db"), 7) if r[0] == user), None)
+    if row is None:
+        return None
+    nums = [int(x) if x.lstrip("-").isdigit() else 0 for x in row[2:7]]
+    created, expires, cap, base, used = nums
+    spent = used if row[1] != "active" else max(0, total_bytes - base)
+    return {
+        "state": row[1],
+        "created_at": created,
+        "expires_at": expires,
+        "used_bytes": spent,
+        "limit_bytes": cap,
+        "left_bytes": max(0, cap - spent) if cap else None,
+    }
+
+
 def peer_stats(user):
     """Суммы по кэшам пиров $DATA_DIR/peers/*.stats:
     user \t online \t tx \t rx \t sptx \t sprx \t active \t active_since"""
