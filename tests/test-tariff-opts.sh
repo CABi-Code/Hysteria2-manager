@@ -1,5 +1,5 @@
 #!/bin/bash
-# Редактор опций тарифа (7-е поле «k=v;k=v», lib/tgbot.sh): tariff_ask_opts
+# Редактор опций тарифа (7-е поле «k=v;k=v», lib/tariffs.sh): tariff_ask_opts
 # собирает строку из ответов, а tariff_update кладёт её на место — включая
 # ПУСТУЮ (снятие лимитов) при force_opts.
 # Запуск: bash tests/test-tariff-opts.sh
@@ -17,6 +17,7 @@ LOG_DIR="$HY2M_DATA_DIR"; LOG_FILE="$LOG_DIR/error.log"   # их ждёт tgbot.
 
 source "$SCRIPT_DIR/lib/config.sh"
 source "$SCRIPT_DIR/lib/tgbot.sh"
+source "$SCRIPT_DIR/lib/tariffs.sh"
 source "$SCRIPT_DIR/lib/freeplan.sh"
 
 TARIFFS_CONF="$HY2M_DATA_DIR/tariffs.conf"

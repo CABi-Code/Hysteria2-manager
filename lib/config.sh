@@ -89,7 +89,7 @@ AUTH_SCRIPT="$DATA_DIR/hysteria-auth.sh"
 # Единая подписка: клиент добавляет ссылку https://<домен>/sub/<token>, а нода
 # отдаёт base64-список всех ключей hysteria2:// этого юзера со всех серверов
 # кластера. Раздаёт статику Caddy (авто-HTTPS), менеджер лишь перегенерирует
-# файлы. См. lib/subscription.sh и lib/cluster.sh.
+# файлы. См. lib/sub_links.sh и lib/cluster.sh.
 NODE_CONF="$DATA_DIR/node.conf"            # NODE_NAME / NODE_HOST(домен) / WEBROOT
 CLUSTER_CONF="$DATA_DIR/cluster.conf"      # реестр пиров: строки «name|host»
 CLUSTER_SECRET_FILE="$DATA_DIR/cluster.secret"  # общий секрет кластера (chmod 600)

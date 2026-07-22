@@ -2,10 +2,17 @@
 
 ## Практическая документация
 
-| Документ | О чём |
-|---|---|
-| [API.md](API.md) | **Работающий Web API менеджера** для внешних приложений (mini-app, биллинги, панели): аутентификация по ключам, все эндпоинты с примерами, приём платежей Stars |
-| [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи** (воронка, идея 13): `demo_create()`, таблица `DEMOS_DB`, enforcement капов кроном, грейс-сутки + авто-purge, раздача-показ по кластеру |
+Описывает то, что **уже работает**. Колонка «Код» — файлы, которые правишь по
+этому документу; ищи по ней, а не по всему дереву.
+
+| Документ | О чём | Код |
+|---|---|---|
+| [API.md](API.md) | **Web API менеджера** для внешних приложений (mini-app, биллинг, бот, панель): ключи и scopes, все эндпоинты с примерами, приём платежей Stars | `webapi/*.py`, `webapi/dispatch.sh`, `lib/webapi.sh` |
+| [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи** (воронка, идея 13): `demo_create()`, таблица `DEMOS_DB`, enforcement капов кроном, грейс-сутки + авто-purge, показ по кластеру | `lib/demo.sh`, `lib/ui_users.sh` |
+| [NOTIFICATIONS.md](NOTIFICATIONS.md) | **Уведомления бота**: подписка (менеджер) и баланс (cibpn-webapp), кастомные эмодзи, канал-DM, как добавить новое уведомление | `lib/notify.sh`, `lib/tgbot*.sh` |
+| [08-multiprotocol.md](08-multiprotocol.md) | **Мультипротокол**: VLESS+REALITY+XHTTP, SS-2022, Trojan/WS (Xray), TUIC v5 (sing-box) рядом с Hysteria, единая подписка | `lib/protocols.sh`, `lib/ui_protocols.sh` |
+| [09-online-activity.md](09-online-activity.md) | **Онлайн-статус**: активность по всем протоколам, гистерезис, live-пуш через SSE | `lib/online.sh`, `lib/publish.sh`, `webapi/wa_online.py` |
+| [10-multiprotocol-limits.md](10-multiprotocol-limits.md) | **Лимит скорости для всех протоколов** (Стадия 3): tc HTB+fq_codel не только для Hysteria | `lib/perf.sh`, `lib/ui_perf.sh` |
 
 ---
 

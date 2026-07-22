@@ -79,7 +79,7 @@ collect_activity() {
         {
             echo "$response" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
             declare -F proto_activity_cum_lines >/dev/null 2>&1 && proto_activity_cum_lines 2>/dev/null
-        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%s\n", u, s[u]}'
+        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%.0f\n", u, s[u]}'   # %.0f: mawk иначе пишет 2^31+ как «1.42856e+09»
     )
 
     now=$(date +%s)
@@ -161,7 +161,7 @@ collect_rates() {
         {
             echo "$hy" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
             declare -F proto_activity_cum_lines >/dev/null 2>&1 && proto_activity_cum_lines 2>/dev/null
-        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%s\n", u, s[u]}'
+        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%.0f\n", u, s[u]}'   # %.0f: mawk иначе пишет 2^31+ как «1.42856e+09»
     )
     [ -n "$merged" ] || return 0
 
