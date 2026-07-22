@@ -209,7 +209,9 @@ bot_ym_invoice() {   # chat_id код название цена дней пол�
     local label sum url kb
     label=$(ym_new_label)
     sum=$(ym_pay_sum "$price")
-    url=$(ym_link "$label" "$sum")
+    # Назначение платежа = название тарифа: оно попадёт в историю кошелька и
+    # будет видно плательщику.
+    url=$(ym_link "$label" "$sum" "$title")
     ym_pending_add "$label" "$chat" "$code" "$user" "$sum" "$price"
 
     kb=$(jq -nc --arg u "$url" --arg d "ymchk:$label" \
