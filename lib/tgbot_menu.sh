@@ -47,6 +47,7 @@ bot_menu() {
         echo "  Бот        : $([ -n "$un" ] && echo "@$un" || echo "имя не определено (запустите бота)")"
         echo "  Тарифов    : $(tariff_count 2>/dev/null || echo 0)"
         echo "  Провайдер  : $([ -n "$prov" ] && echo "настроен, валюта $cur" || echo "не настроен (доступны Telegram Stars)")"
+        echo "  ЮMoney     : $(ym_enabled && echo "кошелёк $(bot_get YM_WALLET), комиссия $(ym_fee) %, $([ "$(ym_type)" = PC ] && echo "кошелёк ЮMoney" || echo "карта")" || echo "не настроен")"
         echo "  Оплат всего: $(grep -c '^' "$PAYMENTS_LOG" 2>/dev/null | tr -dc '0-9' || echo 0)"
         echo ""
         echo "  1. 🔑 Задать токен бота (из @BotFather)"
@@ -58,6 +59,7 @@ bot_menu() {
         echo "  7. 🎫 Выдать код привязки пользователю"
         echo "  8. 📨 Тест: сообщение всем админам"
         echo "  9. 📜 Логи бота (последние 25 строк)"
+        echo " 10. 🪙 ЮMoney: приём рублей на личный кошелёк (без провайдера)"
         echo "  0. ↩  Назад"
         echo ""
         local ch; ask ch "  Выберите: "
@@ -138,6 +140,44 @@ bot_menu() {
                 if [ -n "$pc" ]; then
                     pc=$(printf '%s' "$pc" | tr 'a-z' 'A-Z' | tr -d '[:space:]')
                     [[ "$pc" =~ ^[A-Z]{3}$ ]] && { bot_set PAY_CURRENCY "$pc"; echo "  ✅ Валюта: $pc"; } || echo "  ❌ Код валюты — 3 буквы."
+                fi
+                bot_restart
+                pause ;;
+            10)
+                echo ""
+                echo "  Приём рублей на ЛИЧНЫЙ кошелёк ЮMoney — без юрлица и провайдера."
+                echo "  Клиент платит по ссылке, бот сам находит платёж по метке и выдаёт доступ."
+                echo "  Нужны две вещи:"
+                echo "   • номер кошелька (yoomoney.ru → Настройки);"
+                echo "   • OAuth-токен со scope operation-history — им бот читает историю"
+                echo "     операций и опознаёт оплату. Как получить: docs/YOOMONEY.md."
+                echo "  Тарифы при этом должны иметь цену в валюте RUB (пункт 4)."
+                echo ""
+                local yw yt yf yp
+                ask yw "  Номер кошелька (Enter — не менять, '-' — убрать): "
+                if [ "$yw" = "-" ]; then
+                    bot_set YM_WALLET ""; echo "  ✅ ЮMoney отключён."
+                elif [ -n "$yw" ]; then
+                    yw=$(printf '%s' "$yw" | tr -cd '0-9')
+                    [ -n "$yw" ] && { bot_set YM_WALLET "$yw"; echo "  ✅ Кошелёк: $yw"; } || echo "  ❌ Номер кошелька — только цифры."
+                fi
+                ask yt "  Токен operation-history (Enter — не менять): "
+                [ -n "$yt" ] && { bot_set YM_TOKEN "$(printf '%s' "$yt" | tr -d '[:space:]')"; echo "  ✅ Токен сохранён."; }
+                echo ""
+                echo "  Комиссию ЮMoney берёт С ПОЛУЧАТЕЛЯ: карта — 3 %, кошелёк ЮMoney — ~1 %."
+                echo "  Указанный процент прибавляется к цене тарифа в счёте, чтобы на кошелёк"
+                echo "  пришла ровно цена. Ставьте не меньше реальной комиссии выбранного типа."
+                ask yf "  Комиссия сервиса, % (сейчас $(ym_fee)): "
+                if [ -n "$yf" ]; then
+                    [[ "$yf" =~ ^[0-9]+([.][0-9]+)?$ ]] && { bot_set YM_FEE "$yf"; echo "  ✅ Комиссия: $yf %"; } || echo "  ❌ Процент — число."
+                fi
+                ask yp "  Способ оплаты по умолчанию: AC — карта, PC — кошелёк ЮMoney (сейчас $(ym_type)): "
+                if [ -n "$yp" ]; then
+                    yp=$(printf '%s' "$yp" | tr 'a-z' 'A-Z' | tr -d '[:space:]')
+                    [ "$yp" = "AC" ] || [ "$yp" = "PC" ] && { bot_set YM_TYPE "$yp"; echo "  ✅ Способ: $yp"; } || echo "  ❌ Только AC или PC."
+                fi
+                if [ -n "$(bot_get YM_WALLET)" ] && [ -z "$(bot_get YM_TOKEN)" ]; then
+                    echo "  ⚠️  Без токена оплату подтвердить нечем — способ останется выключенным."
                 fi
                 bot_restart
                 pause ;;
@@ -239,7 +279,7 @@ bot_tariffs_menu() {
                 tariff_ask_prices "" "" "$([ -n "$(tariff_opt_of "$_TOPTS" free)" ] && echo 1 || echo 0)" \
                     || { pause; continue; }
                 if printf '%s' "$_TCUR" | tr '/' '\n' | grep -qvx 'XTR' && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
-                    echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5)."
+                    echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5) или кошелёк ЮMoney для RUB (пункт 10)."
                 fi
                 tariff_add "$c" "$t" "$d" "$dv" "$_TPRICE" "$_TCUR" "$_TOPTS"
                 echo "  ✅ Тариф [$c] сохранён ($(tariff_price_str "$_TPRICE" "$_TCUR"))."
@@ -278,7 +318,7 @@ bot_tariffs_menu() {
                 echo "  Текущие цены: $(tariff_price_str "$ep" "$ecu")"
                 tariff_ask_prices "$ecu" "$ep" "$zero_ok" || { pause; continue; }
                 if printf '%s' "$_TCUR" | tr '/' '\n' | grep -qvx 'XTR' && [ -z "$(bot_get PAY_PROVIDER_TOKEN)" ]; then
-                    echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5)."
+                    echo "  ⚠️  Провайдер не настроен — не-XTR цены не будут продаваться, пока не зададите токен (меню бота → 5) или кошелёк ЮMoney для RUB (пункт 10)."
                 fi
                 # Опции передаём ВСЕГДА (в т.ч. пустые): иначе tariff_update
                 # подставит старые, и снять лимит из меню было бы нельзя.

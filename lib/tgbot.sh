@@ -6,8 +6,9 @@
 #   • Клиент (после привязки по коду или после покупки):
 #       — получить свою ссылку hysteria2:// и ссылку-подписку;
 #       — посмотреть статус (трафик, срок, устройства, онлайн);
-#       — купить/продлить доступ (Telegram Stars или провайдер BotFather:
-#         ЮKassa, Stripe и т.д.) — доступ выдаётся/продлевается автоматически.
+#       — купить/продлить доступ (Telegram Stars, провайдер BotFather —
+#         ЮKassa, Stripe и т.д. — или личный кошелёк ЮMoney без провайдера,
+#         docs/YOOMONEY.md) — доступ выдаётся/продлевается автоматически.
 #   • Админ (chat ID в списке ADMIN_IDS):
 #       — список пользователей с онлайном, карточка с действиями
 #         (вкл/выкл, кик, ссылка, подписка, продление, удаление);
@@ -18,12 +19,14 @@
 # (long-polling getUpdates; вебхуки не нужны — работает за NAT и без домена).
 #
 # Все данные — в $DATA_DIR:
-#   bot.conf      BOT_TOKEN / ADMIN_IDS / PAY_PROVIDER_TOKEN / PAY_CURRENCY / ...
+#   bot.conf      BOT_TOKEN / ADMIN_IDS / PAY_PROVIDER_TOKEN / PAY_CURRENCY /
+#                 YM_* (кошелёк ЮMoney, см. docs/YOOMONEY.md) / ...
 #   tariffs.conf  тарифы: «код|Название|дней|устройств|цена|валюта» (XTR = Stars;
 #                 цена/валюта могут быть '/'-списками — несколько цен на тариф)
 #   tgusers.dat   привязки: «tg_id|username|ts»
 #   botcodes.dat  одноразовые коды привязки: «код|username|expires_ts»
 #   payments.log  журнал оплат
+#   ympay.dat     ждущие оплаты счета ЮMoney (см. lib/yoomoney.sh)
 # ================================================
 
 BOT_CONF="$DATA_DIR/bot.conf"
