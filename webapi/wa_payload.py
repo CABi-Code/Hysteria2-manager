@@ -64,9 +64,6 @@ def user_payload(user):
         # Бесплатный тариф (idea 02): null — юзер не на нём. Расход показываем
         # по данным сбора: он до 30 мин отстаёт от того, что видит отключение.
         "free": free_status(user, total),
-        # Демо-профиль (idea 13): null — обычный юзер. Лимит и расход отдаём
-        # те же, что решают, когда доступ отобрать (lib/demo.sh demo_tick).
-        "demo": demo_status(user, total),
         "status": "active" if active else "disabled",
         "expiry": expiry,                      # null = бессрочно
         "days_left": days_left(expiry),
