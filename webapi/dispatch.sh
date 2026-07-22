@@ -167,6 +167,31 @@ case "$verb" in
         esac
         ;;
 
+    traffic-refresh)  # → refreshed=1|0 — пересчитать трафик/активность сейчас
+        [ $# -eq 0 ] || fail 64 bad_args "traffic-refresh"
+        # Кулдаун общий на ноду: пересчёт глобальный (один проход по всем
+        # юзерам), поэтому десяти спросившим подряд хватает одного прогона.
+        _now=$(date +%s); _last=$(cat "$TRAFFIC_REFRESH_TS" 2>/dev/null)
+        [[ "$_last" =~ ^[0-9]+$ ]] || _last=0
+        if [ $(( _now - _last )) -lt "$TRAFFIC_REFRESH_MIN_SEC" ]; then
+            printf 'refreshed=0\n'
+            exit 0
+        fi
+        # Блокировка НЕ ждущая: пересчёт уже идёт (или занята мутация) — молча
+        # отвечаем refreshed=0. Ждать нельзя: страница спрашивает каждые
+        # несколько секунд, очередь из ждунов дороже, чем чуть менее свежие цифры.
+        exec 200>"$DATA_DIR/.webapi.lock"
+        flock -n 200 || { printf 'refreshed=0\n'; exit 0; }
+        printf '%s' "$_now" > "$TRAFFIC_REFRESH_TS"
+        # Только collect_activity: он даёт и свежий кумулятив (расход демо и
+        # free-плана), и флаг active — то самое «в сети». Спидометр (collect_rates)
+        # сюда не берём: его тик и так идёт каждые RATES_TICK_SEC, а лишний
+        # опрос API протоколов удваивает цену запроса. Ошибку глотаем:
+        # свежесть не важнее доступности.
+        collect_activity >/dev/null 2>&1 || true
+        printf 'refreshed=1\n'
+        ;;
+
     demo-create)  # → user=… sub_url=… expires=… cap=… rate=…
         [ $# -eq 0 ] || fail 64 bad_args "demo-create"
         sub_enabled || fail 3 sub_disabled "подписка на ноде не настроена"
