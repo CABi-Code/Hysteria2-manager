@@ -28,11 +28,20 @@ MANAGER_VERSION="$(head -1 "$MANAGER_DIR/VERSION" 2>/dev/null | tr -d '[:space:]
 LOG_DIR="/var/log/hy2-manager"                  # tgbot.sh читает при сорсинге
 LOG_FILE="$LOG_DIR/error.log"
 
-# Тот же набор модулей, что грузит hy2-manager.sh (без ui — интерактив не нужен).
-for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot freeplan demo; do
+# Набор модулей НЕ дублируем: читаем тот же _required_libs из hy2-manager.sh,
+# который парсит и install.sh (единственный источник правды). Своя копия списка
+# уже разъезжалась: после разбиения subscription.sh на node/sub_links/... здесь
+# остался source несуществующего файла, и demo-create отвечал sub_disabled.
+# Интерактивные ui* демону не нужны — их пропускаем.
+_libs=$(grep -oP '_required_libs=\(\K[^)]*' "$MANAGER_DIR/hy2-manager.sh" 2>/dev/null)
+[ -n "$_libs" ] || { printf 'error=%s\nmessage=%s\n' 'libs_unknown' 'не удалось прочитать список модулей из hy2-manager.sh'; exit 1; }
+for _lib in $_libs; do
+    case "$_lib" in ui | ui_*) continue ;; esac
+    [ -f "$MANAGER_DIR/lib/${_lib}.sh" ] || { printf 'error=%s\nmessage=%s\n' 'lib_missing' "модуль не найден: lib/${_lib}.sh"; exit 1; }
     # shellcheck disable=SC1090
     source "$MANAGER_DIR/lib/${_lib}.sh"
 done
+unset _libs _lib
 
 fail() {   # exit_code api_code message
     printf 'error=%s\nmessage=%s\n' "$2" "$3"
