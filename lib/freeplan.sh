@@ -263,7 +263,7 @@ freeplan_tick() {
 }
 
 # Наружу состояние отдаёт Web API: он и так читает stats/peers для traffic,
-# поэтому считает окна сам по freeplan.dat (см. free_status в hy2-webapi.py).
+# поэтому считает окна сам по freeplan.dat (см. free_status в webapi/wa_users.py).
 
 # ---------- кластер ----------
 
