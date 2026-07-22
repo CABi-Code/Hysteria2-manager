@@ -184,6 +184,12 @@ bot_send_invoice() {   # chat_id tariff_code [currency]
             --data-urlencode "currency=XTR" --data-urlencode "prices=$prices" >/dev/null
     else
         provider=$(bot_get PAY_PROVIDER_TOKEN)
+        # Провайдер не настроен, но есть кошелёк ЮMoney → продаём рубли через него
+        # (счёт-ссылка + опрос истории, см. lib/yoomoney.sh).
+        if [ -z "$provider" ] && [ "$cur" = "RUB" ] && ym_enabled; then
+            bot_ym_invoice "$chat" "$code" "$title" "$price" "$days" "$user"
+            return
+        fi
         if [ -z "$provider" ]; then
             tg_send "$chat" "⚠️ Платёжный провайдер не настроен (тариф в $cur). Сообщите администратору."
             return
@@ -194,6 +200,25 @@ bot_send_invoice() {   # chat_id tariff_code [currency]
             --data-urlencode "provider_token=$provider" --data-urlencode "currency=$cur" \
             --data-urlencode "prices=$prices" >/dev/null
     fi
+}
+
+# Счёт ЮMoney: ссылка на форму оплаты + кнопка «Проверить оплату».
+# Автоматически оплату подхватит крон (--ym-poll), кнопка — чтобы не ждать минуту.
+bot_ym_invoice() {   # chat_id код название цена дней пользователь
+    local chat="$1" code="$2" title="$3" price="$4" days="$5" user="$6"
+    local label sum url kb
+    label=$(ym_new_label)
+    sum=$(ym_pay_sum "$price")
+    url=$(ym_link "$label" "$sum")
+    ym_pending_add "$label" "$chat" "$code" "$user" "$sum" "$price"
+
+    kb=$(jq -nc --arg u "$url" --arg d "ymchk:$label" \
+        '{inline_keyboard:[[{text:"💳 Оплатить",url:$u}],[{text:"✅ Проверить оплату",callback_data:$d}]]}')
+    tg_send "$chat" "💳 <b>$(tg_esc "$title")</b> — ${days} дн.
+К оплате: <b>${sum} ₽</b> (в сумму включена комиссия платёжной системы).
+
+Нажмите «Оплатить», а после перевода — «Проверить оплату».
+Если закроете сообщение, доступ всё равно выдастся автоматически в течение минуты после оплаты." "$kb"
 }
 
 # Меню выбора валюты оплаты для мультивалютного тарифа (кнопка на валюту).

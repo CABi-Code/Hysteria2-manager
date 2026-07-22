@@ -44,6 +44,12 @@ setup_cron() {
         (echo "$current_cron"; echo "* * * * * /bin/bash \"$script_path\" --online-sync >/dev/null 2>&1") | crontab -
         current_cron=$(crontab -l 2>/dev/null || true)
     fi
+    # Оплаты ЮMoney (если настроены): опрос истории по меткам ждущих счетов —
+    # доступ выдаётся сам, даже если клиент закрыл чат (см. lib/yoomoney.sh).
+    if ! echo "$current_cron" | grep -q "hy2-manager.*--ym-poll"; then
+        (echo "$current_cron"; echo "* * * * * /bin/bash \"$script_path\" --ym-poll >/dev/null 2>&1") | crontab -
+        current_cron=$(crontab -l 2>/dev/null || true)
+    fi
     # Часовая коррекция анти-абуза (балл шаринга + авто-жёсткая проверка).
     if ! echo "$current_cron" | grep -q "hy2-manager.*--antiabuse"; then
         (echo "$current_cron"; echo "0 * * * * /bin/bash \"$script_path\" --antiabuse >/dev/null 2>&1") | crontab -
