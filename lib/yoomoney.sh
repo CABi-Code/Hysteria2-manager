@@ -32,7 +32,7 @@
 # ================================================
 
 YM_PENDING_FILE="$DATA_DIR/ympay.dat"
-YM_QUICKPAY_URL="https://yoomoney.ru/quickpay/confirm"
+YM_QUICKPAY_URL="https://yoomoney.ru/quickpay/confirm.xml"
 YM_HISTORY_URL="https://yoomoney.ru/api/operation-history"
 YM_TTL_HOURS=48          # дольше не ждём: счёт вычищается, ссылка бесполезна
 
@@ -68,13 +68,30 @@ ym_new_label() {
     printf '%s-%s' "$prefix" "$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 }
 
+# Процентное кодирование значения параметра (назначение платежа — текст с
+# пробелами и кириллицей).
+ym_urlenc() {
+    printf '%s' "$1" | od -An -tx1 -v | tr ' ' '\n' | grep -v '^$' | while read -r h; do
+        case "$h" in
+            3[0-9]|4[1-9a-f]|5[0-9a]|6[1-9a-f]|7[0-9a]|2d|2e|5f|7e) printf '%b' "\x$h" ;;
+            *) printf '%%%s' "$(printf '%s' "$h" | tr 'a-f' 'A-F')" ;;
+        esac
+    done
+}
+
 # Ссылка на форму оплаты. GET со всеми параметрами формы: страницы-редиректа с
 # POST у менеджера нет и быть не может — домен не обязателен.
-ym_link() {   # label sum
-    local label="$1" sum="$2" wallet
+#
+# Форма именно «shop» (оплата товара) с обязательным targets — назначением
+# платежа. Форма «button» (сбор денег) без назначения ЮMoney проводит как
+# ПОПОЛНЕНИЕ КОШЕЛЬКА с карты: деньги приходят, но это не входящий перевод —
+# метка к нему не прикрепляется, и по метке такой платёж потом не найти. Со
+# стороны это выглядит как «клиент оплатил, а бот не заметил».
+ym_link() {   # label sum [назначение]
+    local label="$1" sum="$2" targets="${3:-Оплата доступа}" wallet
     wallet=$(bot_get YM_WALLET)
-    printf '%s?receiver=%s&quickpay-form=button&paymentType=%s&sum=%s&label=%s' \
-        "$YM_QUICKPAY_URL" "$wallet" "$(ym_type)" "$sum" "$label"
+    printf '%s?receiver=%s&quickpay-form=shop&targets=%s&paymentType=%s&sum=%s&label=%s' \
+        "$YM_QUICKPAY_URL" "$wallet" "$(ym_urlenc "$targets")" "$(ym_type)" "$sum" "$label"
 }
 
 # ---------- ждущие оплаты счета ----------
