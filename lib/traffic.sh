@@ -157,37 +157,42 @@ collect_rates() {
     { [ -z "$hy" ] || [ "$hy" = "null" ]; } && return 0
     echo "$hy" | jq empty 2>/dev/null || return 0
 
+    # Кумулятив РАЗДЕЛЬНО по направлениям «user|down|up»: Hysteria tx/rx + Xray
+    # downlink/uplink. TUIC не включаем (снимок открытых соединений завышал бы).
+    # down = сервер→клиент (↓, скачивание), up = клиент→сервер (↑).
     merged=$(
         {
-            echo "$hy" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
-            declare -F proto_activity_cum_lines >/dev/null 2>&1 && proto_activity_cum_lines 2>/dev/null
-        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%.0f\n", u, s[u]}'   # %.0f: mawk иначе пишет 2^31+ как «1.42856e+09»
+            echo "$hy" | jq -r 'to_entries[] | "\(.key)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null
+            declare -F proto_xray_split_lines >/dev/null 2>&1 && proto_xray_split_lines 2>/dev/null
+        } | awk -F'|' 'NF>=3 && $1!="" {d[$1]+=$2; u[$1]+=$3} END{for(x in d) printf "%s|%.0f|%.0f\n", x, d[x], u[x]}'   # %.0f: mawk иначе пишет 2^31+ научной нотацией
     )
     [ -n "$merged" ] || return 0
 
-    # Дельта с прошлым снимком одним проходом. Счётчик УМЕНЬШИЛСЯ (30-минутный
-    # ?clear=1 обнулил Hysteria; закрылись TUIC-соединения) — считаем 0, а не
-    # дельту от нуля: на спидометре фантомный всплеск заметнее, чем один
-    # пропущенный тик раз в полчаса. Этим и отличаемся от collect_activity,
-    # которому важнее не пропустить активность.
+    # rates.dat v2: заголовок «#label|<метка ноды>» (пиры узнают метку из него —
+    # NODE_LABEL по кластеру не синхронизируется) + строки «user|down_bps|up_bps|ts».
+    printf '#label|%s\n' "$(node_label)" > "${RATES_FILE}.tmp"
+
+    # Дельта с прошлым снимком по каждому направлению. Счётчик УМЕНЬШИЛСЯ (30-мин
+    # ?clear=1 обнулил Hysteria) — считаем 0, а не дельту от нуля: фантомный всплеск
+    # заметнее пропущенного тика. rates_prev.dat v2: «user|down_cum|up_cum|ts».
     printf '%s\n' "$merged" | awk -F'|' -v now="$now" -v prevf="$RATES_PREV_FILE" \
         -v rates="${RATES_FILE}.tmp" -v prevout="${RATES_PREV_FILE}.tmp" '
         BEGIN {
             while ((getline line < prevf) > 0) {
                 n = split(line, p, "|")
-                if (n >= 3) { pc[p[1]] = p[2] + 0; pt[p[1]] = p[3] + 0 }
+                if (n >= 4) { pd[p[1]] = p[2] + 0; pu[p[1]] = p[3] + 0; pt[p[1]] = p[4] + 0 }
             }
         }
-        NF >= 2 && $1 != "" {
-            cum = $2 + 0
-            rate = 0
+        NF >= 3 && $1 != "" {
+            dc = $2 + 0; uc = $3 + 0; dr = 0; ur = 0
             if ($1 in pt) {
                 el = now - pt[$1]
                 if (el < 1) el = 1
-                if (cum > pc[$1]) rate = int((cum - pc[$1]) / el)
+                if (dc > pd[$1]) dr = int((dc - pd[$1]) / el)
+                if (uc > pu[$1]) ur = int((uc - pu[$1]) / el)
             }
-            printf "%s|%d|%d\n", $1, rate, now > rates
-            printf "%s|%d|%d\n", $1, cum, now > prevout
+            printf "%s|%d|%d|%d\n", $1, dr, ur, now >> rates
+            printf "%s|%d|%d|%d\n", $1, dc, uc, now > prevout
         }'
     mv "${RATES_FILE}.tmp" "$RATES_FILE" 2>/dev/null
     mv "${RATES_PREV_FILE}.tmp" "$RATES_PREV_FILE" 2>/dev/null

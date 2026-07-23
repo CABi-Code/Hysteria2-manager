@@ -689,6 +689,13 @@ proto_collect_tuic_traffic() {
 #   Xray  — statsquery user>>>EMAIL>>>traffic>>>up|downlink, суммируем оба направления.
 #   TUIC  — sing-box /connections по sourceIP (user в API пуст), см.
 #           proto_tuic_activity_lines. Best-effort, только для онлайна.
+# $1="no-tuic" — НЕ подмешивать TUIC-суммы. Нужно спидометру (collect_rates):
+# proto_tuic_activity_lines отдаёт СУММУ байт ОТКРЫТЫХ TUIC-соединений, а не
+# монотонный кумулятив ноды. В delta-подсчёте скорости (cum-prevcum) стекающиеся
+# при переключении keepalive-соединения дают фантомный рост до нереальных
+# значений. Xray/Hysteria-счётчики монотонны — их оставляем. Для collect_activity
+# TUIC оставляем: там это грубый флаг «онлайн», а не скорость, и per-user
+# TUIC-трафик всё равно не атрибутируется (docs/09-online-activity.md).
 proto_activity_cum_lines() {
     proto_any_enabled || return 0
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
@@ -699,8 +706,27 @@ proto_activity_cum_lines() {
                     ({}; .[($s.name | split(">>>"))[1]] += (($s.value // 0) | tonumber))
                 | to_entries[] | "\(.key)|\(.value)"' 2>/dev/null
     fi
-    proto_tuic_activity_lines   # TUIC — отдельно, по sourceIP (user в API пуст)
+    [ "$1" = "no-tuic" ] || proto_tuic_activity_lines   # TUIC по sourceIP (user в API пуст)
     return 0
+}
+
+# Кумулятив Xray РАЗДЕЛЬНО по направлениям: «user|downlink|uplink». Для спидометра
+# с разбивкой ↓↑ (per-node): collect_rates складывает это с Hysteria tx/rx. TUIC не
+# включаем (его снимок открытых соединений завышал бы скорость, см. выше).
+# downlink = сервер→клиент (↓, скачивание), uplink = клиент→сервер (↑).
+proto_xray_split_lines() {
+    proto_any_enabled || return 0
+    proto_xray_needed && [ -x "$XRAY_BIN" ] || return 0
+    "$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -pattern "user>>>" 2>/dev/null \
+      | jq -r '
+            reduce ((.stat // [])[]
+                    | select(.name != null and (.name | startswith("user>>>")))) as $s
+                ({};
+                 ($s.name | split(">>>")) as $p
+                 | .[$p[1]] = ((.[$p[1]] // {down:0, up:0})
+                    | if $p[3]=="downlink" then .down += (($s.value//0)|tonumber)
+                      elif $p[3]=="uplink" then .up += (($s.value//0)|tonumber) else . end))
+            | to_entries[] | "\(.key)|\(.value.down)|\(.value.up)"' 2>/dev/null
 }
 
 # TUIC-активность best-effort. sing-box (clash_api) НЕ отдаёт user в метадате
