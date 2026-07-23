@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from wa_core import *  # noqa: E402,F403
 from wa_users import *  # noqa: E402,F403
 from wa_online import *  # noqa: E402,F403
-from wa_online import _stream_cv, _stream_subs, _stream_state, _stream_watcher  # noqa: E402
+from wa_online import _stream_cv, _stream_subs, _stream_state, _stream_samples, _stream_watcher, stream_payload  # noqa: E402
 from wa_payload import *  # noqa: E402,F403
 from wa_dispatch import *  # noqa: E402,F403
 
@@ -302,15 +302,17 @@ class Handler(BaseHTTPRequestHandler):
             last = stream_snapshot(user)
             with _stream_cv:
                 _stream_state[user] = last
-            self._sse(f"data: {json.dumps(dict(zip(('online', 'bps'), last)))}\n\n")
+                payload = stream_payload(user, last)
+            self._sse(f"data: {json.dumps(payload)}\n\n")
             while True:
                 with _stream_cv:
                     _stream_cv.wait_for(lambda: _stream_state.get(user) != last,
                                         timeout=STREAM_PING_SEC)
                     val = _stream_state.get(user, last)
-                if val != last:
+                    payload = stream_payload(user, val) if val != last else None
+                if payload is not None:
                     last = val
-                    self._sse(f"data: {json.dumps(dict(zip(('online', 'bps'), last)))}\n\n")
+                    self._sse(f"data: {json.dumps(payload)}\n\n")
                 else:
                     self._sse(": ping\n\n")   # keepalive: держим соединение живым
         except (BrokenPipeError, ConnectionResetError, OSError):
@@ -321,6 +323,7 @@ class Handler(BaseHTTPRequestHandler):
                 if n <= 0:
                     _stream_subs.pop(user, None)
                     _stream_state.pop(user, None)
+                    _stream_samples.pop(user, None)
                 else:
                     _stream_subs[user] = n
 
