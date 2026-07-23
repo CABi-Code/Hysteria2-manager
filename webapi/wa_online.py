@@ -148,6 +148,13 @@ STREAM_HANDLED = object()  # сентинел: хендлер уже сам от
 _stream_cv = threading.Condition()
 _stream_subs = {}    # user -> число открытых SSE-подписчиков
 _stream_state = {}   # user -> последний известный (online: bool, bps: int)
+# Идея 17: вместо одного мгновенного bps копим ряд выборок (ts_сек, bps) за
+# последние ~STREAM_SAMPLES_WINDOW опросов. Фронт плавно прогоняет стрелку по
+# ним в реальном времени, вместо телепорта на новое число. Окно ограничено —
+# при устоявшейся скорости старые точки вытесняются, память не растёт.
+from collections import deque   # noqa: E402
+STREAM_SAMPLES_WINDOW = max(2, _env_int("HY2M_STREAM_SAMPLES_WINDOW", 8))
+_stream_samples = {}  # user -> deque[(ts_сек, bps)]
 
 
 def make_stream_ticket(user):
@@ -220,11 +227,23 @@ def _stream_watcher():
         try:
             with _stream_cv:
                 users = list(_stream_subs.keys())
+            now = time.time()
             updates = {u: stream_snapshot(u) for u in users}
             with _stream_cv:
                 changed = any(_stream_state.get(u) != v for u, v in updates.items())
                 _stream_state.update(updates)
+                for u, (_online, bps) in updates.items():
+                    _stream_samples.setdefault(u, deque(maxlen=STREAM_SAMPLES_WINDOW)).append((now, bps))
                 if changed:
                     _stream_cv.notify_all()
         except Exception as e:
             sys.stderr.write(f"stream watcher: {e!r}\n")
+
+
+def stream_payload(user, state):
+    """SSE-объект: online/bps (обратная совместимость) + ряд выборок samples
+    [{t: мс-эпоха, bps}] за окно наблюдения. Фронт проигрывает стрелку по samples
+    в реальном времени; старые клиенты читают bps и игнорируют samples."""
+    online, bps = state
+    samples = [{"t": int(ts * 1000), "bps": b} for ts, b in _stream_samples.get(user, ())]
+    return {"online": online, "bps": bps, "samples": samples}
