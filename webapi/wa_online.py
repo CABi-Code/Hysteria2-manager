@@ -183,35 +183,101 @@ def parse_stream_ticket(ticket):
 # не обновляли (таймер упал, пир недоступен) — лучше показать 0, чем застывшую
 # скорость получасовой давности.
 RATES_MAX_AGE = _env_int("HY2M_RATES_MAX_AGE", 60)  # с
+# stats (число подключений) публикуется раз в ~60с (cluster_online_sync), поэтому
+# порог протухания шире, чем у rates: минутный файл — ещё свежий.
+STATS_MAX_AGE = _env_int("HY2M_STATS_MAX_AGE", 180)  # с
 
 
-def _rate_from(path, user):
+def _fresh(path, max_age):
     try:
-        if time.time() - os.path.getmtime(path) > RATES_MAX_AGE:
-            return 0
+        return time.time() - os.path.getmtime(path) <= max_age
     except OSError:
+        return False
+
+
+def _rate_dir_from(path, user):
+    """(down_bps, up_bps) юзера из rates-файла. v2: «user|down|up|ts». v1 (старый
+    пир до сплита): «user|bps|ts» — кладём всё в down. Протухший файл → (0,0),
+    строки-заголовки «#...» пропускаем."""
+    if not _fresh(path, RATES_MAX_AGE):
+        return (0, 0)
+    for line in read_lines(path):
+        if not line or line[0] == "#":
+            continue
+        p = line.split("|")
+        if p and p[0] == user:
+            if len(p) >= 4 and p[1].isdigit() and p[2].isdigit():
+                return (int(p[1]), int(p[2]))
+            if len(p) >= 2 and p[1].isdigit():
+                return (int(p[1]), 0)   # v1 combined
+            return (0, 0)
+    return (0, 0)
+
+
+def _rates_label(path):
+    """Метка ноды из заголовка «#label|…» rates-файла (NODE_LABEL по кластеру не
+    синхронизируется, поэтому каждая нода печатает свою метку в свой rates)."""
+    for line in read_lines(path):
+        if line.startswith("#label|"):
+            return line[len("#label|"):].strip() or None
+        if line and line[0] != "#":
+            break   # заголовок только в начале файла
+    return None
+
+
+def _conns_from(path, user):
+    """Число подключений юзера из stats-файла (TAB: user, online, …). Протухший → 0."""
+    if not _fresh(path, STATS_MAX_AGE):
         return 0
     for line in read_lines(path):
-        parts = line.split("|")
-        if parts and parts[0] == user:
-            return int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+        p = line.split("\t")
+        if p and p[0] == user:
+            return int(p[1]) if len(p) >= 2 and p[1].isdigit() else 0
     return 0
+
+
+def _peer_rates_files():
+    try:
+        return [n for n in os.listdir(PEERS_DIR) if n.endswith(".rates")]
+    except OSError:
+        return []
 
 
 def user_rate_bps(user):
     """Текущая скорость юзера (байт/с) по ВСЕМУ кластеру: своя нода плюс каждый
-    пир. Профиль у юзера один на кластер, а подключается он к любой ноде —
-    поэтому складываем: без пиров спидометр показывал бы 0 при работе через
-    соседа (а именно так обычно и есть)."""
-    total = _rate_from(data_path("rates.dat"), user)
-    try:
-        names = os.listdir(PEERS_DIR)
-    except OSError:
-        names = []
-    for name in names:
-        if name.endswith(".rates"):
-            total += _rate_from(os.path.join(PEERS_DIR, name), user)
+    пир, оба направления. Профиль у юзера один на кластер, а подключается он к
+    любой ноде — поэтому складываем: без пиров спидометр показывал бы 0 при работе
+    через соседа (а именно так обычно и есть)."""
+    d, u = _rate_dir_from(data_path("rates.dat"), user)
+    total = d + u
+    for name in _peer_rates_files():
+        d, u = _rate_dir_from(os.path.join(PEERS_DIR, name), user)
+        total += d + u
     return total
+
+
+def user_nodes(user):
+    """Разбивка по нодам, где юзер сейчас активен: [{label, conns, down, up}].
+    Скорость ↓↑ живая (rates, 5с); conns — из минутной stats (меняются медленно).
+    Нода в списке, если есть трафик ИЛИ подключения. Сортировка по сумме скорости."""
+    nodes = []
+
+    def add(rates_path, stats_path, fallback):
+        down, up = _rate_dir_from(rates_path, user)
+        conns = _conns_from(stats_path, user)
+        if down <= 0 and up <= 0 and conns <= 0:
+            return
+        nodes.append({
+            "label": _rates_label(rates_path) or fallback,
+            "conns": conns, "down": down, "up": up,
+        })
+
+    add(data_path("rates.dat"), data_path("self.stats"), "эта нода")
+    for name in _peer_rates_files():
+        base = name[:-len(".rates")]
+        add(os.path.join(PEERS_DIR, name), os.path.join(PEERS_DIR, base + ".stats"), base)
+    nodes.sort(key=lambda n: n["down"] + n["up"], reverse=True)
+    return nodes
 
 
 # Живой трафик как признак онлайна. is_online читает activity.dat, который пишет

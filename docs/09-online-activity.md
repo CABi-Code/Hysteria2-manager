@@ -97,7 +97,16 @@ active-тик, самокорректируется на следующей ми
   это цена опроса API протоколов. Счётчик уменьшился (30-минутный `?clear=1`,
   закрылись TUIC-соединения) → пишем 0, а не дельту от нуля: фантомный всплеск
   на спидометре заметнее, чем один пропущенный тик раз в полчаса.
-- Файлы: `rates.dat` «user|bps|ts», `rates_prev.dat` «user|cum|ts».
+- Файлы (v2, раздельно по направлениям для разбивки ↓↑): `rates.dat` — заголовок
+  «#label|<метка ноды>» + строки «user|down_bps|up_bps|ts»; `rates_prev.dat`
+  «user|down_cum|up_cum|ts». Метка в заголовке — чтобы пиры узнали метку ноды
+  (NODE_LABEL по кластеру не синхронизируется). Старый формат «user|bps|ts» webapi
+  ещё читает (down=bps, up=0) — переходная совместимость с необновлёнными нодами.
+- **Разбивка по нодам** (SSE `nodes`): webapi `user_nodes` собирает `{label, conns,
+  down, up}` по каждой ноде, где юзер активен. Скорость ↓↑ — живая из rates; число
+  подключений `conns` — из cluster-статистики (`self.stats` локально + `peers/*.stats`,
+  минутная, `HY2M_STATS_MAX_AGE`=180с). `publish_stats` кладёт локальную копию в
+  `$DATA_DIR/self.stats` (WEBROOT webapi недоступен).
 - `publish_rates` кладёт `rates.dat` в `$WEBROOT/cluster/rates` (Caddy отдаёт
   его пирам за `X-Cluster-Auth`, как и остальную `/cluster/*` статику),
   `cluster_rates_sync` параллельно стягивает то же самое с пиров в
