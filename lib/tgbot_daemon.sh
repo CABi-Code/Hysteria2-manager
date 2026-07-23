@@ -55,6 +55,15 @@ bot_handle_update() {   # json
             m:status) bot_client_status "$chat" ;;
             m:buy)    bot_buy_menu "$chat" ;;
             buy:*)    bot_buy_dispatch "$chat" "${data#buy:}" ;;
+            ymchk:*)
+                # Проверка оплаты ЮMoney по кнопке. Успех сам пришлёт карточку
+                # доступа (bot_fulfill_payment) — здесь только исходы «нет/мало».
+                local ym_rc=0
+                ym_settle "${data#ymchk:}" >/dev/null 2>&1 || ym_rc=$?
+                case "$ym_rc" in
+                    1) tg_send "$chat" "Оплата пока не найдена. Если только что перевели — подождите минуту и нажмите ещё раз." ;;
+                    2) tg_send "$chat" "Сумма перевода меньше цены тарифа — администратор уведомлён и свяжется с вами." ;;
+                esac ;;
             a:*)
                 bot_is_admin "$from" || { tg_send "$chat" "⛔ Только для администратора."; return 0; }
                 case "$data" in

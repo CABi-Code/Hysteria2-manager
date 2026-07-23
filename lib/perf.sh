@@ -245,6 +245,8 @@ _klimit_write_script() {   # down_mbit up_mbit port [tariffs] [shape]
         echo "TARIFFS=\"${tariffs}\"   # тарифные тиры (Мбит) — по классу на каждый; пер-IP раскладку ставит klimit_reconcile"
         echo "DKB=${dkb} UKB=${ukb} DBURST=${dburst} UBURST=${uburst}   # для дроп-фолбэка"
         echo "IFB=ifb-hy2"
+        echo "SIG=${KLIMIT_SIG}   # подпись раскладки IP→тариф: apply её СНОСИТ, чтобы klimit_reconcile"
+        echo "                    # заново разложил пер-IP фильтры (apply пересобирает каркас и стирает prio-1)"
         # Дальше — статичное тело (ничего не подставляем: 'KEOF' в кавычках).
         cat <<'KEOF'
 
@@ -414,6 +416,12 @@ ipt_apply() {
 
 case "$1" in
     apply)
+        # Пересборка каркаса (на бут/рестарт сервиса hy2-limit) стирает пер-IP
+        # раскладку тарифов (prio-1). Сносим подпись, чтобы следующий проход
+        # klimit_reconcile (cron/rates-tick, ≤15с) НЕ счёл раскладку актуальной и
+        # разложил фильтры заново — иначе после ребута тарифные клиенты молча
+        # уезжают в глобальный класс вместо своего лимита.
+        rm -f "$SIG" 2>/dev/null
         DEV=""
         if detect_dev && tc_ok; then
             tc_apply; rc=$?
@@ -621,12 +629,23 @@ klimit_reconcile() {
     done < <( { [ -f "$AUTHMAP_FILE" ] && cat "$AUTHMAP_FILE"
                 [ -f "$IPS_FILE" ] && awk -F'|' 'NF>=4{printf "%s|%s|%s\n",$1,$2,$4}' "$IPS_FILE"; } 2>/dev/null )
 
-    # 2) подпись; если не изменилась — ничего не трогаем (0 команд tc).
+    # 2) подпись; если не изменилась — обычно ничего не трогаем (0 команд tc).
+    # НО: каркас классов мог быть пересобран (рестарт/бут сервиса hy2-limit,
+    # ручной сброс tc, флап интерфейса) и стереть пер-IP фильтры (prio-1), тогда как
+    # подпись осталась прежней. Слепо поверив подписи, мы бы НЕ восстановили
+    # раскладку — и тарифные клиенты молча уехали бы в глобальный класс. Поэтому
+    # при совпадении подписи дополнительно убеждаемся, что фильтры реально на месте.
     local sig stored=""
     sig=$( { for ip in "${!DES[@]}"; do echo "${ip}=${DES[$ip]}"; done | sort
             echo "T=$tariffs P=$port S=$shape"; } | md5sum 2>/dev/null | cut -d' ' -f1)
     [ -f "$KLIMIT_SIG" ] && stored=$(cat "$KLIMIT_SIG" 2>/dev/null)
-    [ -n "$sig" ] && [ "$sig" = "$stored" ] && return 0
+    if [ -n "$sig" ] && [ "$sig" = "$stored" ]; then
+        # Нет тарифных IP — раскладывать нечего. Есть — и фильтры prio-1 стоят —
+        # действительно актуально, выходим. Иначе (фильтры пропали) пересобираем.
+        if [ "${#DES[@]}" -eq 0 ] || tc filter show dev "$dev" parent 1: prio 1 2>/dev/null | grep -q .; then
+            return 0
+        fi
+    fi
 
     # 3) пересобрать пер-IP раскладку на обоих направлениях (по всем портам SHAPE).
     _reconcile_dev "$dev" dst sport "$shape"      # скачивание: клиент — получатель
@@ -635,13 +654,22 @@ klimit_reconcile() {
     return 0
 }
 
-# Если порт Hysteria сменился, а kernel-лимит настроен на старый — перегенерировать.
-# Вызывается при старте менеджера (тихо чинит рассинхрон).
+# Тихо чинит рассинхрон kernel-лимита с реальной раскладкой протоколов:
+#   • сменился порт Hysteria, а лимит настроен на старый; ИЛИ
+#   • включили/выключили протокол (VLESS/SS/Trojan/TUIC), но SHAPE запечён без его
+#     порта — тогда трафик этого протокола идёт МИМО шейпинга (ни глобальный лимит,
+#     ни тариф не действуют). Сверяем запечённый SHAPE со свежевычисленным.
+# Вызывается при старте менеджера и в --online-sync (протокол могли включить из
+# веб-аппа/бота, без перезапуска TUI).
 klimit_sync_port() {
     [ -f "$KLIMIT_CONF" ] || return 0
-    local saved cur
+    local saved cur saved_shape cur_shape
     saved=$(klimit_get PORT); cur=$(get_port)
-    [ -n "$saved" ] && [ "$saved" != "$cur" ] && klimit_apply "$(klimit_down)" "$(klimit_up)"
+    saved_shape=$(klimit_get SHAPE); cur_shape=$(_klimit_shape_ports "$cur")
+    if { [ -n "$saved" ] && [ "$saved" != "$cur" ]; } || \
+       { [ -n "$saved_shape" ] && [ "$saved_shape" != "$cur_shape" ]; }; then
+        klimit_apply "$(klimit_down)" "$(klimit_up)"
+    fi
     return 0
 }
 
