@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from wa_core import *  # noqa: E402,F403
 from wa_users import *  # noqa: E402,F403
 from wa_online import *  # noqa: E402,F403
-from wa_online import _stream_cv, _stream_subs, _stream_state, _stream_samples, _stream_watcher, stream_payload  # noqa: E402
+from wa_online import _stream_cv, _stream_subs, _stream_state, _stream_samples, _stream_watcher, stream_payload, user_nodes  # noqa: E402
 from wa_payload import *  # noqa: E402,F403
 from wa_dispatch import *  # noqa: E402,F403
 
@@ -303,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
             with _stream_cv:
                 _stream_state[user] = last
                 payload = stream_payload(user, last)
+            payload["nodes"] = user_nodes(user)   # разбивка по нодам, вне лока (файлы)
             self._sse(f"data: {json.dumps(payload)}\n\n")
             while True:
                 with _stream_cv:
@@ -312,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
                     payload = stream_payload(user, val) if val != last else None
                 if payload is not None:
                     last = val
+                    payload["nodes"] = user_nodes(user)   # вне лока (файлы)
                     self._sse(f"data: {json.dumps(payload)}\n\n")
                 else:
                     self._sse(": ping\n\n")   # keepalive: держим соединение живым

@@ -29,6 +29,9 @@ publish_stats() {
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" >> "$tmp"
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/stats"
+    # Локальная копия в DATA_DIR: webapi берёт отсюда число подключений СВОЕЙ ноды
+    # для разбивки спидометра по нодам (WEBROOT ему недоступен, peers/*.stats — да).
+    cp -f "$WEBROOT/cluster/stats" "$DATA_DIR/self.stats" 2>/dev/null || true
     secure_web_files
 }
 
