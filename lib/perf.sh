@@ -654,13 +654,22 @@ klimit_reconcile() {
     return 0
 }
 
-# Если порт Hysteria сменился, а kernel-лимит настроен на старый — перегенерировать.
-# Вызывается при старте менеджера (тихо чинит рассинхрон).
+# Тихо чинит рассинхрон kernel-лимита с реальной раскладкой протоколов:
+#   • сменился порт Hysteria, а лимит настроен на старый; ИЛИ
+#   • включили/выключили протокол (VLESS/SS/Trojan/TUIC), но SHAPE запечён без его
+#     порта — тогда трафик этого протокола идёт МИМО шейпинга (ни глобальный лимит,
+#     ни тариф не действуют). Сверяем запечённый SHAPE со свежевычисленным.
+# Вызывается при старте менеджера и в --online-sync (протокол могли включить из
+# веб-аппа/бота, без перезапуска TUI).
 klimit_sync_port() {
     [ -f "$KLIMIT_CONF" ] || return 0
-    local saved cur
+    local saved cur saved_shape cur_shape
     saved=$(klimit_get PORT); cur=$(get_port)
-    [ -n "$saved" ] && [ "$saved" != "$cur" ] && klimit_apply "$(klimit_down)" "$(klimit_up)"
+    saved_shape=$(klimit_get SHAPE); cur_shape=$(_klimit_shape_ports "$cur")
+    if { [ -n "$saved" ] && [ "$saved" != "$cur" ]; } || \
+       { [ -n "$saved_shape" ] && [ "$saved_shape" != "$cur_shape" ]; }; then
+        klimit_apply "$(klimit_down)" "$(klimit_up)"
+    fi
     return 0
 }
 
