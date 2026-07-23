@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish protocols antiabuse perf cluster update tgbot tariffs tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -96,12 +96,25 @@ if [ "$1" = "--rates-tick" ]; then
     flock -n 9 || exit 0
     collect_rates
     cluster_rates_sync
+    # Пер-IP раскладку тарифов держим свежей и здесь (раз в RATES_TICK_SEC=15с), а
+    # не только в --online-sync (60с): иначе только что подключившийся клиент с
+    # тарифом (особенно демо, тестирующий скорость сразу) до минуты крутится
+    # НЕшейпимым в глобальном классе и спидтест показывает выше тарифа.
+    # Идемпотентно и дёшево: reconcile трогает tc, только когда набор IP→тариф сменился.
+    klimit_reconcile
     exit 0
 fi
 
 if [ "$1" = "--cluster-sync" ]; then
     # Периодический обмен ключами с пирами + пересборка подписок (cron).
     cluster_sync
+    exit 0
+fi
+
+if [ "$1" = "--ym-poll" ]; then
+    # Оплаты ЮMoney: опрос истории операций по меткам ждущих счетов.
+    # Клиент может не ждать — в счёте есть кнопка «Проверить оплату» (тот же код).
+    ym_poll
     exit 0
 fi
 
@@ -120,6 +133,7 @@ if [ "$1" = "--online-sync" ]; then
     freeplan_tick
     demo_tick           # выдохшиеся демо-профили: TTL в минутах, а не в сутках
     write_authlimits    # снимок для жёсткой проверки (работает и на одиночной ноде)
+    klimit_sync_port    # перегенерировать лимит, если сменился порт ИЛИ набор протоколов (SHAPE-дрейф)
     klimit_reconcile    # разложить активные IP по тарифным классам скорости (tc)
     exit 0
 fi

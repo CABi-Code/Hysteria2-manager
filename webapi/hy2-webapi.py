@@ -65,6 +65,11 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/reset-subscription$"), "users", "h_reset_sub"),
     ("POST", re.compile(r"^/v1/demo$"), "users", "h_demo"),
+    # Состояние выданного демо: живёт в demos.db и ПЕРЕЖИВАЕТ удаление юзера
+    # (доступ отбирают по лимиту, а строка остаётся) — поэтому отдельно от
+    # /v1/users/{name}, который на отобранном демо уже 404.
+    ("GET", re.compile(r"^/v1/demo/([^/]+)$"), "read", "h_demo_state"),
+    ("POST", re.compile(r"^/v1/demo/([^/]+)/refresh$"), "read", "h_demo_state_fresh"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/free-plan$"), "users", "h_free_plan"),
     ("POST", re.compile(r"^/v1/telegram/bind$"), "telegram", "h_bind"),
     ("POST", re.compile(r"^/v1/codes/redeem$"), "telegram", "h_redeem"),
@@ -223,6 +228,30 @@ class Handler(BaseHTTPRequestHandler):
                 "expires_at": int(expires) if str(expires).isdigit() else None,
                 "cap_bytes": int(res.get("cap") or 0),
                 "rate_mbps": int(res.get("rate") or 0)}
+
+    def h_demo_state(self, name, refresh=False):
+        """Что сейчас с демо-профилем: состояние, лимит, расход, онлайн.
+        `alive` — жив ли ещё сам пользователь (лимит исчерпан или время вышло →
+        доступ отобран, но строка demos.db остаётся: гостю надо объяснить, что
+        случилось). refresh=True сперва пересчитывает трафик (см.
+        /v1/users/{name}/refresh)."""
+        user = need_username(name)
+        refreshed = False
+        if refresh:
+            try:
+                refreshed = self.dispatch("traffic-refresh").get("refreshed") == "1"
+            except ApiError:
+                refreshed = False
+        active, _disabled = user_exists(user)
+        total = sum(local_traffic(user)) + sum(peer_stats(user)[1:])
+        demo = demo_status(user, total)
+        if demo is None:
+            raise ApiError(404, "demo_not_found", "демо-профиль не найден")
+        return dict(demo, username=user, alive=bool(active),
+                    online=is_online(user) if active else False, refreshed=refreshed)
+
+    def h_demo_state_fresh(self, name):
+        return self.h_demo_state(name, refresh=True)
 
     def h_bind(self):
         tg_id = need_tg_id(self.body.get("tg_id"))

@@ -28,11 +28,20 @@ MANAGER_VERSION="$(head -1 "$MANAGER_DIR/VERSION" 2>/dev/null | tr -d '[:space:]
 LOG_DIR="/var/log/hy2-manager"                  # tgbot.sh читает при сорсинге
 LOG_FILE="$LOG_DIR/error.log"
 
-# Тот же набор модулей, что грузит hy2-manager.sh (без ui — интерактив не нужен).
-for _lib in config deps api traffic ip_tracking online expiry limits users cron migration subscription protocols antiabuse perf cluster tgbot freeplan demo; do
+# Набор модулей НЕ дублируем: читаем тот же _required_libs из hy2-manager.sh,
+# который парсит и install.sh (единственный источник правды). Своя копия списка
+# уже разъезжалась: после разбиения subscription.sh на node/sub_links/... здесь
+# остался source несуществующего файла, и demo-create отвечал sub_disabled.
+# Интерактивные ui* демону не нужны — их пропускаем.
+_libs=$(grep -oP '_required_libs=\(\K[^)]*' "$MANAGER_DIR/hy2-manager.sh" 2>/dev/null)
+[ -n "$_libs" ] || { printf 'error=%s\nmessage=%s\n' 'libs_unknown' 'не удалось прочитать список модулей из hy2-manager.sh'; exit 1; }
+for _lib in $_libs; do
+    case "$_lib" in ui | ui_*) continue ;; esac
+    [ -f "$MANAGER_DIR/lib/${_lib}.sh" ] || { printf 'error=%s\nmessage=%s\n' 'lib_missing' "модуль не найден: lib/${_lib}.sh"; exit 1; }
     # shellcheck disable=SC1090
     source "$MANAGER_DIR/lib/${_lib}.sh"
 done
+unset _libs _lib
 
 fail() {   # exit_code api_code message
     printf 'error=%s\nmessage=%s\n' "$2" "$3"
@@ -156,6 +165,31 @@ case "$verb" in
             3) fail 3 subscription_active "платная подписка ещё действует" ;;
             *) fail 1 free_failed "не удалось подключить бесплатный тариф" ;;
         esac
+        ;;
+
+    traffic-refresh)  # → refreshed=1|0 — пересчитать трафик/активность сейчас
+        [ $# -eq 0 ] || fail 64 bad_args "traffic-refresh"
+        # Кулдаун общий на ноду: пересчёт глобальный (один проход по всем
+        # юзерам), поэтому десяти спросившим подряд хватает одного прогона.
+        _now=$(date +%s); _last=$(cat "$TRAFFIC_REFRESH_TS" 2>/dev/null)
+        [[ "$_last" =~ ^[0-9]+$ ]] || _last=0
+        if [ $(( _now - _last )) -lt "$TRAFFIC_REFRESH_MIN_SEC" ]; then
+            printf 'refreshed=0\n'
+            exit 0
+        fi
+        # Блокировка НЕ ждущая: пересчёт уже идёт (или занята мутация) — молча
+        # отвечаем refreshed=0. Ждать нельзя: страница спрашивает каждые
+        # несколько секунд, очередь из ждунов дороже, чем чуть менее свежие цифры.
+        exec 200>"$DATA_DIR/.webapi.lock"
+        flock -n 200 || { printf 'refreshed=0\n'; exit 0; }
+        printf '%s' "$_now" > "$TRAFFIC_REFRESH_TS"
+        # Только collect_activity: он даёт и свежий кумулятив (расход демо и
+        # free-плана), и флаг active — то самое «в сети». Спидометр (collect_rates)
+        # сюда не берём: его тик и так идёт каждые RATES_TICK_SEC, а лишний
+        # опрос API протоколов удваивает цену запроса. Ошибку глотаем:
+        # свежесть не важнее доступности.
+        collect_activity >/dev/null 2>&1 || true
+        printf 'refreshed=1\n'
         ;;
 
     demo-create)  # → user=… sub_url=… expires=… cap=… rate=…

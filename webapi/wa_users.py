@@ -43,14 +43,27 @@ def days_left(expiry):
     return max(-3650, int((end - datetime.now()).total_seconds() // 86400))
 
 
+def klimit_global_down():
+    """Глобальный kernel-лимит скачивания (Мбит/с) из klimit.conf, 0 если не задан.
+    Это потолок ВСЕХ клиентов без личного тарифа (см. lib/perf.sh). Отдаём в
+    payload, чтобы веб-апп показывал реальное ограничение, а не «без лимита»."""
+    for line in read_lines(data_path("klimit.conf")):
+        if line.startswith("DOWN_MBIT="):
+            v = line.split("=", 1)[1].strip()
+            return int(v) if v.isdigit() else 0
+    return 0
+
+
 def user_limits(user):
+    glob = klimit_global_down()
     for r in pipe_rows(data_path("userlimits.dat"), 2):
         if r[0] == user:
             devices = int(r[1]) if r[1].isdigit() else 1
             hardcheck = 1 if len(r) > 2 and r[2] == "1" else 0
             rate = int(r[3]) if len(r) > 3 and r[3].isdigit() else 0
-            return {"devices": devices, "hardcheck": bool(hardcheck), "rate_mbps": rate}
-    return {"devices": 1, "hardcheck": False, "rate_mbps": 0}
+            return {"devices": devices, "hardcheck": bool(hardcheck),
+                    "rate_mbps": rate, "global_mbps": glob}
+    return {"devices": 1, "hardcheck": False, "rate_mbps": 0, "global_mbps": glob}
 
 
 FREE_WEEK_SEC = 604800      # окна бесплатного тарифа — как в lib/freeplan.sh
@@ -122,6 +135,28 @@ def free_status(user, total_bytes):
         "state": row[1],
         "week": window(wk_start, wk_base, "wk", FREE_WEEK_SEC),
         "month": window(mo_start, mo_base, "mo", FREE_MONTH_SEC),
+    }
+
+
+def demo_status(user, total_bytes):
+    """Состояние демо-профиля или None. Строка demos.db:
+    user|state|created|expires|cap|base|used (см. lib/demo.sh). Расход считаем
+    ровно как demo_tick, который и отбирает доступ: текущий трафик минус база
+    на момент выдачи. У отобранного демо (state=expired) расход уже записан в
+    строке — текущий трафик там ни при чём."""
+    row = next((r for r in pipe_rows(data_path("demos.db"), 7) if r[0] == user), None)
+    if row is None:
+        return None
+    nums = [int(x) if x.lstrip("-").isdigit() else 0 for x in row[2:7]]
+    created, expires, cap, base, used = nums
+    spent = used if row[1] != "active" else max(0, total_bytes - base)
+    return {
+        "state": row[1],
+        "created_at": created,
+        "expires_at": expires,
+        "used_bytes": spent,
+        "limit_bytes": cap,
+        "left_bytes": max(0, cap - spent) if cap else None,
     }
 
 
