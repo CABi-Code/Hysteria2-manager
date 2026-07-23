@@ -43,14 +43,27 @@ def days_left(expiry):
     return max(-3650, int((end - datetime.now()).total_seconds() // 86400))
 
 
+def klimit_global_down():
+    """Глобальный kernel-лимит скачивания (Мбит/с) из klimit.conf, 0 если не задан.
+    Это потолок ВСЕХ клиентов без личного тарифа (см. lib/perf.sh). Отдаём в
+    payload, чтобы веб-апп показывал реальное ограничение, а не «без лимита»."""
+    for line in read_lines(data_path("klimit.conf")):
+        if line.startswith("DOWN_MBIT="):
+            v = line.split("=", 1)[1].strip()
+            return int(v) if v.isdigit() else 0
+    return 0
+
+
 def user_limits(user):
+    glob = klimit_global_down()
     for r in pipe_rows(data_path("userlimits.dat"), 2):
         if r[0] == user:
             devices = int(r[1]) if r[1].isdigit() else 1
             hardcheck = 1 if len(r) > 2 and r[2] == "1" else 0
             rate = int(r[3]) if len(r) > 3 and r[3].isdigit() else 0
-            return {"devices": devices, "hardcheck": bool(hardcheck), "rate_mbps": rate}
-    return {"devices": 1, "hardcheck": False, "rate_mbps": 0}
+            return {"devices": devices, "hardcheck": bool(hardcheck),
+                    "rate_mbps": rate, "global_mbps": glob}
+    return {"devices": 1, "hardcheck": False, "rate_mbps": 0, "global_mbps": glob}
 
 
 FREE_WEEK_SEC = 604800      # окна бесплатного тарифа — как в lib/freeplan.sh
