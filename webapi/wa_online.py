@@ -214,8 +214,24 @@ def user_rate_bps(user):
     return total
 
 
+# Живой трафик как признак онлайна. is_online читает activity.dat, который пишет
+# collect_activity раз в ~60с (cluster_online_sync) + грейс 90с — статус включался
+# с отставанием до минуты, хотя спидометр (rates, каждые 5с) уже показывал трафик.
+# Порог отсекает keepalive-пинги (как ACTIVITY_THRESHOLD_BPS у collect_activity).
+ONLINE_LIVE_RATE_BPS = _env_int("HY2M_ONLINE_RATE_BPS", 2048)
+
+
 def stream_snapshot(user):
-    return (is_online(user), user_rate_bps(user))
+    bps = user_rate_bps(user)
+    online = is_online(user)
+    # Трафик идёт прямо сейчас — онлайн, не дожидаясь минутного collect_activity.
+    # Обновляем и грейс-таймер: после остановки трафика статус гаснет плавно через
+    # ONLINE_GRACE_SEC, а не мигает.
+    if bps >= ONLINE_LIVE_RATE_BPS:
+        with _online_lock:
+            _online_last_active[user] = time.time()
+        online = True
+    return (online, bps)
 
 
 def _stream_watcher():
