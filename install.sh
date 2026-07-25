@@ -105,6 +105,24 @@ setup_log_dir() {
     touch "$LOG_DIR/error.log"
     chmod 750 "$LOG_DIR"
     chmod 640 "$LOG_DIR/error.log"
+    # Ротация: stderr менеджера уходит в error.log без ограничений (см. LOG_FILE
+    # в hy2-manager.sh). Один зациклившийся варнинг за пару дней надувал файл до
+    # 154 МБ. copytruncate — потому что демон бота держит fd открытым и после
+    # обычного rename писал бы в переименованный файл.
+    if [ -d /etc/logrotate.d ]; then
+        cat > /etc/logrotate.d/hy2-manager <<EOF
+${LOG_DIR}/*.log {
+    weekly
+    rotate 4
+    size 20M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+    fi
 }
 
 # === ОПРЕДЕЛЕНИЕ ТЕКУЩЕГО СОСТОЯНИЯ ===
