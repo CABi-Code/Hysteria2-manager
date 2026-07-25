@@ -117,18 +117,45 @@ _proto_arch() {
     esac
 }
 
+# Сверка скачанного архива с суммой, которую издатель кладёт рядом с релизом.
+# Не спасёт от подменённого целиком релиза (сумма оттуда же), но ловит битую
+# закачку и подменённый на лету файл. Сумму не удалось получить — говорим и
+# ставим дальше: иначе сетевая икота на GitHub оставит ноду без протоколов.
+proto_verify_sha256() {   # файл  ожидаемая_sha256  что_ставим
+    local file="$1" want="$2" what="$3" got
+    if [ -z "$want" ]; then
+        echo "  ⚠️  Контрольная сумма $what недоступна — ставлю без проверки"
+        return 0
+    fi
+    got=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)
+    [ "$got" = "$want" ] && return 0
+    echo "  ❌ Контрольная сумма $what не совпала (ждали $want, получили ${got:-—})"
+    return 1
+}
+
 proto_install_xray() {
     command -v "$XRAY_BIN" >/dev/null 2>&1 && [ -x "$XRAY_BIN" ] && return 0
     echo "  📦 Устанавливаю Xray-core (VLESS/REALITY/XHTTP, Shadowsocks-2022)..."
-    local arch zip tmp url
+    local arch zip tmp url ver sum
     case "$(_proto_arch)" in
         amd64) arch="64" ;; arm64) arch="arm64-v8a" ;; armv7) arch="arm32-v7a" ;; *) arch="64" ;;
     esac
-    url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
+    # XRAY_VERSION в protocols.conf (например «v25.1.1») фиксирует версию; пусто
+    # или latest — как раньше, свежий релиз (и свежие исправления в нём).
+    ver=$(proto_get XRAY_VERSION)
+    if [ -n "$ver" ] && [ "$ver" != "latest" ]; then
+        url="https://github.com/XTLS/Xray-core/releases/download/${ver}/Xray-linux-${arch}.zip"
+    else
+        url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
+    fi
     tmp=$(mktemp -d); zip="$tmp/xray.zip"
     if ! curl -fsSL --max-time 120 -o "$zip" "$url"; then
         echo "  ❌ Не удалось скачать Xray ($url)"; rm -rf "$tmp"; return 1
     fi
+    # Xray публикует рядом «<файл>.dgst» со строкой «SHA2-256= <хеш>».
+    sum=$(curl -fsSL --max-time 30 "${url}.dgst" 2>/dev/null \
+          | awk -F'= *' '/^SHA2-256/{print $2; exit}' | tr -d '[:space:]')
+    proto_verify_sha256 "$zip" "$sum" "Xray" || { rm -rf "$tmp"; return 1; }
     command -v unzip >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq unzip; }
     unzip -o -q "$zip" -d "$tmp" || { echo "  ❌ Распаковка Xray не удалась"; rm -rf "$tmp"; return 1; }
     install -m 0755 "$tmp/xray" "$XRAY_BIN"
@@ -144,7 +171,13 @@ proto_install_singbox() {
     echo "  📦 Устанавливаю sing-box (TUIC v5)..."
     local arch tag ver tmp tgz url
     arch=$(_proto_arch)
-    tag=$(curl -fsSL --max-time 30 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
+    # SINGBOX_VERSION в protocols.conf («v1.13.14») фиксирует версию; пусто или
+    # latest — спрашиваем у GitHub, как раньше. Контрольных сумм sing-box рядом
+    # с релизом не публикует, сверять не с чем — проверяем только, что бинарник
+    # распаковался и запускается (ниже).
+    tag=$(proto_get SINGBOX_VERSION)
+    [ "$tag" = "latest" ] && tag=""
+    [ -n "$tag" ] || tag=$(curl -fsSL --max-time 30 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
           | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
     [ -z "$tag" ] && { echo "  ❌ Не удалось узнать версию sing-box"; return 1; }
     ver="${tag#v}"
