@@ -168,11 +168,22 @@ ${tl:-нет тарифов}
                 tg_send "$chat" "🛠 <b>Админ-панель</b>
 Команды: /add имя [дней] [устройств] · /code имя · /users · /status_srv" "$KB_ADMIN"
             else
-                bot_client_menu "$chat"
+                # Приветствие с кнопкой «Открыть приложение» шлёт мини-апп;
+                # своё меню — только если он не настроен/не ответил.
+                bot_miniapp_start "$chat" "$from" "" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
+                    "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
+                    || bot_client_menu "$chat"
             fi ;;
         "/start "*)
             local code="${text#/start }" u
             code=$(printf '%s' "$code" | tr -d '[:space:]')
+            # ref_<КОД> — реферальная ссылка мини-аппа (не код привязки).
+            if [ "${code#ref_}" != "$code" ]; then
+                bot_miniapp_start "$chat" "$from" "$code" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
+                    "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
+                    || bot_client_menu "$chat"
+                return 0
+            fi
             u=$(bot_code_lookup "$code")
             if [ -n "$u" ]; then
                 tg_bind "$from" "$u"

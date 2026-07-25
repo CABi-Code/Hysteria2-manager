@@ -98,6 +98,27 @@ bot_client_menu() {   # chat_id
     fi
 }
 
+# Передать /start мини-аппу (Laravel): он заводит/обновляет аккаунт, разбирает
+# реферальный код и САМ шлёт приветствие с кнопкой «Открыть приложение», а следом
+# уведомления о начисленном бонусе. Сообщение шлёт одна сторона — иначе клиент
+# получил бы и приветствие, и меню бота.
+# Мини-апп не открывается по ссылке из директа канала (баг Telegram), поэтому
+# реферальная ссылка ведёт на /start бота. См. надстройка/docs/BOT-START.md.
+# 0 — приветствие отправлено, 1 — мини-апп не настроен/недоступен (зовите меню).
+bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
+    local url secret body resp
+    url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
+    [ -n "$url" ] && [ -n "$secret" ] || return 1
+    body=$(jq -nc --argjson chat "$1" --argjson tg "$2" \
+        --arg sp "${3:-}" --arg un "${4:-}" --arg fn "${5:-}" \
+        '{chat_id:$chat, tg_id:$tg, start_param:$sp, username:$un, first_name:$fn}') || return 1
+    # Долгий таймаут: в ответе может лежать провижининг нового профиля (~18 с).
+    resp=$(curl -s --max-time 60 -X POST "${url%/}/api/bot/start" \
+        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
+        --data-binary "$body" 2>/dev/null)
+    [ "$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
+}
+
 # ---------- клиентские действия ----------
 bot_client_link() {   # chat_id
     local chat="$1" user
