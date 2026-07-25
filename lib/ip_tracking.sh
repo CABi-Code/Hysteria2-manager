@@ -3,6 +3,43 @@
 # IP-трекинг: сбор и анализ IP-адресов пользователей
 # ================================================
 
+# Сколько держим запись об IP после последнего появления. Мобильный клиент
+# меняет адрес по нескольку раз в день, и без срока файл только рос — а всё,
+# что по нему считают (уникальные IP, «IP за неделю», антиабуз), смотрит
+# максимум на неделю назад.
+IPS_RETENTION_DAYS="${IPS_RETENTION_DAYS:-30}"
+
+# Слияние «user|ip» (или «token|ip») со stdin в файл истории «key|ip|first|last|count».
+# Одним awk: старый файл читается один раз, новые пары досчитываются в памяти,
+# протухшие записи выбрасываются. Раньше на КАЖДУЮ строку журнала делались grep
+# + sed -i, то есть полная перезапись файла на каждое подключение.
+_ips_merge() {   # файл  now
+    local file="$1" now="$2" tmp="$1.tmp.$BASHPID"
+    touch "$file" 2>/dev/null || return 0
+    awk -v old="$file" -v now="$now" -v cut=$(( now - IPS_RETENTION_DAYS * 86400 )) '
+        BEGIN {
+            FS = "\t"
+            while ((getline line < old) > 0) {
+                n = split(line, p, "|")
+                if (n < 5 || p[1] == "" || p[4] + 0 < cut) continue
+                k = p[1] "|" p[2]
+                if (k in cnt) continue
+                first[k] = p[3]; last[k] = p[4]; cnt[k] = p[5]; ord[++total] = k
+            }
+        }
+        $1 != "" && $2 != "" {
+            k = $1 "|" $2
+            if (k in cnt) { last[k] = now; cnt[k] = cnt[k] + 1 }
+            else { first[k] = now; last[k] = now; cnt[k] = 1; ord[++total] = k }
+        }
+        END {
+            for (i = 1; i <= total; i++) {
+                k = ord[i]; split(k, p, "|")
+                printf "%s|%s|%s|%s|%s\n", p[1], p[2], first[k], last[k], cnt[k]
+            }
+        }' > "$tmp" && mv "$tmp" "$file" || rm -f "$tmp"
+}
+
 collect_ips() {
     local since_ts=""
     if [ -f "$LAST_LOG_TS" ] && [ -s "$LAST_LOG_TS" ]; then
@@ -17,30 +54,25 @@ collect_ips() {
     # Поля «username» в логе НЕТ — раньше тут грепали именно его, поэтому IP
     # НИКОГДА не собирались («IP-адресов нет» в карточке). Берём пару addr+id из
     # событий подключения. «client disconnected» исключаем (это не новый коннект).
-    journalctl -u "$SERVICE" --no-pager -o cat --since="$since_ts" 2>/dev/null | \
-    grep -F 'client connected' | \
-    while IFS= read -r line; do
-        local ip user now
-        # addr/remote/client — на разных версиях по-разному; берём IPv4 до «:».
-        ip=$(printf '%s' "$line" | grep -oP '"(?:addr|remote|client)"\s*:\s*"\K[0-9.]+' | head -1)
-        # id (имя из auth-скрипта); username — на случай иного формата лога.
-        user=$(printf '%s' "$line" | grep -oP '"(?:id|username)"\s*:\s*"\K[^"]+' | head -1)
-        if [ -z "$ip" ] || [ -z "$user" ] || [ "$ip" = "127.0.0.1" ]; then
-            continue
-        fi
-
-        now=$(date +%s)
-        if grep -q "^${user}|${ip}|" "$IPS_FILE" 2>/dev/null; then
-            local old_line first_seen old_count new_count
-            old_line=$(grep "^${user}|${ip}|" "$IPS_FILE" | head -1)
-            first_seen=$(echo "$old_line" | cut -d'|' -f3)
-            old_count=$(echo "$old_line" | cut -d'|' -f5)
-            new_count=$(( ${old_count:-0} + 1 ))
-            sed -i "s#^${user}|${ip}|.*#${user}|${ip}|${first_seen}|${now}|${new_count}#" "$IPS_FILE"
-        else
-            echo "${user}|${ip}|${now}|${now}|1" >> "$IPS_FILE"
-        fi
-    done
+    local now; now=$(date +%s)
+    journalctl -u "$SERVICE" --no-pager -o cat --since="$since_ts" 2>/dev/null \
+      | grep -F 'client connected' \
+      | awk '{
+            # addr/remote/client — на разных версиях по-разному; берём IPv4 до «:».
+            # Значение достаём разбором по кавычкам: не зависит от пробелов.
+            # Закрывающую кавычку НЕ требуем: адрес в логе с портом («ip:port»),
+            # значение обрывается на первом же символе не из класса.
+            ip = ""; user = ""
+            if (match($0, /"(addr|remote|client)"[ \t]*:[ \t]*"[0-9.]+/)) {
+                s = substr($0, RSTART, RLENGTH); n = split(s, q, "\""); ip = q[n]
+            }
+            # id (имя из auth-скрипта); username — на случай иного формата лога.
+            if (match($0, /"(id|username)"[ \t]*:[ \t]*"[^"]*/)) {
+                s = substr($0, RSTART, RLENGTH); n = split(s, q, "\""); user = q[n]
+            }
+            if (ip != "" && user != "" && ip != "127.0.0.1") printf "%s\t%s\n", user, ip
+        }' \
+      | _ips_merge "$IPS_FILE" "$now"
 }
 
 get_user_ip_count() {
@@ -64,7 +96,7 @@ collect_sub_ips() {
     command -v jq >/dev/null 2>&1 || return 0
     command -v journalctl >/dev/null 2>&1 || return 0
     touch "$SUBIPS_FILE" 2>/dev/null
-    local since now ip uri token old first count
+    local since now
     if [ -s "$SUBLOG_TS" ]; then
         since=$(cat "$SUBLOG_TS")
     else
@@ -83,18 +115,11 @@ collect_sub_ips() {
                 | select(.request.uri | startswith("/sub/"))
                 | [ (.request.remote_ip // ((.request.remote_addr // "") | split(":")[0]) // ""),
                     (.request.uri) ] | @tsv' 2>/dev/null \
-      | while IFS=$'\t' read -r ip uri; do
-            [ -n "$ip" ] || continue
-            [ "$ip" = "127.0.0.1" ] && continue
-            token="${uri#/sub/}"; token="${token%%\?*}"; token="${token%%/*}"
-            [[ "$token" =~ ^[A-Za-z0-9]+$ ]] || continue
-            if grep -q "^${token}|${ip}|" "$SUBIPS_FILE" 2>/dev/null; then
-                old=$(grep "^${token}|${ip}|" "$SUBIPS_FILE" | head -1)
-                first=$(echo "$old" | cut -d'|' -f3)
-                count=$(echo "$old" | cut -d'|' -f5)
-                sed -i "s#^${token}|${ip}|.*#${token}|${ip}|${first}|${now}|$(( ${count:-0} + 1 ))#" "$SUBIPS_FILE"
-            else
-                echo "${token}|${ip}|${now}|${now}|1" >> "$SUBIPS_FILE"
-            fi
-        done
+      | awk -F'\t' '{
+            ip = $1; uri = $2
+            if (ip == "" || ip == "127.0.0.1") next
+            sub(/^\/sub\//, "", uri); sub(/[?\/].*$/, "", uri)
+            if (uri ~ /^[A-Za-z0-9]+$/) printf "%s\t%s\n", uri, ip
+        }' \
+      | _ips_merge "$SUBIPS_FILE" "$now"
 }
