@@ -66,7 +66,10 @@ if [ "$1" = "--check-expiry" ]; then
     migrate_to_command_auth
     setup_stats_api
     check_expired_users
-    bot_notify_sweep        # ступенчатые напоминания об истечении (если бот включён)
+    # Напоминания шлёт отдельный крон --notify-sweep (каждые ~5 мин). Раньше sweep
+    # звался и тут: на границе 6 часов оба крона (--check-expiry и --notify-sweep)
+    # стартовали в одну минуту, два процесса bot_notify_sweep гонялись за
+    # notify_state.dat и слали ОДНО напоминание дважды. Теперь тут не зовём.
     exit 0
 fi
 
