@@ -136,14 +136,17 @@ delete_user() {
     sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" "$ACTIVITY_FILE" "$ACTIVITY_PREV_FILE" "$ABUSE_FILE" "$ABUSE_OBS_FILE" 2>/dev/null
     declare -F roster_remove >/dev/null && roster_remove "$user"   # снять метку «кластерный»
     api_post "/kick" "[\"$user\"]" &>/dev/null
-    sub_refresh
-    declare -F publish_roster >/dev/null && publish_roster
     # Точка правды: ставим tombstone и публикуем — удаление кластерного юзера
     # САМО разнесётся по нодам (а старый roster/манифест пира его не воскресит).
+    # СТРОГО ДО sub_refresh: пересборка подписок видит юзера в манифестах пиров и
+    # без tombstone заводила ему НОВЫЙ токен с рабочими ключами чужих нод —
+    # удалённый профиль продолжал получать подписку.
     if [ "$was_cluster" = 1 ] && declare -F cstate_set >/dev/null; then
         cstate_set "$user" deleted
         publish_cluster_state
     fi
+    sub_refresh
+    declare -F publish_roster >/dev/null && publish_roster
     echo "  ✅ Пользователь $user полностью удалён (применено сразу)"
     if [ "$was_cluster" = 1 ]; then
         echo "  🌐 Удаление разнесётся по кластеру (на пирах — в течение ~5 мин или по «Синхронизировать»)."

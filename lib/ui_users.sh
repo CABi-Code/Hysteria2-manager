@@ -239,6 +239,30 @@ user_action_menu() {
                 user_devices_menu "$user"
                 need_clear=1
                 ;;
+            15)
+                # Обратная операция к пункту 10: профиль, помеченный кластерным
+                # по ошибке, иначе было не вернуть — только удалить целиком.
+                if ! sub_enabled; then
+                    echo "  ❌ Кластер не настроен (Настройки → Подписка / Кластер)"
+                elif ! is_cluster_user "$user"; then
+                    echo "  ℹ️  Профиль и так локальный."
+                else
+                    roster_remove "$user"
+                    publish_roster
+                    echo "  ✅ Метка «кластерный» снята на этой ноде ($(node_name))."
+                    echo "     Профиль и его лимиты остаются здесь, на новые ноды не поедут."
+                    local _owners
+                    _owners=$(grep -lxF "$user" "$PEERS_DIR"/*.roster 2>/dev/null \
+                              | sed 's|.*/||; s|\.roster$||' | tr '\n' ' ')
+                    if [ -n "$_owners" ]; then
+                        echo "  ⚠️  Кластерным его объявляет ещё: ${_owners% }"
+                        echo "     Пока метка стоит там, ноды будут заводить его снова —"
+                        echo "     снимите её этим же пунктом на той ноде."
+                    fi
+                fi
+                pause
+                need_clear=1
+                ;;
             13)
                 cluster_sync_now
                 pause
@@ -432,6 +456,7 @@ _render_user_action() {
         else
             echo " 10. 🔄 Завести на всех нодах кластера"
         fi
+        is_cluster_user "$user" && echo " 15. 🔒 Вернуть в локальные (снять метку «кластерный»)"
         echo " 11. 🩺 Диагностика профиля (по кластеру)"
     fi
     echo " 12. 🔢 Устройства и ссылки подписки"
