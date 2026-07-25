@@ -127,6 +127,13 @@ bot_notify_sweep() {
     BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
     [ -f "$EXPIRY_FILE" ] || return 0
     touch "$NOTIFY_STATE_FILE"
+    # Один sweep за раз: проверка порога и отметка в notify_state.dat не атомарны
+    # (читаем «не отправлено» → шлём → дописываем метку), а cleanup ниже
+    # перезаписывает файл целиком. Два параллельных прохода без блокировки слали
+    # напоминание дважды и затирали метки друг друга. flock -n: если проход уже
+    # идёт, молча выходим — он всех обойдёт.
+    exec 8>"$DATA_DIR/.notify_sweep.lock" 2>/dev/null || true
+    flock -n 8 2>/dev/null || return 0
     local now user exp end_ts left pdays label secs bu
     now=$(date +%s)
     bu=$(bot_username)
@@ -172,7 +179,13 @@ bot_notify_sweep() {
     done < "$EXPIRY_FILE"
 
     # Подчистка: выкидываем метки для уже истёкших end_ts (в прошлом).
-    local tmp; tmp=$(mktemp) || return 0
-    awk -F'|' -v now="$now" '$2+0>now' "$NOTIFY_STATE_FILE" > "$tmp" 2>/dev/null
-    cat "$tmp" > "$NOTIFY_STATE_FILE"; rm -f "$tmp"
+    local tmp; tmp=$(mktemp 2>/dev/null)
+    if [ -n "$tmp" ]; then
+        awk -F'|' -v now="$now" '$2+0>now' "$NOTIFY_STATE_FILE" > "$tmp" 2>/dev/null
+        cat "$tmp" > "$NOTIFY_STATE_FILE"; rm -f "$tmp"
+    fi
+
+    # Отпускаем лок сразу (а не с завершением процесса): иначе в одном
+    # долгоживущем шелле — демон, тесты — второй проход навсегда бы блокировался.
+    flock -u 8 2>/dev/null; exec 8>&- 2>/dev/null
 }
