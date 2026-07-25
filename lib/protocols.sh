@@ -636,7 +636,7 @@ proto_collect_traffic() {
 # Снимок id->bytes храним в PROTO_DIR/tuic_conn_prev.
 proto_collect_tuic_traffic() {
     proto_tuic_enabled || return 0
-    local secret conns prev="$PROTO_DIR/tuic_conn_prev" newprev="$PROTO_DIR/tuic_conn_prev.tmp"
+    local secret conns prev="$PROTO_DIR/tuic_conn_prev" newprev="$PROTO_DIR/tuic_conn_prev.tmp.$BASHPID"
     secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
     conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
         "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)

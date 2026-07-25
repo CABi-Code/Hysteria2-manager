@@ -558,7 +558,7 @@ cluster_pull_settings() {
 publish_cluster_settings() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local tmp="$WEBROOT/cluster/settings.tmp" k v ts
+    local tmp="$WEBROOT/cluster/settings.tmp.$BASHPID" k v ts
     : > "$tmp"
     for k in $SETTING_KEYS; do
         v=$(node_get "$k"); ts=$(setting_ts "$k")
@@ -607,7 +607,7 @@ is_cluster_user() { cluster_users_all | grep -qxF "$1" 2>/dev/null; }
 publish_cluster_expiry() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local tmp="$WEBROOT/cluster/expiry.tmp" u d t
+    local tmp="$WEBROOT/cluster/expiry.tmp.$BASHPID" u d t
     : > "$tmp"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
@@ -656,7 +656,7 @@ cluster_apply_expiry() {
 publish_cluster_userlimits() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local tmp="$WEBROOT/cluster/userlimits.tmp" u d h t r
+    local tmp="$WEBROOT/cluster/userlimits.tmp.$BASHPID" u d h t r
     : > "$tmp"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
@@ -769,8 +769,8 @@ cluster_rates_sync() {
         [ -n "$host" ] || continue
         name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
         [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
-        { cluster_call "$host" "/cluster/rates" 5 > "$PEERS_DIR/${name}.rates.tmp" 2>/dev/null
-          mv "$PEERS_DIR/${name}.rates.tmp" "$PEERS_DIR/${name}.rates" 2>/dev/null; } &
+        { cluster_call "$host" "/cluster/rates" 5 > "$PEERS_DIR/${name}.rates.tmp.$BASHPID" 2>/dev/null
+          mv "$PEERS_DIR/${name}.rates.tmp.$BASHPID" "$PEERS_DIR/${name}.rates" 2>/dev/null; } &
     done < <(cluster_peers)
     wait
 }
