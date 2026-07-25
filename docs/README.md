@@ -11,6 +11,7 @@
 | [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи** (воронка, идея 13): `demo_create()`, таблица `DEMOS_DB`, enforcement капов кроном, грейс-сутки + авто-purge, показ по кластеру | `lib/demo.sh`, `lib/ui_users.sh` |
 | [YOOMONEY.md](YOOMONEY.md) | **Приём рублей через ЮMoney**: продажа тарифов за рубли без платёжного провайдера (личный кошелёк, метка платежа, опрос истории) | `lib/yoomoney.sh`, `lib/tgbot_client.sh`, `lib/tgbot_menu.sh` |
 | [CLUSTER-SCOPE.md](CLUSTER-SCOPE.md) | **Область действия настроек в кластере**: локальный профиль против кластерного, что уезжает на другие ноды, правила для нового синхронизируемого поля | `lib/cluster.sh`, `lib/limits.sh`, `lib/ui_users.sh` |
+| [BOT-START.md](BOT-START.md) | **`/start` и реферальные ссылки**: бот передаёт команду мини-аппу, тот шлёт приветствие с кнопкой «Открыть приложение» и начисляет бонус (полное описание — `cibpn-webapp/docs/BOT-START.md`) | `lib/tgbot_client.sh`, `lib/tgbot_daemon.sh` |
 | [NOTIFICATIONS.md](NOTIFICATIONS.md) | **Уведомления бота**: подписка (менеджер) и баланс (cibpn-webapp), кастомные эмодзи, канал-DM, как добавить новое уведомление | `lib/notify.sh`, `lib/tgbot*.sh` |
 | [08-multiprotocol.md](08-multiprotocol.md) | **Мультипротокол**: VLESS+REALITY+XHTTP, SS-2022, Trojan/WS (Xray), TUIC v5 (sing-box) рядом с Hysteria, единая подписка | `lib/protocols.sh`, `lib/ui_protocols.sh` |
 | [09-online-activity.md](09-online-activity.md) | **Онлайн-статус**: активность по всем протоколам, гистерезис, live-пуш через SSE | `lib/online.sh`, `lib/publish.sh`, `webapi/wa_online.py` |
