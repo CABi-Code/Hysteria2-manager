@@ -116,6 +116,9 @@ bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
     resp=$(curl -s --max-time 60 -X POST "${url%/}/api/bot/start" \
         -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
         --data-binary "$body" 2>/dev/null)
+    # Telegram легко теряет payload (человек жмёт «START», а не ссылку) — без
+    # лога «пришёл без кода» неотличимо от сломанной привязки.
+    echo "$(date '+%F %T') miniapp /start: tg=$2 payload='${3:-—}' → ${resp:0:120}"
     [ "$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
 }
 
