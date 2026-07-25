@@ -465,6 +465,8 @@ info "Создаю конфиг: $CONFIG"
 # Бэкап старого конфига если есть
 if [ -f "$CONFIG" ]; then
     cp -a "$CONFIG" "${CONFIG}.bak.$(date +%s)"
+    # Держим 5 последних: переустановка/обновление плодит бэкап каждый раз.
+    ls -1t "${CONFIG}".bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
 fi
 
 cat > "$CONFIG" << EOF
