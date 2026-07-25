@@ -101,7 +101,9 @@ $(ce "💬") Управляйте подпиской в боте${bu:+: @$bu}"
 # при входящем сообщении, где message.chat.is_direct_messages=true).
 chandm_topic_set() {   # tg_id dm_chat_id topic_id
     [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 0
-    touch "$CHANDM_MAP_FILE" 2>/dev/null; chmod 644 "$CHANDM_MAP_FILE" 2>/dev/null
+    # 600, а не 644: внутри tg_id↔chat_id канала. Каталог и так закрыт от чужих
+    # (drwxr-x--- hysteria), но ядру Hysteria эта карта не нужна — пусть не видит.
+    touch "$CHANDM_MAP_FILE" 2>/dev/null; chmod 600 "$CHANDM_MAP_FILE" 2>/dev/null
     sed -i "/^${1}|/d" "$CHANDM_MAP_FILE" 2>/dev/null
     printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$CHANDM_MAP_FILE"
 }
