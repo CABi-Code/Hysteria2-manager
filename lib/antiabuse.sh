@@ -68,7 +68,7 @@ abuse_observe() {
     sub_enabled || return 0
     local now user cap cn conn line viol samples esum pa pconn
     now=$(date +%s)
-    local tmp="${ABUSE_OBS_FILE}.tmp"; : > "$tmp"
+    local tmp="${ABUSE_OBS_FILE}.tmp.$BASHPID"; : > "$tmp"
     while IFS= read -r user; do
         [ -n "$user" ] || continue
         cap=$(pool_cap "$user"); [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
@@ -112,7 +112,7 @@ abuse_correct() {
     [[ "$HRS"    =~ ^[0-9]+$ ]] || HRS=6
 
     touch "$ABUSE_FILE" "$ABUSE_OBS_FILE" 2>/dev/null
-    local tmp="${ABUSE_FILE}.tmp"; : > "$tmp"
+    local tmp="${ABUSE_FILE}.tmp.$BASHPID"; : > "$tmp"
     local users user
     users=$( { cut -d'|' -f1 "$ABUSE_OBS_FILE" 2>/dev/null; cut -d'|' -f1 "$ABUSE_FILE" 2>/dev/null; } | grep -v '^$' | sort -u )
     while IFS= read -r user; do
