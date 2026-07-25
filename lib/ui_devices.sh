@@ -142,11 +142,18 @@ user_devices_menu() {
                     klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1
                     if [ "$nt" -gt 0 ]; then
                         echo "  ✅ Тариф: ${nt} Мбит/с — применится к активным IP клиента (обе стороны)."
-                        echo "     Синхронизируется по всему кластеру как атрибут подписки."
                     else
                         echo "  ✅ Тариф снят — действует глобальный лимит."
                     fi
-                    write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
+                    # Область действия говорим честно: у локального профиля тариф
+                    # никуда не уезжает (и синхронизацию предлагать незачем).
+                    write_authlimits
+                    if sub_enabled && is_cluster_user "$user"; then
+                        echo "     Профиль кластерный — тариф разъедется по всем нодам."
+                        publish_cluster_userlimits; offer_sync
+                    else
+                        echo "     Профиль локальный — тариф действует только на этой ноде ($(node_name))."
+                    fi
                 else echo "  ❌ Нужно число (Мбит/с)."; fi
                 pause ;;
             0) return ;;
