@@ -16,7 +16,7 @@
 publish_stats() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local online tmp="$WEBROOT/cluster/stats.tmp" u oc tl tx rx sp sptx sprx ac asince
+    local online tmp="$WEBROOT/cluster/stats.tmp.$BASHPID" u oc tl tx rx sp sptx sprx ac asince
     online=$(api_get "/online")
     echo "$online" | jq empty 2>/dev/null || online='{}'
     : > "$tmp"

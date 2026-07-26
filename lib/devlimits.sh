@@ -59,7 +59,7 @@ user_over_limit() {   # user [cluster_conn] [local_conn]
 # по реальному трафику (enforce_active_node_limit + анти-абуз). Файл оставлен для
 # совместимости/диагностики и как дешёвый снимок; на решение о пуске он не влияет.
 write_authlimits() {
-    local tmp="${AUTHLIMITS_FILE}.tmp" user hc pc nc others owner group
+    local tmp="${AUTHLIMITS_FILE}.tmp.$BASHPID" user hc pc nc others owner group
     : > "$tmp" 2>/dev/null || return 0
     while IFS= read -r user; do
         [ -n "$user" ] || continue

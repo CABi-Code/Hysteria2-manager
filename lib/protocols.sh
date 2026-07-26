@@ -34,6 +34,11 @@ SINGBOX_API_SECRET_FILE="$PROTO_DIR/singbox_api.secret"
 # реально изменились (иначе sub_refresh дёргал бы Xray/sing-box на каждый чих).
 XRAY_APPLIED_HASH="$PROTO_DIR/.xray.hash"
 SINGBOX_APPLIED_HASH="$PROTO_DIR/.singbox.hash"
+# Состав юзеров и параметры узла, применённые к живому Xray. Нужны, чтобы
+# отличить «добавился юзер» (можно на лету) от «сменились порты/ключи»
+# (только рестарт). См. _proto_xray_hot_apply.
+XRAY_APPLIED_USERS="$PROTO_DIR/.xray.users"
+XRAY_STRUCT_HASH="$PROTO_DIR/.xray.struct"
 
 # ---------------- Параметры узла (protocols.conf) ----------------
 proto_get() {   # key -> value
@@ -117,18 +122,45 @@ _proto_arch() {
     esac
 }
 
+# Сверка скачанного архива с суммой, которую издатель кладёт рядом с релизом.
+# Не спасёт от подменённого целиком релиза (сумма оттуда же), но ловит битую
+# закачку и подменённый на лету файл. Сумму не удалось получить — говорим и
+# ставим дальше: иначе сетевая икота на GitHub оставит ноду без протоколов.
+proto_verify_sha256() {   # файл  ожидаемая_sha256  что_ставим
+    local file="$1" want="$2" what="$3" got
+    if [ -z "$want" ]; then
+        echo "  ⚠️  Контрольная сумма $what недоступна — ставлю без проверки"
+        return 0
+    fi
+    got=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)
+    [ "$got" = "$want" ] && return 0
+    echo "  ❌ Контрольная сумма $what не совпала (ждали $want, получили ${got:-—})"
+    return 1
+}
+
 proto_install_xray() {
     command -v "$XRAY_BIN" >/dev/null 2>&1 && [ -x "$XRAY_BIN" ] && return 0
     echo "  📦 Устанавливаю Xray-core (VLESS/REALITY/XHTTP, Shadowsocks-2022)..."
-    local arch zip tmp url
+    local arch zip tmp url ver sum
     case "$(_proto_arch)" in
         amd64) arch="64" ;; arm64) arch="arm64-v8a" ;; armv7) arch="arm32-v7a" ;; *) arch="64" ;;
     esac
-    url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
+    # XRAY_VERSION в protocols.conf (например «v25.1.1») фиксирует версию; пусто
+    # или latest — как раньше, свежий релиз (и свежие исправления в нём).
+    ver=$(proto_get XRAY_VERSION)
+    if [ -n "$ver" ] && [ "$ver" != "latest" ]; then
+        url="https://github.com/XTLS/Xray-core/releases/download/${ver}/Xray-linux-${arch}.zip"
+    else
+        url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
+    fi
     tmp=$(mktemp -d); zip="$tmp/xray.zip"
     if ! curl -fsSL --max-time 120 -o "$zip" "$url"; then
         echo "  ❌ Не удалось скачать Xray ($url)"; rm -rf "$tmp"; return 1
     fi
+    # Xray публикует рядом «<файл>.dgst» со строкой «SHA2-256= <хеш>».
+    sum=$(curl -fsSL --max-time 30 "${url}.dgst" 2>/dev/null \
+          | awk -F'= *' '/^SHA2-256/{print $2; exit}' | tr -d '[:space:]')
+    proto_verify_sha256 "$zip" "$sum" "Xray" || { rm -rf "$tmp"; return 1; }
     command -v unzip >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq unzip; }
     unzip -o -q "$zip" -d "$tmp" || { echo "  ❌ Распаковка Xray не удалась"; rm -rf "$tmp"; return 1; }
     install -m 0755 "$tmp/xray" "$XRAY_BIN"
@@ -144,7 +176,13 @@ proto_install_singbox() {
     echo "  📦 Устанавливаю sing-box (TUIC v5)..."
     local arch tag ver tmp tgz url
     arch=$(_proto_arch)
-    tag=$(curl -fsSL --max-time 30 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
+    # SINGBOX_VERSION в protocols.conf («v1.13.14») фиксирует версию; пусто или
+    # latest — спрашиваем у GitHub, как раньше. Контрольных сумм sing-box рядом
+    # с релизом не публикует, сверять не с чем — проверяем только, что бинарник
+    # распаковался и запускается (ниже).
+    tag=$(proto_get SINGBOX_VERSION)
+    [ "$tag" = "latest" ] && tag=""
+    [ -n "$tag" ] || tag=$(curl -fsSL --max-time 30 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
           | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
     [ -z "$tag" ] && { echo "  ❌ Не удалось узнать версию sing-box"; return 1; }
     ver="${tag#v}"
@@ -417,12 +455,112 @@ _proto_apply_service() {   # service config_file hash_file
     fi
 }
 
+# ---------------- Горячее применение состава юзеров Xray (adu/rmu) ----------------
+# Новый юзер меняет конфиг → меняется хэш → рестарт → рвутся сессии ВСЕХ юзеров
+# ноды. Xray умеет добавлять и снимать юзеров по gRPC на лету, поэтому рестарт
+# нужен только когда изменились ПАРАМЕТРЫ узла (порты, ключи REALITY, состав
+# инбаундов), а не состав юзеров.
+
+# Хэш конфига без списков клиентов — от добавления юзера не меняется.
+_proto_xray_struct_hash() {
+    jq -Sc 'del(.inbounds[].settings.clients)' "$XRAY_CONFIG" 2>/dev/null \
+        | sha256sum 2>/dev/null | cut -d' ' -f1
+}
+
+# Желаемый состав: «user<TAB>uuid<TAB>upsk», отсортированный. Смена пароля меняет
+# строку целиком, поэтому видна как удаление + добавление. LC_ALL=C — чтобы
+# порядок не зависел от локали вызывающего (TUI и крон могут отличаться), иначе
+# comm сравнит несравнимое.
+_proto_xray_desired_users() {
+    local u p
+    while IFS=: read -r u p; do
+        [ -n "$u" ] || continue
+        _proto_skip_user "$u" && continue
+        printf '%s\t%s\t%s\n' "$u" "$(proto_uuid "$u" "$p")" "$(proto_upsk "$u" "$p")"
+    done < "$USERS_DB" | LC_ALL=C sort
+}
+
+# Теги инбаундов Xray, включённых на этой ноде.
+_proto_xray_tags() {
+    proto_vless_enabled  && echo vless-in
+    proto_ss_enabled     && echo ss-in
+    proto_trojan_enabled && echo trojan-in
+    return 0
+}
+
+# Заготовка для `xray api adu` с одним юзером во всех инбаундах. adu разбирает
+# файл как ПОЛНЫЙ конфиг (без порта — «Listen on AnyIP but no Port(s) set»),
+# поэтому берём живой конфиг и подменяем в нём только списки клиентов: порты,
+# method/uPSK и streamSettings тогда заведомо валидны. Инбаунд api отсеивается
+# сам — у него нет clients.
+_proto_xray_adu_json() {   # user uuid upsk
+    jq -c --arg u "$1" --arg id "$2" --arg psk "$3" \
+        '{inbounds:[.inbounds[]|select(.settings.clients!=null)
+          |.settings.clients=(
+              if   .protocol=="vless"       then [{id:$id,email:$u,flow:"xtls-rprx-vision"}]
+              elif .protocol=="shadowsocks" then [{password:$psk,email:$u}]
+              else                               [{password:$id,email:$u}] end)]}' \
+        "$XRAY_CONFIG" 2>/dev/null
+}
+
+_proto_xray_save_state() {
+    ( umask 077
+      _proto_xray_struct_hash   > "$XRAY_STRUCT_HASH"
+      _proto_xray_desired_users > "$XRAY_APPLIED_USERS" ) 2>/dev/null
+}
+
+# Применить изменившийся состав юзеров к живому Xray без рестарта.
+# 0 — применено (рестарт не нужен), 1 — нужен обычный рестарт.
+# При любом сбое возвращаем 1: конфиг на диске уже правильный, рестарт всё
+# приведёт в порядок, поэтому частично применённая дельта не опасна.
+_proto_xray_hot_apply() {
+    [ -x "$XRAY_BIN" ] && command -v jq >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet "$XRAY_SERVICE" 2>/dev/null || return 1
+    [ -f "$XRAY_APPLIED_USERS" ] || return 1          # первый запуск — рестарт
+    local sh; sh=$(_proto_xray_struct_hash)
+    [ -n "$sh" ] && [ "$sh" = "$(cat "$XRAY_STRUCT_HASH" 2>/dev/null)" ] || return 1
+
+    local tmp="$PROTO_DIR/.xray.users.$BASHPID" j="$PROTO_DIR/.xray.adu.$BASHPID"
+    ( umask 077; _proto_xray_desired_users > "$tmp" )
+    local gone new t u id psk
+    gone=$(comm -23 "$XRAY_APPLIED_USERS" "$tmp" | cut -f1 | LC_ALL=C sort -u)
+    new=$(comm -13 "$XRAY_APPLIED_USERS" "$tmp")
+
+    # Снятие: юзера могло не быть в инбаунде (rmu вернёт ошибку) — это не сбой.
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        while IFS= read -r t; do
+            "$XRAY_BIN" api rmu --server="127.0.0.1:${XRAY_API_PORT}" \
+                -tag="$t" "$u" >/dev/null 2>&1
+        done < <(_proto_xray_tags)
+    done <<< "$gone"
+
+    # Добавление: сбой здесь означает юзера без доступа — откатываемся к рестарту.
+    while IFS=$'\t' read -r u id psk; do
+        [ -n "$u" ] || continue
+        ( umask 077; _proto_xray_adu_json "$u" "$id" "$psk" > "$j" ) \
+            && [ -s "$j" ] \
+            && "$XRAY_BIN" api adu --server="127.0.0.1:${XRAY_API_PORT}" "$j" >/dev/null 2>&1 \
+            || { rm -f "$tmp" "$j"; return 1; }
+    done <<< "$new"
+
+    rm -f "$j"
+    mv "$tmp" "$XRAY_APPLIED_USERS" 2>/dev/null
+    # Хэш конфига теперь считается применённым — иначе следующий
+    # _proto_apply_service увидит расхождение и всё-таки рестартанёт.
+    sha256sum "$XRAY_CONFIG" 2>/dev/null | cut -d' ' -f1 > "$XRAY_APPLIED_HASH"
+    return 0
+}
+
 # Пересобрать конфиги из users.db и применить. Вызывается из sub_refresh.
 proto_sync_users() {
     proto_any_enabled || return 0
     if proto_xray_needed; then
         proto_write_xray_config
-        _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
+        if ! _proto_xray_hot_apply; then
+            _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
+            _proto_xray_save_state
+        fi
     fi
     if proto_tuic_enabled; then
         proto_write_singbox_config
@@ -636,7 +774,7 @@ proto_collect_traffic() {
 # Снимок id->bytes храним в PROTO_DIR/tuic_conn_prev.
 proto_collect_tuic_traffic() {
     proto_tuic_enabled || return 0
-    local secret conns prev="$PROTO_DIR/tuic_conn_prev" newprev="$PROTO_DIR/tuic_conn_prev.tmp"
+    local secret conns prev="$PROTO_DIR/tuic_conn_prev" newprev="$PROTO_DIR/tuic_conn_prev.tmp.$BASHPID"
     secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
     conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
         "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
@@ -812,28 +950,12 @@ _proto_merge_online() {   # a b -> merged
 }
 
 # ---------------- Кик сессий доп. протоколов ----------------
-# Xray умеет снять юзера с инбаунда на лету (rmu) — это рвёт его активные сессии;
-# состав вернёт следующий proto_sync_users. sing-box per-user кика не имеет —
-# при необходимости рвём TUIC рестартом (редкое событие: истечение/бан).
-# ЗАМЕЧАНИЕ: при удалении/отключении/смене пароля юзер и так исчезает из конфига,
-# и restart-on-change в proto_sync_users роняет его сессии — отдельный kick нужен
-# лишь для «мягких» сценариев (сброс без изменения состава).
-proto_kick() {   # user
-    local user="$1"
-    [ -n "$user" ] || return 0
-    proto_any_enabled || return 0
-    if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
-        local tag
-        for tag in vless-in ss-in trojan-in; do
-            "$XRAY_BIN" api rmu --server="127.0.0.1:${XRAY_API_PORT}" \
-                -tag "$tag" -email "$user" >/dev/null 2>&1
-        done
-        # Вернуть юзера в инбаунд (он остаётся валидным) — пересборкой из users.db.
-        proto_write_xray_config
-        _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
-    fi
-    return 0
-}
+# Отдельного кика для VLESS/SS/Trojan нет: он был написан, никогда не вызывался
+# и не работал (`xray api rmu` принимает email позиционно, а не флагом -email —
+# команда падала в /dev/null). Сессия юзера и так рвётся, когда он выпадает из
+# конфига. Если кик понадобится по-настоящему — это rmu по тегам из
+# _proto_xray_tags плюс возврат через _proto_xray_adu_json, три строки.
+# sing-box per-user кика не имеет вовсе.
 
 # Статус для меню/диагностики: строка «vless:💚 ss:🔴 tuic:💚».
 proto_status_line() {

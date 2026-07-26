@@ -316,7 +316,7 @@ tgbot_daemon() {
         done < <(echo "$resp" | jq -c '.result[]?' 2>/dev/null)
         # Не даём логу расти бесконечно (~1 МБ потолок).
         if [ "$(stat -c %s "$BOT_LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
-            tail -c 262144 "$BOT_LOG" > "${BOT_LOG}.tmp" 2>/dev/null && mv "${BOT_LOG}.tmp" "$BOT_LOG"
+            tail -c 262144 "$BOT_LOG" > "${BOT_LOG}.tmp.$BASHPID" 2>/dev/null && mv "${BOT_LOG}.tmp.$BASHPID" "$BOT_LOG"
         fi
     done
 }

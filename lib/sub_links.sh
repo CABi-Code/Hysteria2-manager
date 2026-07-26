@@ -244,7 +244,7 @@ publish_manifest() {
     # его печём в свои ключи. Онлайн чужих нод приходит уже испечённым в их
     # манифестах (их обновляет cluster_online_sync).
     _tag_needs_online && refresh_online
-    local tmp="$WEBROOT/cluster/manifest.tmp" u p node ip port obfs sni
+    local tmp="$WEBROOT/cluster/manifest.tmp.$BASHPID" u p node ip port obfs sni
     node=$(node_name)
     # Параметры сервера считаем один раз (get_ip дёргает сеть) и переиспользуем.
     ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
