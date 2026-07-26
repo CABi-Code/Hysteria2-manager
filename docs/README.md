@@ -18,6 +18,15 @@
 | [10-multiprotocol-limits.md](10-multiprotocol-limits.md) | **Лимит скорости для всех протоколов** (Стадия 3): tc HTB+fq_codel не только для Hysteria | `lib/perf.sh`, `lib/ui_perf.sh` |
 | [MAINTENANCE.md](MAINTENANCE.md) | **Эксплуатационная гигиена**: ротация логов, временные файлы с `$BASHPID`, retention истории IP, пин и сверка версий ядер | `install.sh`, `lib/ip_tracking.sh`, `lib/publish.sh`, `lib/protocols.sh` |
 
+## Проектирование
+
+Спроектировано, но ещё не написано. Отдельно от таблицы выше, чтобы не путать
+«работает» и «решено делать».
+
+| Документ | О чём | Код |
+|---|---|---|
+| [PLACEMENT/](PLACEMENT/README.md) | **Размещение профилей по нодам**: ёмкость ноды, N нод на профиль вместо всех, фазы внедрения, задел под маркет локаций. Разбор проблем — [PROBLEMS.md](PLACEMENT/PROBLEMS.md), веса профилей — [USAGE-CLASSES.md](PLACEMENT/USAGE-CLASSES.md) | `lib/cluster.sh`, `lib/sub_links.sh`, `lib/node.sh`, `webapi/wa_dispatch.py` |
+
 ---
 
 # Децентрализованный маркет локаций — проектные заметки
