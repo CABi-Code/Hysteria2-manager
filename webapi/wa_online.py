@@ -316,8 +316,19 @@ def _stream_watcher():
                 _stream_state.update(updates)
                 for u, (_online, bps) in updates.items():
                     _stream_samples.setdefault(u, deque(maxlen=STREAM_SAMPLES_WINDOW)).append((now, bps))
+                # Юзер отписался — его состояние и выборки больше не нужны:
+                # словари жили вечно и росли со списком всех, кто когда-либо
+                # открывал кабинет.
+                for u in [u for u in _stream_state if u not in _stream_subs]:
+                    _stream_state.pop(u, None)
+                    _stream_samples.pop(u, None)
                 if changed:
                     _stream_cv.notify_all()
+            # Гистерезис онлайна: запись старше грейса ни на что не влияет
+            # (is_online на ней вернёт False) — держать её незачем.
+            with _online_lock:
+                for u in [u for u, ts in _online_last_active.items() if now - ts > ONLINE_GRACE_SEC]:
+                    _online_last_active.pop(u, None)
         except Exception as e:
             sys.stderr.write(f"stream watcher: {e!r}\n")
 

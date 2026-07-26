@@ -85,7 +85,7 @@ collect_activity() {
     now=$(date +%s)
     thr="${ACTIVITY_THRESHOLD_BPS:-4096}"
     [[ "$thr" =~ ^[0-9]+$ ]] || thr=4096
-    local newprev="${ACTIVITY_PREV_FILE}.tmp" newact="${ACTIVITY_FILE}.tmp"
+    local newprev="${ACTIVITY_PREV_FILE}.tmp.$BASHPID" newact="${ACTIVITY_FILE}.tmp.$BASHPID"
     : > "$newprev"; : > "$newact"
 
     # Идём по кумулятиву каждого юзера из ответа API (tx+rx суммарно).
@@ -168,15 +168,20 @@ collect_rates() {
     )
     [ -n "$merged" ] || return 0
 
+    # Имена временных файлов считаем ОДИН раз: $BASHPID внутри конвейера ниже
+    # вычислится в его подоболочке и даст другое имя — awk писал бы в один файл,
+    # а mv искал другой.
+    local rtmp="${RATES_FILE}.tmp.$BASHPID" ptmp="${RATES_PREV_FILE}.tmp.$BASHPID"
+
     # rates.dat v2: заголовок «#label|<метка ноды>» (пиры узнают метку из него —
     # NODE_LABEL по кластеру не синхронизируется) + строки «user|down_bps|up_bps|ts».
-    printf '#label|%s\n' "$(node_label)" > "${RATES_FILE}.tmp"
+    printf '#label|%s\n' "$(node_label)" > "$rtmp"
 
     # Дельта с прошлым снимком по каждому направлению. Счётчик УМЕНЬШИЛСЯ (30-мин
     # ?clear=1 обнулил Hysteria) — считаем 0, а не дельту от нуля: фантомный всплеск
     # заметнее пропущенного тика. rates_prev.dat v2: «user|down_cum|up_cum|ts».
     printf '%s\n' "$merged" | awk -F'|' -v now="$now" -v prevf="$RATES_PREV_FILE" \
-        -v rates="${RATES_FILE}.tmp" -v prevout="${RATES_PREV_FILE}.tmp" '
+        -v rates="$rtmp" -v prevout="$ptmp" '
         BEGIN {
             while ((getline line < prevf) > 0) {
                 n = split(line, p, "|")
@@ -194,8 +199,8 @@ collect_rates() {
             printf "%s|%d|%d|%d\n", $1, dr, ur, now >> rates
             printf "%s|%d|%d|%d\n", $1, dc, uc, now > prevout
         }'
-    mv "${RATES_FILE}.tmp" "$RATES_FILE" 2>/dev/null
-    mv "${RATES_PREV_FILE}.tmp" "$RATES_PREV_FILE" 2>/dev/null
+    mv "$rtmp" "$RATES_FILE" 2>/dev/null
+    mv "$ptmp" "$RATES_PREV_FILE" 2>/dev/null
 }
 
 # (Мгновенную скорость юзера из RATES_FILE читает Python-webapi напрямую; здесь

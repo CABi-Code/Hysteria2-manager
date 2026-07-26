@@ -88,6 +88,10 @@ if [ "$1" = "--collect" ]; then
     collect_sub_ips    # IP по токенам подписки из access-лога Caddy
     publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
     publish_subips     # разослать IP по токенам подписки
+    # Убитый на полуслове публикатор (systemctl stop, kill) оставляет свой
+    # «файл.tmp.<pid>». Два часа — заведомо больше любой живой записи, так что
+    # под метлу попадают только осиротевшие. См. docs/MAINTENANCE.md.
+    find "$DATA_DIR" "$WEBROOT" -name '*.tmp.*' -mmin +120 -delete 2>/dev/null
     exit 0
 fi
 

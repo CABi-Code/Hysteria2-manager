@@ -27,6 +27,7 @@ import json
 import os
 import re
 import subprocess
+import signal
 import sys
 import threading
 import time
@@ -479,11 +480,17 @@ def main():
     c = conf()
     threading.Thread(target=_stream_watcher, daemon=True).start()
     server = ThreadingHTTPServer((c["bind"], c["port"]), Handler)
+    # systemctl stop шлёт SIGTERM, а не SIGINT: без обработчика процесс умирал
+    # на месте, обрывая открытые SSE-соединения на полуслове.
+    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
     sys.stderr.write(f"hy2-webapi: listening on {c['bind']}:{c['port']}, DATA_DIR={DATA_DIR}\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        server.server_close()
+        sys.stderr.write("hy2-webapi: stopped\n")
 
 
 if __name__ == "__main__":
