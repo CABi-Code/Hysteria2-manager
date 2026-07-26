@@ -5,7 +5,7 @@
 # Демон: webapi/hy2-webapi.py (python3 stdlib, systemd-юнит hy2-webapi.service),
 # слушает 127.0.0.1:8787; наружу — через Caddy (handle /api/* → reverse_proxy,
 # блок добавляет setup_caddy, когда API включён). Мутации демон делает через
-# webapi/dispatch.sh. Документация для разработчиков: docs/API.md.
+# webapi/dispatch.sh. Документация для разработчиков: docs/guide/API.md.
 #
 # Файлы в $DATA_DIR:
 #   webapi.conf   ENABLED / BIND / PORT / RATE_RPM (KEY=VALUE)
@@ -118,7 +118,7 @@ webapi_menu() {
         else
             echo "  Статус: ⚪ выключен"
         fi
-        echo "  Документация для разработчиков: docs/API.md"
+        echo "  Документация для разработчиков: docs/guide/API.md"
         echo ""
         echo "  Ключи доступа:"
         local keys; keys=$(webapi_list_keys)

@@ -28,7 +28,7 @@
 # Данные: $DATA_DIR/ympay.dat — ждущие оплаты счета,
 #   «label|создан_ts|tg_id|код_тарифа|пользователь|сумма_к_оплате|цена_руб»
 #
-# Документация: docs/YOOMONEY.md
+# Документация: docs/guide/YOOMONEY.md
 # ================================================
 
 YM_PENDING_FILE="$DATA_DIR/ympay.dat"

@@ -1,7 +1,7 @@
 #!/bin/bash
 # /start → мини-апп (lib/tgbot_client.sh, bot_miniapp_start): что уходит в
 # запросе и когда менеджер обязан замолчать (сообщение шлёт мини-апп), а когда
-# упасть на своё меню. См. docs/BOT-START.md.
+# упасть на своё меню. См. docs/guide/BOT-START.md.
 # Запуск: bash tests/test-botstart.sh
 set -uo pipefail
 

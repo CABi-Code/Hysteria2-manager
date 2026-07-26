@@ -8,7 +8,7 @@
 # выбирает тот, что не задушен в его сети. Креды всех протоколов
 # ДЕТЕРМИНИРОВАННО выводятся из (user, pass, узловой секрет) — отдельного
 # состояния по юзерам нет, поэтому подписка/манифест/конфиги серверов всегда
-# согласованы. Подробности — docs/08-multiprotocol.md.
+# согласованы. Подробности — docs/guide/MULTIPROTOCOL.md.
 # ================================================
 
 # Файл параметров узла (отдельно от node.conf — там кластерные настройки).
@@ -833,7 +833,7 @@ proto_collect_tuic_traffic() {
 # при переключении keepalive-соединения дают фантомный рост до нереальных
 # значений. Xray/Hysteria-счётчики монотонны — их оставляем. Для collect_activity
 # TUIC оставляем: там это грубый флаг «онлайн», а не скорость, и per-user
-# TUIC-трафик всё равно не атрибутируется (docs/09-online-activity.md).
+# TUIC-трафик всё равно не атрибутируется (docs/guide/ONLINE.md).
 proto_activity_cum_lines() {
     proto_any_enabled || return 0
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
@@ -872,7 +872,7 @@ proto_xray_split_lines() {
 # самым свежим last_seen на этом IP из ips.dat (+ peers/*.ips). Печатает user|cum
 # (сумма upload+download открытых TUIC-соединений юзера). ТОЛЬКО для онлайна:
 # на общем CGNAT-IP изредка попадёт не тот юзер — для индикатора приемлемо, в
-# трафик/квоты это НЕ идёт. См. docs/09-online-activity.md.
+# трафик/квоты это НЕ идёт. См. docs/guide/ONLINE.md.
 proto_tuic_activity_lines() {
     proto_tuic_enabled || return 0
     local secret conns

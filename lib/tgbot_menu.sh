@@ -150,7 +150,7 @@ bot_menu() {
                 echo "  Нужны две вещи:"
                 echo "   • номер кошелька (yoomoney.ru → Настройки);"
                 echo "   • OAuth-токен со scope operation-history — им бот читает историю"
-                echo "     операций и опознаёт оплату. Как получить: docs/YOOMONEY.md."
+                echo "     операций и опознаёт оплату. Как получить: docs/guide/YOOMONEY.md."
                 echo "  Тарифы при этом должны иметь цену в валюте RUB (пункт 4)."
                 echo ""
                 local yw yt yf yp

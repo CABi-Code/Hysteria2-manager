@@ -29,7 +29,7 @@ setup_cron() {
         current_cron=$(crontab -l 2>/dev/null || true)
     fi
     # Частые ступенчатые напоминания об истечении (пороги 30мин/1ч ловятся только
-    # при частом прогоне). См. lib/notify.sh и docs/NOTIFICATIONS.md.
+    # при частом прогоне). См. lib/notify.sh и docs/guide/NOTIFICATIONS.md.
     if ! echo "$current_cron" | grep -q "hy2-manager.*--notify-sweep"; then
         (echo "$current_cron"; echo "*/5 * * * * /bin/bash \"$script_path\" --notify-sweep >/dev/null 2>&1") | crontab -
         current_cron=$(crontab -l 2>/dev/null || true)
