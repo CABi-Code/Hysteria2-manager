@@ -171,11 +171,11 @@ sing-box управления составом не имеет (только `cl
    `clash_api /connections`. Соединения, закрывшиеся между снимками, теряют хвост
    — доминирующий объём (стриминг/загрузки) ловится, короткие запросы
    недосчитываются. Точный per-user учёт возможен через per-IP nftables-счётчики
-   на порту TUIC (см. паритет лимитов, docs/10). Hysteria + VLESS/SS — точно.
+   на порту TUIC (см. паритет лимитов, docs/guide/SPEED-LIMITS.md). Hysteria + VLESS/SS — точно.
 2. **Онлайн/активность** теперь считаются по ВСЕМ протоколам
    (`collect_activity` + `proto_activity_cum_lines`: Hysteria + Xray + TUIC), флаг
    `active` синкается по кластеру; Web API `online` и live-SSE берут его
-   (docs/09-online-activity.md).
+   (docs/guide/ONLINE.md).
 3. **Активностный жёсткий лимит устройств** (`enforce_active_node_limit`,
    анти-абуз) строится на активности Hysteria. Отдельного per-протокол kick одного
    устройства нет; лимит на число ссылок подписки и удаление/бан работают для всех

@@ -147,7 +147,7 @@ curl -H "$H" "$BASE/v1/tariffs"
 протоколам его не накручивают. `online_connections` — сырое число соединений
 всех движков (Hysteria/Xray/TUIC), **включая пинги**; оставлено для
 совместимости, для индикатора «онлайн» используйте `online`. Детали:
-[docs/09-online-activity.md](09-online-activity.md).
+[docs/guide/ONLINE.md](ONLINE.md).
 
 ```bash
 curl -H "$H" "$BASE/v1/users/alice"

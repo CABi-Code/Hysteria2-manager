@@ -8,7 +8,7 @@
 # Управление доп. протоколами рядом с Hysteria: VLESS+REALITY+XHTTP и
 # Shadowsocks-2022 (Xray), TUIC v5 (sing-box). Все они попадают в подписку юзера,
 # и клиент (Throne/Hiddify) выбирает тот, что проходит в его сети. См.
-# lib/protocols.sh и docs/08-multiprotocol.md.
+# lib/protocols.sh и docs/guide/MULTIPROTOCOL.md.
 _proto_svc_state() {   # service -> строка со статусом
     if systemctl is-active --quiet "$1" 2>/dev/null; then echo "💚 работает"
     elif systemctl list-unit-files 2>/dev/null | grep -q "^$1"; then echo "🔴 остановлен"
