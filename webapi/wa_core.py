@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ================================================
 # Конфиг демона, ключи и аутентификация, rate-limit, аудит, чтение файлов DATA_DIR.
-# Часть hy2-webapi (точка входа — webapi/hy2-webapi.py, контракт — docs/API.md).
+# Часть hy2-webapi (точка входа — webapi/hy2-webapi.py, контракт — docs/guide/API.md).
 # ================================================
 import base64
 import hashlib

@@ -90,7 +90,7 @@ if [ "$1" = "--collect" ]; then
     publish_subips     # разослать IP по токенам подписки
     # Убитый на полуслове публикатор (systemctl stop, kill) оставляет свой
     # «файл.tmp.<pid>». Два часа — заведомо больше любой живой записи, так что
-    # под метлу попадают только осиротевшие. См. docs/MAINTENANCE.md.
+    # под метлу попадают только осиротевшие. См. docs/guide/MAINTENANCE.md.
     find "$DATA_DIR" "$WEBROOT" -name '*.tmp.*' -mmin +120 -delete 2>/dev/null
     exit 0
 fi

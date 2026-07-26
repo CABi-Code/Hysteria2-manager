@@ -18,7 +18,7 @@
 # lib/*.sh и вызывает те же функции, что меню/бот, — кластерная публикация,
 # метки времени и пересборка подписок не дублируются здесь.
 #
-# Документация API для разработчиков: docs/API.md.
+# Документация API для разработчиков: docs/guide/API.md.
 # ================================================
 import base64
 import hashlib
@@ -367,7 +367,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ApiError(405 if matched else 404,
                                "method_not_allowed" if matched else "no_such_endpoint",
-                               "метод не поддерживается" if matched else "нет такого эндпоинта (см. docs/API.md)")
+                               "метод не поддерживается" if matched else "нет такого эндпоинта (см. docs/guide/API.md)")
             if scope is not None:
                 key = authenticate(self.headers.get("Authorization"))
                 if key is None:
