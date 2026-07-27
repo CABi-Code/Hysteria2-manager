@@ -237,7 +237,7 @@ ${tl:-нет тарифов}
                     extra=" · до $(bot_extend_user "$u" "$days")"
                 fi
                 if [[ "$dev" =~ ^[0-9]+$ ]] && [ "$dev" -gt 0 ]; then
-                    set_user_limits "$u" "$dev" 0; extra="$extra · устройств: $dev"
+                    set_user_devices "$u" "$dev"; extra="$extra · устройств: $dev"
                 fi
                 write_authlimits 2>/dev/null
                 sub_enabled && sub_refresh >/dev/null 2>&1

@@ -49,4 +49,12 @@ grep -q '^ghost|' "$pub" && fail "призрак пошёл дальше по к
 # Локальный тариф чужая синхронизация не трогает.
 [ "$(get_user_rate local_only)" = 1000 ] || fail "локальный тариф затёрт синхронизацией"
 
+# P-19: обёртки одного поля не должны обнулять соседние (покупка тарифа звала
+# set_user_limits без rate и стирала персональную скорость).
+set_user_devices alice 5
+[ "$(get_user_rate alice)" = 200 ] || fail "set_user_devices обнулил тариф скорости"
+set_user_hardcheck alice 0
+[ "$(get_user_rate alice)" = 200 ] || fail "set_user_hardcheck обнулил тариф скорости"
+[ "$(get_user_devices alice)" = 5 ] || fail "set_user_hardcheck обнулил устройства"
+
 echo "✅ userlimits: область действия ок"
