@@ -339,7 +339,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
         return
     fi
     newexp=$(bot_extend_user "$user" "$days" nonotify)
-    [ "$devices" -gt 0 ] 2>/dev/null && set_user_limits "$user" "$devices" "$(get_user_hardcheck "$user")"
+    [ "$devices" -gt 0 ] 2>/dev/null && set_user_devices "$user" "$devices"
     tg_bind "$tgid" "$user"
     write_authlimits 2>/dev/null
     sub_enabled && sub_refresh >/dev/null 2>&1
