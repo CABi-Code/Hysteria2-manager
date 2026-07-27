@@ -177,11 +177,18 @@ publish_cluster_abuse() {
 # нода с устаревшими данными.
 abuse_apply() {
     sub_enabled || return 0
-    local merged
+    # Никаких призраков: строку юзера, которого нет ни у нас, ни в манифестах
+    # пиров, дальше не тянем — иначе удалённый профиль (демо!) переезжает из
+    # файла в файл вечно. Пустой список — сеть/манифесты не прочитались, тогда
+    # фильтр не применяем, чтобы не снести живое состояние.
+    local known merged
+    known=$(sub_all_users 2>/dev/null)
     merged=$(
         { [ -f "$ABUSE_FILE" ] && cat "$ABUSE_FILE"
           [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.abuse 2>/dev/null; } \
-        | awk -F'|' 'NF>=4 && $1!="" {
+        | awk -F'|' -v known="$known" '
+          BEGIN{ n=split(known, a, "\n"); for(i=1;i<=n;i++) if(a[i]!=""){ k[a[i]]=1; kn++ } }
+          NF>=4 && $1!="" && (kn==0 || ($1 in k)) {
             u=$1;
             if(!(u in ts) || ($3+0)>ts[u]){ ts[u]=$3+0; sc[u]=$2+0 }
             if(($4+0)>until[u]) until[u]=$4+0;

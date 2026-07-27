@@ -398,6 +398,7 @@ cluster_delete_local() {   # user
     db_remove_user "$user"
     sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" 2>/dev/null
     roster_remove "$user"
+    declare -F remove_user_abuse >/dev/null && remove_user_abuse "$user"
     api_post "/kick" "[\"$user\"]" &>/dev/null
 }
 
