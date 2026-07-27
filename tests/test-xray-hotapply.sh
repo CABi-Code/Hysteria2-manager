@@ -109,6 +109,24 @@ is "  состояние не тронуто" "$(cat "$XRAY_APPLIED_USERS")" "$b
 ls "$PROTO_DIR"/.xray.users.* "$PROTO_DIR"/.xray.adu.* >/dev/null 2>&1 \
     && bad "  временные файлы остались" || ok "  временные файлы убраны"
 
+# 8. P-15: онлайн Xray. Счётчики онлайна лежат в отдельном реестре — их отдаёт
+#    только `api statsonline -email` по одному юзеру, и при нуле поля value в
+#    ответе просто НЕТ (protobuf-JSON). Такой юзер в онлайн попасть не должен.
+echo
+echo "── Онлайн Xray (statsonline) ──"
+cat > "$XRAY_BIN" <<'EOF'
+#!/bin/bash
+for a in "$@"; do [ "$prev" = "-email" ] && u="$a"; prev="$a"; done
+case "$u" in
+  u1) printf '{\n "stat": {\n  "name": "user>>>u1>>>online",\n  "value": "3"\n }\n}\n' ;;
+  *)  printf '{\n "stat": {\n  "name": "user>>>%s>>>online"\n }\n}\n' "$u" ;;
+esac
+EOF
+chmod +x "$XRAY_BIN"
+users u1:pass1 u2:pass2
+proto_tuic_enabled() { return 1; }   # только ветка Xray
+is "онлайн только у того, у кого сессии" "$(proto_online_json | jq -c .)" '{"u1":3}'
+
 echo
 [ "$FAIL" = 0 ] && echo "✅ Все проверки прошли" || echo "❌ Есть падения"
 exit "$FAIL"

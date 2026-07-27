@@ -40,7 +40,7 @@
 | [P-03](CLUSTER.md#p-03) | Нельзя снять юзера с одной ноды — только со всего кластера | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-07](LIMITS.md#p-07) | Детект шаринга имеет потолок и умирает молча | `lib/antiabuse.sh` | [limits](LIMITS.md) | 🔴 |
 | [P-13](CLUSTER.md#p-13) | Удаление профиля на одной ноде не удаляет его в кластере | `lib/users.sh` | [cluster](CLUSTER.md) | 🔴 |
-| [P-15](PROTOCOLS.md#p-15) | Онлайн Xray-протоколов всегда пуст (нет `statsUserOnline`) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🔴 |
+| [P-15](PROTOCOLS.md#p-15) | Онлайн Xray-протоколов всегда пуст (нет `statsUserOnline`) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-16](LIMITS.md#p-16) | Кик только у Hysteria: лимиты не действуют на доп. протоколы | `lib/devlimits.sh` | [limits](LIMITS.md) | 🔴 |
 | [P-02](PROTOCOLS.md#p-02) | Трафик TUIC считается приближённо | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-04](CLUSTER.md#p-04) | Общий секрет кластера: утечка с одной ноды = доступ ко всем | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🟡 |

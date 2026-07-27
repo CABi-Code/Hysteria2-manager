@@ -323,7 +323,7 @@ proto_write_xray_config() {
   "api": { "tag": "api", "services": ["HandlerService", "StatsService"] },
   "stats": {},
   "policy": {
-    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
+    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true } },
     "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
   },
   "inbounds": [
@@ -910,18 +910,27 @@ proto_tuic_activity_lines() {
 # ---------------- Онлайн доп. протоколов ----------------
 # Возвращает JSON {user: conns} по доп. протоколам (best-effort; при любой ошибке
 # — пустой {}, чтобы никогда не ломать основной онлайн Hysteria).
-# Xray: online-статистика StatsService (name ".*>>>online"), если движок её отдаёт.
+# Xray: счётчики онлайна (policy.levels."0".statsUserOnline) — по юзеру за раз.
 # sing-box: число активных TUIC-соединений на юзера из clash_api /connections.
 proto_online_json() {
     proto_any_enabled || { echo '{}'; return 0; }
     local merged='{}'
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
-        local xj xonline
-        xj=$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -pattern "online" 2>/dev/null)
-        if [ -n "$xj" ]; then
-            xonline=$(printf '%s' "$xj" | jq -c '
-                reduce ((.stat // [])[] | select(.name != null and (.name | test(">>>online$"))))
-                    as $s ({}; .[($s.name | split(">>>"))[1]] = (($s.value // 0) | tonumber))' 2>/dev/null)
+        # Онлайн живёт в ОТДЕЛЬНОМ реестре Xray: `statsquery -pattern online`
+        # отдаёт пустой {} даже при непустом traffic (проверено на 26.3.27) —
+        # достать его можно только командой statsonline по одному юзеру.
+        # Юзеров на ноде десятки, вызов локальный, крон раз в минуту — терпимо.
+        local u v lines="" xonline
+        while IFS=: read -r u _; do
+            [ -n "$u" ] || continue
+            # value в ответе — protobuf-JSON: при нуле поля просто нет.
+            v=$("$XRAY_BIN" api statsonline --server="127.0.0.1:${XRAY_API_PORT}" \
+                    -email "$u" 2>/dev/null | grep -o '"value"[^,}]*' | tr -dc '0-9')
+            [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && lines+="${u} ${v}"$'\n'
+        done < "$USERS_DB"
+        if [ -n "$lines" ]; then
+            xonline=$(printf '%s' "$lines" | jq -Rc -n \
+                '[inputs | split(" ") | select(length == 2) | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)
             [ -n "$xonline" ] && merged=$(_proto_merge_online "$merged" "$xonline")
         fi
     fi
