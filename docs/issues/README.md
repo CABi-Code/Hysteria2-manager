@@ -53,7 +53,7 @@
 | [P-17](PROTOCOLS.md#p-17) | Трафик/онлайн TUIC читают `metadata.user`, которого нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-18](PROTOCOLS.md#p-18) | IP-трекинг только по журналу Hysteria — от него зависят тарифы | `lib/ip_tracking.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-19](BILLING.md#p-19) | Покупка тарифа обнуляет персональный тариф скорости | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
-| [P-20](BILLING.md#p-20) | Двойное зачисление ЮMoney: проверка и запись разнесены | `lib/yoomoney.sh` | [billing](BILLING.md) | 🟡 |
+| [P-20](BILLING.md#p-20) | Двойное зачисление ЮMoney: проверка и запись разнесены | `lib/yoomoney.sh` | [billing](BILLING.md) | ✅ |
 | [P-21](OPS.md#p-21) | `stats.dat` правится без блокировки, кроны пересекаются | `lib/traffic.sh` | [ops](OPS.md) | 🟡 |
 | [P-22](CLUSTER.md#p-22) | Кластерная сумма трафика немонотонна, free-план строит на ней разницу | `lib/freeplan.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-10](LIMITS.md#p-10) | tc-классы привязаны к имени юзера из `users.db` | `lib/perf.sh` | [limits](LIMITS.md) | 🟢 |
