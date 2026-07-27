@@ -42,7 +42,7 @@
 | [P-13](CLUSTER.md#p-13) | Удаление профиля на одной ноде не удаляет его в кластере | `lib/users.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-15](PROTOCOLS.md#p-15) | Онлайн Xray-протоколов всегда пуст (нет `statsUserOnline`) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-16](LIMITS.md#p-16) | Кик только у Hysteria: лимиты не действуют на доп. протоколы | `lib/devlimits.sh` | [limits](LIMITS.md) | 🔴 |
-| [P-02](PROTOCOLS.md#p-02) | Трафик TUIC считается приближённо | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-02](PROTOCOLS.md#p-02) | Трафик TUIC не считается вообще (проверено) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-04](CLUSTER.md#p-04) | Общий секрет кластера: утечка с одной ноды = доступ ко всем | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-05](CLUSTER.md#p-05) | Манифест содержит пароли юзеров: каждая нода знает учётки всех | `lib/sub_links.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-06](CLUSTER.md#p-06) | Нет паспорта ноды: ёмкость, метка, протоколы не публикуются | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🟡 |
@@ -50,7 +50,7 @@
 | [P-09](BILLING.md#p-09) | Роль издателя расщеплена между менеджером и webapp | cross-repo | [billing](BILLING.md) | 🟡 |
 | [P-11](BILLING.md#p-11) | Длина ваучера в стоковых клиентах не проверена | — | [billing](BILLING.md) | 🟡 |
 | [P-14](CLUSTER.md#p-14) | Осиротевшие токены подписки не убираются никогда | `lib/sub_links.sh` | [cluster](CLUSTER.md) | 🟡 |
-| [P-17](PROTOCOLS.md#p-17) | Трафик/онлайн TUIC читают `metadata.user`, которого нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-17](PROTOCOLS.md#p-17) | Трафик/онлайн TUIC читают `metadata.user`, которого нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-18](PROTOCOLS.md#p-18) | IP-трекинг только по журналу Hysteria — от него зависят тарифы | `lib/ip_tracking.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-19](BILLING.md#p-19) | Покупка тарифа обнуляет персональный тариф скорости | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
 | [P-20](BILLING.md#p-20) | Двойное зачисление ЮMoney: проверка и запись разнесены | `lib/yoomoney.sh` | [billing](BILLING.md) | ✅ |
