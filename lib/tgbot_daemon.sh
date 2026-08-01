@@ -44,6 +44,10 @@ bot_handle_update() {   # json
         tg_answer_cb "$cb_id"
         [ -z "$chat" ] && return 0
         case "$data" in
+            wl:*)
+                # Подтверждение входа в веб-версию: «wl:<ok|no>:<id запроса>».
+                local wl="${data#wl:}"
+                bot_weblogin_cb "$chat" "$from" "${mid:-0}" "${wl%%:*}" "${wl#*:}" ;;
             m:link)   bot_client_link "$chat" ;;
             m:sub)
                 local u; u=$(tg_bound_user "$chat")
@@ -177,8 +181,9 @@ ${tl:-нет тарифов}
         "/start "*)
             local code="${text#/start }" u
             code=$(printf '%s' "$code" | tr -d '[:space:]')
-            # ref_<КОД> — реферальная ссылка мини-аппа (не код привязки).
-            if [ "${code#ref_}" != "$code" ]; then
+            # ref_<КОД> — реферальная ссылка мини-аппа (не код привязки);
+            # wl_<id> — подтверждение входа в веб-версию (карточку шлёт мини-апп).
+            if [ "${code#ref_}" != "$code" ] || [ "${code#wl_}" != "$code" ]; then
                 bot_miniapp_start "$chat" "$from" "$code" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
                     "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
                     || bot_client_menu "$chat"
