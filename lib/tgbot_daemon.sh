@@ -198,6 +198,24 @@ ${tl:-нет тарифов}
                 tg_send "$chat" "❌ Код неверен или истёк. Запросите новый у администратора."
                 bot_client_menu "$chat"
             fi ;;
+        "/web "*|"/web@"*|"/веб "*|"/сайт "*)
+            # Вход на сайт кодом, набранным руками: Telegram у человека может
+            # стоять вообще на другом устройстве, где кнопка-deeplink не
+            # открывается. Дальше всё как у deeplink — карточку подтверждения
+            # шлёт мини-апп. См. cibpn-webapp/docs/WEB-LOGIN.md.
+            local wcode
+            # Всё после первого слова: «/web@бот КОД» и «/web  код» тоже валидны.
+            wcode=$(printf '%s' "$text" | sed 's/^[^[:space:]]*[[:space:]]*//' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+            if [ -z "$wcode" ]; then
+                tg_send "$chat" "Отправьте код со страницы входа: <code>/web КОД</code>"
+            else
+                bot_miniapp_start "$chat" "$from" "wl_${wcode}" \
+                    "$(echo "$upd" | jq -r '.message.from.username // empty')" \
+                    "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
+                    || tg_send "$chat" "Не получилось проверить код — попробуйте ещё раз через минуту."
+            fi ;;
+        /web|/веб|/сайт)
+            tg_send "$chat" "🌐 Вход на сайт: откройте <b>web.cibpn.online</b>, возьмите код со страницы и пришлите его сюда командой <code>/web КОД</code>." ;;
         /menu|/help)
             if bot_is_admin "$from"; then
                 tg_send "$chat" "🛠 <b>Команды администратора</b>
