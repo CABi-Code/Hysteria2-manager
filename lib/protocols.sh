@@ -750,21 +750,14 @@ proto_collect_traffic() {
             uplink)   _rx[$email]=$(( ${_rx[$email]:-0} + val )) ;;
         esac
     done <<< "$pairs"
-    local u tx rx old_tx old_rx new_tx new_rx users_uniq
+    local u tx rx users_uniq
     users_uniq=$(printf '%s\n' "${!_tx[@]}" "${!_rx[@]}" | grep -v '^$' | sort -u)
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         tx=${_tx[$u]:-0}; rx=${_rx[$u]:-0}
         [ "$tx" -eq 0 ] && [ "$rx" -eq 0 ] && continue
-        if grep -q "^${u}|" "$STATS_FILE" 2>/dev/null; then
-            old_tx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
-            old_rx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
-            new_tx=$(( ${old_tx:-0} + tx )); new_rx=$(( ${old_rx:-0} + rx ))
-            sed -i "s#^${u}|.*#${u}|${new_tx}|${new_rx}#" "$STATS_FILE"
-        else
-            echo "${u}|${tx}|${rx}" >> "$STATS_FILE"
-        fi
-    done <<< "$users_uniq"
+        echo "${u}|${tx}|${rx}"
+    done <<< "$users_uniq" | _stats_add    # общий доклад в stats.dat под flock
 }
 
 # TUIC-трафик в общий учёт (STATS_FILE). У sing-box 1.13 нет StatsService
@@ -807,19 +800,11 @@ proto_collect_tuic_traffic() {
 
     # Докладываем дельты в STATS_FILE (всё в rx: клиент преимущественно качает,
     # для суммарной квоты сторона не важна — как в proto_collect_traffic).
-    local u old_tx old_rx new_rx
+    local u
     for u in "${!_du[@]}"; do
         d=${_du[$u]}
-        [ "$d" -gt 0 ] || continue
-        if grep -q "^${u}|" "$STATS_FILE" 2>/dev/null; then
-            old_tx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
-            old_rx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
-            new_rx=$(( ${old_rx:-0} + d ))
-            sed -i "s#^${u}|.*#${u}|${old_tx:-0}|${new_rx}#" "$STATS_FILE"
-        else
-            echo "${u}|0|${d}" >> "$STATS_FILE"
-        fi
-    done
+        [ "$d" -gt 0 ] && echo "${u}|0|${d}"
+    done | _stats_add
 }
 
 # ---------------- Активность доп. протоколов ----------------

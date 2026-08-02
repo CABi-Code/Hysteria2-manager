@@ -88,8 +88,8 @@ PROTO_XHTTP_PATH=/               # path XHTTP
 | Манифест кластера | `publish_manifest` | те же доп. строки `user \t uri` на каждый включённый протокол |
 | Синхронизация юзеров | `sub_refresh` | добавлен вызов `proto_sync_users`: в Xray состав едет на лету через `adu`/`rmu` (см. ниже), sing-box рестартует |
 | Установка/настройка | новый `lib/protocols.sh` + меню Настройки | скачивание бинарников, ключи, конфиги, systemd, firewall |
-| Трафик | `--collect` | `proto_collect_traffic` суммирует байты из Xray StatsService и sing-box в `STATS_FILE` |
-| Онлайн | `refresh_online` | `proto_online_merge` добавляет онлайн Xray/sing-box к Hysteria |
+| Трафик | `collect_traffic` | зовёт `proto_collect_traffic`: байты Xray докладываются в `STATS_FILE` там же, где Hysteria — а значит и при каждом обновлении экрана в TUI, не только в 30-минутном `--collect` |
+| Онлайн | `refresh_online` | `proto_online_ip_lines` добавляет АДРЕСА Xray/sing-box к адресам Hysteria, устройства считаются по уникальным IP |
 | Кик | — | отдельного кика по доп. протоколам нет, см. «Учёт трафика и онлайна» |
 | Firewall | `ensure_proto_ports_open` | открыть TCP 8443/8388, UDP 2053 |
 
@@ -107,7 +107,11 @@ Telegram-привязки, каркас Web API, tc-шейпинг скорос�
 
 * **Трафик VLESS/SS-2022** снимается из Xray StatsService штатным CLI
   `xray api statsquery -reset` и докладывается в тот же `STATS_FILE`, что и
-  Hysteria (`proto_collect_traffic`, вызывается из `--collect`). Квоты и
+  Hysteria: `proto_collect_traffic` зовётся из `collect_traffic`, то есть везде,
+  где менеджер обновляет трафик (крон `--collect`, экраны TUI). Пока он висел
+  только на 30-минутном кроне, VLESS-часть строки стояла на месте, а
+  Hysteria-часть шла живьём — трафик выглядел зависшим (P-35). Докладывают все
+  сборщики через общий `_stats_add` (один awk под flock, P-21). Квоты и
   статистика в кабинете учитывают эти байты.
 * **Онлайн** сливается в `refresh_online`: Hysteria `/online` + online-статистика
   Xray + активные TUIC-соединения из `clash_api` sing-box (`proto_online_json`,
