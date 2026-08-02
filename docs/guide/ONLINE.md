@@ -24,8 +24,9 @@
   `metadata.user` (проверено эмпирически), поэтому сумму `upload+download` по
   соединению атрибутируем на юзера с самым свежим `last_seen` на этом IP из
   `ips.dat` (`proto_tuic_activity_lines`). На общем CGNAT-IP изредка попадёт не
-  тот юзер — для индикатора онлайн приемлемо; в трафик/квоты это НЕ идёт. Точный
-  per-user TUIC невозможен (нет user в API + общие CGNAT-IP), см.
+  тот юзер — для индикатора онлайн приемлемо. В квоты по этому же резолву идут
+  только байты с адресов, у которых владелец единственный (P-02). Точного
+  per-user TUIC нет вовсе: user в API отсутствует, а CGNAT-адреса общие — см.
   памятку tuic-no-per-user-attribution.
 
 Xray и TUIC даёт `proto_activity_cum_lines` (`lib/protocols.sh`); всё
@@ -38,8 +39,9 @@ Xray и TUIC даёт `proto_activity_cum_lines` (`lib/protocols.sh`); всё
 > дельте `cum−prevcum` стекающиеся при переключении keepalive-соединения читаются
 > как реальная скорость и завышают её вплоть до нереальных значений. Поэтому
 > `collect_rates` зовёт `proto_activity_cum_lines no-tuic` — только монотонные
-> Hysteria/Xray. Онлайн TUIC от этого не страдает (per-user TUIC-трафик всё равно
-> не атрибутируется).
+> Hysteria/Xray. Онлайн TUIC от этого не страдает, а его байты идут в квоты
+> отдельным путём — `proto_collect_tuic_traffic`, дельты по соединениям и только
+> для однозначных адресов (P-02).
 
 `active`/`active_since` пишутся в `activity.dat` и уже публикуются в
 `peers/*.stats` (поле 7) через `publish_stats` → синхронизируются по кластеру

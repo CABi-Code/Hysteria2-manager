@@ -158,11 +158,95 @@ is "соединения TUIC разошлись по юзерам" \
    "$(proto_online_ip_lines | sort -u | tr '\n' ' ')" "u1|10.0.0.1 u1|10.0.0.2 u1|10.0.0.3 u2|10.0.0.2 "
 is "  и байты тем же путём"              "$(proto_tuic_activity_lines | sort | tr '\n' ' ')" "u1|100 u2|110 "
 
-# 10. P-34: устройства считаются по РАЗНЫМ адресам, а не сложением сессий по
+# 10. P-02: трафик TUIC. Per-user счётчиков у sing-box нет, поэтому байты
+#     соединения приписываются юзеру по sourceIP — но ТОЛЬКО если за адресом
+#     стоит ровно один юзер. Общий адрес (CGNAT, офис) в квоты не попадает.
+echo
+echo "── Трафик TUIC (только однозначные адреса) ──"
+NOW=$(date +%s)
+# 10.0.0.1 — только u1; 10.0.0.2 — и u2, и u3 (общий); 203.0.113.9 — никого.
+printf 'u1|10.0.0.1|%s|%s|3\nu2|10.0.0.2|%s|%s|3\nu3|10.0.0.2|%s|%s|1\n' \
+    "$NOW" "$NOW" "$NOW" "$NOW" "$NOW" "$NOW" > "$IPS_FILE"
+: > "$AUTHMAP_FILE"
+is "общий адрес не резолвится" "$(_proto_ip_sole_owner_lines | sort | tr '\n' ' ')" "10.0.0.1	u1 "
+
+curl() {   # два соединения u1 (30+90 байт), одно с общего адреса, одно ничьё
+    cat <<'JSON'
+{"connections":[
+ {"id":"c1","upload":10,"download":20,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"id":"c2","upload":40,"download":50,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"id":"c3","upload":50,"download":60,"metadata":{"sourceIP":"10.0.0.2","type":"tuic/tuic-in"}},
+ {"id":"c4","upload":70,"download":80,"metadata":{"sourceIP":"203.0.113.9","type":"tuic/tuic-in"}}
+]}
+JSON
+}
+source "$SCRIPT_DIR/lib/traffic.sh"     # _stats_add — общий доклад в stats.dat
+: > "$STATS_FILE"; rm -f "$PROTO_DIR/tuic_conn_prev"
+proto_collect_tuic_traffic              # первый снимок: дельта = весь объём
+is "байты ушли единственному владельцу адреса" "$(grep '^u1|' "$STATS_FILE")" "u1|0|120"
+is "  с общего адреса — никому"                "$(grep -c '^u2|\|^u3|' "$STATS_FILE")" "0"
+is "  снимок пишется по ВСЕМ соединениям"      "$(wc -l < "$PROTO_DIR/tuic_conn_prev")" "4"
+proto_collect_tuic_traffic              # тот же ответ: прироста нет
+is "повторный снимок без прироста ничего не добавил" "$(grep '^u1|' "$STATS_FILE")" "u1|0|120"
+
+# 11. P-01: у sing-box нет управления юзерами на лету, рестарт рвёт TUIC-сессии
+#     всем. Поэтому применяем состав с отсрочкой: сразу — когда рвать некого,
+#     иначе ждём, но не дольше TUIC_APPLY_MAX_DELAY_SEC.
+echo
+echo "── Отложенный рестарт TUIC ──"
+RESTARTS="$HY2M_DATA_DIR/restarts"; : > "$RESTARTS"
+SVC_UP=0                                  # 0 = сервис жив
+systemctl() {
+    case "$1" in
+        restart)   printf '%s\n' "$2" >> "$RESTARTS" ;;
+        is-active) return "$SVC_UP" ;;
+    esac
+    return 0
+}
+restarts() { grep -c . "$RESTARTS"; }
+busy()  { curl() { printf '{"connections":[{"id":"c1","metadata":{"sourceIP":"10.0.0.1"}}]}'; }; }
+idle()  { curl() { printf '{"connections":[]}'; }; }
+
+printf '{"users":["u1"]}' > "$SINGBOX_CONFIG"
+rm -f "$SINGBOX_APPLIED_HASH" "$SINGBOX_PENDING_TS"
+busy
+proto_tuic_apply
+is "по TUIC ходят — рестарт отложен" "$(restarts)" "0"
+[ -s "$SINGBOX_PENDING_TS" ] && ok "  отсрочка помечена" || bad "  метка отсрочки не поставлена"
+
+echo $(( $(date +%s) - TUIC_APPLY_MAX_DELAY_SEC - 1 )) > "$SINGBOX_PENDING_TS"
+proto_tuic_apply
+is "ждали дольше предела — применили" "$(restarts)" "1"
+[ -f "$SINGBOX_PENDING_TS" ] && bad "  метка отсрочки осталась" || ok "  метка отсрочки снята"
+
+proto_tuic_apply
+is "конфиг не менялся — рестарта нет" "$(restarts)" "1"
+
+printf '{"users":["u1","u2"]}' > "$SINGBOX_CONFIG"
+idle
+proto_tuic_apply
+is "по TUIC никого — применяем сразу" "$(restarts)" "2"
+
+printf '{"users":["u1","u2","u3"]}' > "$SINGBOX_CONFIG"
+busy; SVC_UP=1                            # сервис лежит — рвать всё равно нечего
+proto_tuic_apply
+is "сервис лежит — применяем сразу" "$(restarts)" "3"
+SVC_UP=0
+
+# 12. P-34: устройства считаются по РАЗНЫМ адресам, а не сложением сессий по
 #     протоколам — один клиент пингует все протоколы сразу с одного IP.
 echo
 echo "── Схлопывание онлайна по IP ──"
 source "$SCRIPT_DIR/lib/online.sh"
+printf 'u1|10.0.0.1|100|200|5\nu2|10.0.0.2|100|300|5\n' > "$IPS_FILE"   # как в п.9
+curl() {
+    cat <<'JSON'
+{"connections":[
+ {"upload":10,"download":20,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"upload":50,"download":60,"metadata":{"sourceIP":"10.0.0.2","type":"tuic/tuic-in"}}
+]}
+JSON
+}
 api_get() { [ "$1" = "/online" ] && echo '{"u1":2,"u2":1,"u3":1}'; }   # заглушка Hysteria
 # u1 переподключался с 10.0.0.1 (тот же адрес, что в Xray/TUIC) и с 10.0.0.7;
 # u2 — только с 10.0.0.2 (уже учтён по TUIC); u3 в authmap отсутствует вовсе.
