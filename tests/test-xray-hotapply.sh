@@ -109,23 +109,30 @@ is "  состояние не тронуто" "$(cat "$XRAY_APPLIED_USERS")" "$b
 ls "$PROTO_DIR"/.xray.users.* "$PROTO_DIR"/.xray.adu.* >/dev/null 2>&1 \
     && bad "  временные файлы остались" || ok "  временные файлы убраны"
 
-# 8. P-15: онлайн Xray. Счётчики онлайна лежат в отдельном реестре — их отдаёт
-#    только `api statsonline -email` по одному юзеру, и при нуле поля value в
-#    ответе просто НЕТ (protobuf-JSON). Такой юзер в онлайн попасть не должен.
+# 8. P-15/P-33: онлайн Xray. Счётчики онлайна лежат в отдельном реестре и
+#    достаются по одному юзеру. Берём `statsonlineiplist` (ip → last_seen), а не
+#    `statsonline`: его value = размер карты, которую Xray не чистит, и старые
+#    IP мобильного юзера копятся в «устройства». Считаем только свежие IP.
 echo
-echo "── Онлайн Xray (statsonline) ──"
+echo "── Онлайн Xray (statsonlineiplist, только свежие IP) ──"
 cat > "$XRAY_BIN" <<'EOF'
 #!/bin/bash
 for a in "$@"; do [ "$prev" = "-email" ] && u="$a"; prev="$a"; done
+now=$(date +%s)
 case "$u" in
-  u1) printf '{\n "stat": {\n  "name": "user>>>u1>>>online",\n  "value": "3"\n }\n}\n' ;;
-  *)  printf '{\n "stat": {\n  "name": "user>>>%s>>>online"\n }\n}\n' "$u" ;;
+  # 3 свежих IP + 2 протухших (сутки и трое суток назад — их считать нельзя)
+  u1) printf '{"ips":{"10.0.0.1":%s,"10.0.0.2":%s,"10.0.0.3":%s,"10.0.0.4":%s,"10.0.0.5":%s},"name":"user>>>u1>>>online"}\n' \
+        "$now" "$((now-30))" "$((now-119))" "$((now-86400))" "$((now-259200))" ;;
+  # ни одного свежего: юзер офлайн, хотя карта непустая
+  u2) printf '{"ips":{"10.0.0.9":%s},"name":"user>>>u2>>>online"}\n' "$((now-3600))" ;;
+  *)  printf '{"name":"user>>>%s>>>online"}\n' "$u" ;;
 esac
 EOF
 chmod +x "$XRAY_BIN"
 users u1:pass1 u2:pass2
 proto_tuic_enabled() { return 1; }   # только ветка Xray
-is "онлайн только у того, у кого сессии" "$(proto_online_json | jq -c .)" '{"u1":3}'
+is "в онлайн идут только свежие IP" \
+   "$(proto_online_ip_lines | sort | tr '\n' ' ')" "u1|10.0.0.1 u1|10.0.0.2 u1|10.0.0.3 "
 
 # 9. P-17: онлайн TUIC. metadata.user sing-box не отдаёт (перепроверено на
 #    1.13.14), поэтому соединения резолвятся в юзера по sourceIP из ips.dat —
@@ -145,9 +152,125 @@ curl() {   # заглушка clash_api: у соединений НЕТ metadata
 ]}
 JSON
 }
-# u1: 3 сессии Xray (заглушка п.8) + 2 соединения TUIC, u2: 1 соединение TUIC.
-is "соединения TUIC разошлись по юзерам" "$(proto_online_json | jq -Sc .)" '{"u1":5,"u2":1}'
+# u1: 3 свежих IP Xray (заглушка п.8) + TUIC с 10.0.0.1 (уже в списке — повтора
+# быть не должно), u2: TUIC с 10.0.0.2. 203.0.113.9 не резолвится ни в кого.
+is "соединения TUIC разошлись по юзерам" \
+   "$(proto_online_ip_lines | sort -u | tr '\n' ' ')" "u1|10.0.0.1 u1|10.0.0.2 u1|10.0.0.3 u2|10.0.0.2 "
 is "  и байты тем же путём"              "$(proto_tuic_activity_lines | sort | tr '\n' ' ')" "u1|100 u2|110 "
+
+# 10. P-02: трафик TUIC. Per-user счётчиков у sing-box нет, поэтому байты
+#     соединения приписываются юзеру по sourceIP — но ТОЛЬКО если за адресом
+#     стоит ровно один юзер. Общий адрес (CGNAT, офис) в квоты не попадает.
+echo
+echo "── Трафик TUIC (только однозначные адреса) ──"
+NOW=$(date +%s)
+# 10.0.0.1 — только u1; 10.0.0.2 — и u2, и u3 (общий); 203.0.113.9 — никого.
+printf 'u1|10.0.0.1|%s|%s|3\nu2|10.0.0.2|%s|%s|3\nu3|10.0.0.2|%s|%s|1\n' \
+    "$NOW" "$NOW" "$NOW" "$NOW" "$NOW" "$NOW" > "$IPS_FILE"
+: > "$AUTHMAP_FILE"
+is "общий адрес не резолвится" "$(_proto_ip_sole_owner_lines | sort | tr '\n' ' ')" "10.0.0.1	u1 "
+
+curl() {   # два соединения u1 (30+90 байт), одно с общего адреса, одно ничьё
+    cat <<'JSON'
+{"connections":[
+ {"id":"c1","upload":10,"download":20,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"id":"c2","upload":40,"download":50,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"id":"c3","upload":50,"download":60,"metadata":{"sourceIP":"10.0.0.2","type":"tuic/tuic-in"}},
+ {"id":"c4","upload":70,"download":80,"metadata":{"sourceIP":"203.0.113.9","type":"tuic/tuic-in"}}
+]}
+JSON
+}
+source "$SCRIPT_DIR/lib/traffic.sh"     # _stats_add — общий доклад в stats.dat
+: > "$STATS_FILE"; rm -f "$PROTO_DIR/tuic_conn_prev"
+proto_collect_tuic_traffic              # первый снимок: дельта = весь объём
+is "байты ушли единственному владельцу адреса" "$(grep '^u1|' "$STATS_FILE")" "u1|0|120"
+is "  с общего адреса — никому"                "$(grep -c '^u2|\|^u3|' "$STATS_FILE")" "0"
+is "  снимок пишется по ВСЕМ соединениям"      "$(wc -l < "$PROTO_DIR/tuic_conn_prev")" "4"
+proto_collect_tuic_traffic              # тот же ответ: прироста нет
+is "повторный снимок без прироста ничего не добавил" "$(grep '^u1|' "$STATS_FILE")" "u1|0|120"
+
+# 11. P-01: у sing-box нет управления юзерами на лету, рестарт рвёт TUIC-сессии
+#     всем. Поэтому применяем состав с отсрочкой: сразу — когда рвать некого,
+#     иначе ждём, но не дольше TUIC_APPLY_MAX_DELAY_SEC.
+echo
+echo "── Отложенный рестарт TUIC ──"
+RESTARTS="$HY2M_DATA_DIR/restarts"; : > "$RESTARTS"
+SVC_UP=0                                  # 0 = сервис жив
+systemctl() {
+    case "$1" in
+        restart)   printf '%s\n' "$2" >> "$RESTARTS" ;;
+        is-active) return "$SVC_UP" ;;
+    esac
+    return 0
+}
+restarts() { grep -c . "$RESTARTS"; }
+busy()  { curl() { printf '{"connections":[{"id":"c1","metadata":{"sourceIP":"10.0.0.1"}}]}'; }; }
+idle()  { curl() { printf '{"connections":[]}'; }; }
+
+printf '{"inbounds":[{"listen_port":2053,"users":["u1"]}]}' > "$SINGBOX_CONFIG"
+rm -f "$SINGBOX_APPLIED_HASH" "$SINGBOX_PENDING_TS" "$SINGBOX_STRUCT_HASH"
+busy
+proto_tuic_apply
+is "первое применение (структуры ещё не знаем) идёт сразу" "$(restarts)" "1"
+
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u5"]}]}' > "$SINGBOX_CONFIG"
+proto_tuic_apply
+is "по TUIC ходят — рестарт отложен" "$(restarts)" "1"
+[ -s "$SINGBOX_PENDING_TS" ] && ok "  отсрочка помечена" || bad "  метка отсрочки не поставлена"
+
+echo $(( $(date +%s) - TUIC_APPLY_MAX_DELAY_SEC - 1 )) > "$SINGBOX_PENDING_TS"
+proto_tuic_apply
+is "ждали дольше предела — применили" "$(restarts)" "2"
+[ -f "$SINGBOX_PENDING_TS" ] && bad "  метка отсрочки осталась" || ok "  метка отсрочки снята"
+
+proto_tuic_apply
+is "конфиг не менялся — рестарта нет" "$(restarts)" "2"
+
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u5","u6"]}]}' > "$SINGBOX_CONFIG"
+idle
+proto_tuic_apply
+is "по TUIC никого — применяем сразу" "$(restarts)" "3"
+
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u5","u6","u7"]}]}' > "$SINGBOX_CONFIG"
+busy; SVC_UP=1                            # сервис лежит — рвать всё равно нечего
+proto_tuic_apply
+is "сервис лежит — применяем сразу" "$(restarts)" "4"
+SVC_UP=0
+
+# Отсрочка — только про состав юзеров. Смена параметров узла (порт, инбаунды)
+# идёт из меню, и админ ждёт результата сейчас.
+idle; proto_tuic_apply                    # ровняем состояние
+before=$(restarts)
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u9"]}]}' > "$SINGBOX_CONFIG"
+busy; proto_tuic_apply
+is "сменился только состав — ждём" "$(restarts)" "$before"
+printf '{"inbounds":[{"listen_port":2054,"users":["u1","u9"]}]}' > "$SINGBOX_CONFIG"
+proto_tuic_apply
+is "сменился порт — применяем сразу" "$(restarts)" "$(( before + 1 ))"
+
+# 12. P-34: устройства считаются по РАЗНЫМ адресам, а не сложением сессий по
+#     протоколам — один клиент пингует все протоколы сразу с одного IP.
+echo
+echo "── Схлопывание онлайна по IP ──"
+source "$SCRIPT_DIR/lib/online.sh"
+printf 'u1|10.0.0.1|100|200|5\nu2|10.0.0.2|100|300|5\n' > "$IPS_FILE"   # как в п.9
+curl() {
+    cat <<'JSON'
+{"connections":[
+ {"upload":10,"download":20,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"upload":50,"download":60,"metadata":{"sourceIP":"10.0.0.2","type":"tuic/tuic-in"}}
+]}
+JSON
+}
+api_get() { [ "$1" = "/online" ] && echo '{"u1":2,"u2":1,"u3":1}'; }   # заглушка Hysteria
+# u1 переподключался с 10.0.0.1 (тот же адрес, что в Xray/TUIC) и с 10.0.0.7;
+# u2 — только с 10.0.0.2 (уже учтён по TUIC); u3 в authmap отсутствует вовсе.
+printf 'u1|10.0.0.1|1\nu1|10.0.0.7|2\nu2|10.0.0.2|3\n' > "$AUTHMAP_FILE"
+refresh_online
+is "адрес, общий для протоколов, считается один раз" "$(echo "$CACHED_ONLINE" | jq -Sc .)" \
+   '{"u1":4,"u2":1,"u3":1}'
+is "  и без Hysteria-сессий счёт тот же"  \
+   "$(api_get() { echo '{}'; }; refresh_online; echo "$CACHED_ONLINE" | jq -Sc .)" '{"u1":3,"u2":1}'
 
 echo
 [ "$FAIL" = 0 ] && echo "✅ Все проверки прошли" || echo "❌ Есть падения"

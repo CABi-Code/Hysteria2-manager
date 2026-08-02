@@ -3,9 +3,44 @@
 # Сбор и отображение трафика пользователей
 # ================================================
 
+# Прибавить дельты к общему счётчику stats.dat. Со stdin — строки «user|tx|rx»
+# (только дельта за интервал, не кумулятив). Один проход awk под flock: раньше
+# каждый сборщик (Hysteria, Xray, TUIC) сам делал grep+sed -i на юзера, и при
+# пересечении с другим сборщиком его дельта терялась целиком — P-21. TUI зовёт
+# сбор на каждой перерисовке, крон — по расписанию, пересекаются они регулярно.
+_stats_add() {
+    local tmp="${STATS_FILE}.tmp.$BASHPID" input
+    input=$(cat)
+    [ -n "$input" ] || return 0     # докладывать нечего — файл не трогаем вовсе
+    exec 9>"${DATA_DIR}/.stats.lock" 2>/dev/null || return 0
+    flock 9 2>/dev/null || { exec 9>&-; return 0; }
+    awk -F'|' -v old="$STATS_FILE" '
+        BEGIN {
+            while ((getline line < old) > 0) {
+                n = split(line, p, "|")
+                if (n < 3 || p[1] == "" || (p[1] in tx)) continue
+                ord[++total] = p[1]; tx[p[1]] = p[2] + 0; rx[p[1]] = p[3] + 0
+            }
+        }
+        NF >= 3 && $1 != "" {
+            if (!($1 in tx)) { ord[++total] = $1; tx[$1] = 0; rx[$1] = 0 }
+            tx[$1] += $2 + 0; rx[$1] += $3 + 0
+        }
+        END { for (i = 1; i <= total; i++) printf "%s|%.0f|%.0f\n", ord[i], tx[ord[i]], rx[ord[i]] }
+    ' <<< "$input" > "$tmp" && mv "$tmp" "$STATS_FILE" || rm -f "$tmp"
+    chmod 644 "$STATS_FILE" 2>/dev/null
+    exec 9>&-
+}
+
+# Общий счётчик трафика по ВСЕМ протоколам. Hysteria отдаёт «с прошлого clear»
+# (?clear=1), Xray — «с прошлого reset», обе дельты докладываются в stats.dat.
+# Xray собирается ЗДЕСЬ, а не только в 30-минутном кроне: иначе трафик
+# VLESS/Trojan/SS в менеджере обновлялся раз в полчаса и выглядел зависшим,
+# пока Hysteria-часть той же строки шла живьём (P-35).
 collect_traffic() {
     local response now last_ts elapsed have_baseline=1
     response=$(api_get "/traffic?clear=1")
+    declare -F proto_collect_traffic >/dev/null 2>&1 && proto_collect_traffic
 
     # Интервал с прошлого сбора — нужен для расчёта скорости (B/s).
     # /traffic?clear=1 отдаёт трафик с момента прошлого clear и обнуляет
@@ -29,30 +64,17 @@ collect_traffic() {
 
     { [ -z "$response" ] || [ "$response" = "null" ]; } && return
 
-    echo "$response" | jq -r 'to_entries[] | "\(.key)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null | \
-    while IFS='|' read -r user tx rx; do
-        [ -z "$user" ] && continue
-        tx=${tx:-0}; rx=${rx:-0}
-        [[ "$tx" =~ ^[0-9]+$ ]] || tx=0
-        [[ "$rx" =~ ^[0-9]+$ ]] || rx=0
-        [ "$tx" -eq 0 ] && [ "$rx" -eq 0 ] && continue
+    local deltas
+    deltas=$(echo "$response" | jq -r 'to_entries[]
+        | select((.value.tx // 0) + (.value.rx // 0) > 0)
+        | "\(.key)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null)
+    [ -n "$deltas" ] || return 0
+    printf '%s\n' "$deltas" | _stats_add
 
-        if grep -q "^${user}|" "$STATS_FILE"; then
-            local old_tx old_rx new_tx new_rx
-            old_tx=$(grep "^${user}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
-            old_rx=$(grep "^${user}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
-            new_tx=$(( ${old_tx:-0} + tx ))
-            new_rx=$(( ${old_rx:-0} + rx ))
-            sed -i "s#^${user}|.*#${user}|${new_tx}|${new_rx}#" "$STATS_FILE"
-        else
-            echo "${user}|${tx}|${rx}" >> "$STATS_FILE"
-        fi
-
-        # Мгновенная скорость за интервал (байт/сек)
-        if [ "$have_baseline" = 1 ]; then
-            echo "${user}|$(( tx / elapsed ))|$(( rx / elapsed ))" >> "$SPEED_FILE"
-        fi
-    done
+    # Мгновенная скорость за интервал (байт/сек)
+    [ "$have_baseline" = 1 ] || return 0
+    printf '%s\n' "$deltas" | awk -F'|' -v el="$elapsed" \
+        'NF>=3 && $1!="" { printf "%s|%d|%d\n", $1, ($2+0)/el, ($3+0)/el }' >> "$SPEED_FILE"
 }
 
 # ---- Учёт АКТИВНОГО трафика для жёсткой проверки (traffic-based) ----
@@ -177,9 +199,11 @@ collect_rates() {
     # NODE_LABEL по кластеру не синхронизируется) + строки «user|down_bps|up_bps|ts».
     printf '#label|%s\n' "$(node_label)" > "$rtmp"
 
-    # Дельта с прошлым снимком по каждому направлению. Счётчик УМЕНЬШИЛСЯ (30-мин
-    # ?clear=1 обнулил Hysteria) — считаем 0, а не дельту от нуля: фантомный всплеск
-    # заметнее пропущенного тика. rates_prev.dat v2: «user|down_cum|up_cum|ts».
+    # Дельта с прошлым снимком по каждому направлению. Счётчик УМЕНЬШИЛСЯ — значит
+    # его обнулил сбор (`?clear=1`/`-reset`), и весь текущий кумулятив набежал уже
+    # ПОСЛЕ сброса: он и есть дельта за интервал. Раньше тут писался 0, и спидометр
+    # проваливался на каждом сборе — а сбор идёт и из TUI, на каждой перерисовке.
+    # rates_prev.dat v2: «user|down_cum|up_cum|ts».
     printf '%s\n' "$merged" | awk -F'|' -v now="$now" -v prevf="$RATES_PREV_FILE" \
         -v rates="$rtmp" -v prevout="$ptmp" '
         BEGIN {
@@ -193,8 +217,8 @@ collect_rates() {
             if ($1 in pt) {
                 el = now - pt[$1]
                 if (el < 1) el = 1
-                if (dc > pd[$1]) dr = int((dc - pd[$1]) / el)
-                if (uc > pu[$1]) ur = int((uc - pu[$1]) / el)
+                dr = int((dc >= pd[$1] ? dc - pd[$1] : dc) / el)
+                ur = int((uc >= pu[$1] ? uc - pu[$1] : uc) / el)
             }
             printf "%s|%d|%d|%d\n", $1, dr, ur, now >> rates
             printf "%s|%d|%d|%d\n", $1, dc, uc, now > prevout

@@ -27,6 +27,10 @@ TUIC_CRT="$PROTO_DIR/tuic.crt"
 TUIC_KEY="$PROTO_DIR/tuic.key"
 # Локальный gRPC API Xray (StatsService/HandlerService) — только 127.0.0.1.
 XRAY_API_PORT="${XRAY_API_PORT:-10085}"
+# Окно свежести онлайн-IP Xray, сек: IP из statsonlineiplist старше него не
+# считается устройством в сети (карту онлайна Xray сам не чистит, см. P-33).
+# Крон онлайна ходит раз в минуту — 120 с даёт запас на один пропущенный тик.
+XRAY_ONLINE_WINDOW_SEC="${XRAY_ONLINE_WINDOW_SEC:-120}"
 # Clash API sing-box (онлайн/трафик TUIC) — только 127.0.0.1.
 SINGBOX_API_PORT="${SINGBOX_API_PORT:-9090}"
 SINGBOX_API_SECRET_FILE="$PROTO_DIR/singbox_api.secret"
@@ -455,6 +459,73 @@ _proto_apply_service() {   # service config_file hash_file
     fi
 }
 
+# ---------------- Применение состава TUIC: рестарт с отсрочкой ----------------
+# У sing-box нет управления юзерами на лету: состав задан в конфиге и меняется
+# только рестартом, а рестарт рвёт TUIC-сессии ВСЕХ юзеров ноды (P-01). Убрать
+# рестарт нечем — но можно перестать делать его немедленно и по каждому поводу:
+#   • сервис лежит → применяем сразу, рвать нечего;
+#   • нет активных TUIC-соединений → применяем сразу (обычный случай: соединения
+#     короткие, список пустеет сам);
+#   • иначе ждём, но не дольше TUIC_APPLY_MAX_DELAY_SEC.
+# Конфиг всё это время уже лежит на диске, повторную попытку делает минутный крон
+# (--online-sync). Десять юзеров подряд дают ОДИН рестарт вместо десяти, а
+# провижининг нового юзера не ждёт рестарта sing-box.
+# Цена отсрочки: TUIC у нового юзера заработает не сразу (остальные протоколы —
+# сразу). Простаивающую QUIC-сессию мы всё же можем оборвать (в списке соединений
+# её не видно) — клиент переподключается сам, данных в полёте нет.
+TUIC_APPLY_MAX_DELAY_SEC="${TUIC_APPLY_MAX_DELAY_SEC:-600}"
+SINGBOX_PENDING_TS="$PROTO_DIR/.singbox.pending"
+SINGBOX_STRUCT_HASH="$PROTO_DIR/.singbox.struct"
+
+# Хэш конфига БЕЗ списков юзеров: от нового юзера не меняется, от смены порта,
+# сертификата или состава инбаундов — меняется. Отсрочка про состав; параметры
+# узла админ меняет руками и ждёт результата сейчас, а не через десять минут.
+_proto_singbox_struct_hash() {
+    jq -Sc 'del(.inbounds[].users)' "$SINGBOX_CONFIG" 2>/dev/null \
+        | sha256sum 2>/dev/null | cut -d' ' -f1
+}
+
+_proto_tuic_conn_count() {
+    local secret n
+    secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+    n=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
+        "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null \
+        | jq '(.connections // []) | length' 2>/dev/null)
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+}
+
+proto_tuic_apply() {
+    proto_tuic_enabled || return 0
+    [ -s "$SINGBOX_CONFIG" ] || return 0
+    local newh oldh now since sh osh
+    newh=$(sha256sum "$SINGBOX_CONFIG" 2>/dev/null | cut -d' ' -f1)
+    oldh=$(cat "$SINGBOX_APPLIED_HASH" 2>/dev/null)
+    systemctl enable "$SINGBOX_SERVICE" >/dev/null 2>&1
+    sh=$(_proto_singbox_struct_hash)
+    if [ "$newh" = "$oldh" ] && systemctl is-active --quiet "$SINGBOX_SERVICE" 2>/dev/null; then
+        rm -f "$SINGBOX_PENDING_TS"
+        [ -n "$sh" ] && echo "$sh" > "$SINGBOX_STRUCT_HASH"
+        return 0
+    fi
+    now=$(date +%s)
+    since=$(cat "$SINGBOX_PENDING_TS" 2>/dev/null)
+    if ! [[ "$since" =~ ^[0-9]+$ ]]; then
+        since=$now
+        echo "$now" > "$SINGBOX_PENDING_TS"
+    fi
+    osh=$(cat "$SINGBOX_STRUCT_HASH" 2>/dev/null)
+    if systemctl is-active --quiet "$SINGBOX_SERVICE" 2>/dev/null \
+       && [ -n "$sh" ] && [ -n "$osh" ] && [ "$sh" = "$osh" ] \
+       && [ "$(( now - since ))" -lt "$TUIC_APPLY_MAX_DELAY_SEC" ] \
+       && [ "$(_proto_tuic_conn_count)" -gt 0 ]; then
+        return 0                      # сменился только состав, кто-то в сети — ждём
+    fi
+    systemctl restart "$SINGBOX_SERVICE" >/dev/null 2>&1
+    echo "$newh" > "$SINGBOX_APPLIED_HASH"
+    [ -n "$sh" ] && echo "$sh" > "$SINGBOX_STRUCT_HASH"
+    rm -f "$SINGBOX_PENDING_TS"
+}
+
 # ---------------- Горячее применение состава юзеров Xray (adu/rmu) ----------------
 # Новый юзер меняет конфиг → меняется хэш → рестарт → рвутся сессии ВСЕХ юзеров
 # ноды. Xray умеет добавлять и снимать юзеров по gRPC на лету, поэтому рестарт
@@ -564,7 +635,7 @@ proto_sync_users() {
     fi
     if proto_tuic_enabled; then
         proto_write_singbox_config
-        _proto_apply_service "$SINGBOX_SERVICE" "$SINGBOX_CONFIG" "$SINGBOX_APPLIED_HASH"
+        proto_tuic_apply       # рестарт с отсрочкой: не рвём чужие сессии из-за одного юзера
     fi
 }
 
@@ -746,31 +817,47 @@ proto_collect_traffic() {
             uplink)   _rx[$email]=$(( ${_rx[$email]:-0} + val )) ;;
         esac
     done <<< "$pairs"
-    local u tx rx old_tx old_rx new_tx new_rx users_uniq
+    local u tx rx users_uniq
     users_uniq=$(printf '%s\n' "${!_tx[@]}" "${!_rx[@]}" | grep -v '^$' | sort -u)
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         tx=${_tx[$u]:-0}; rx=${_rx[$u]:-0}
         [ "$tx" -eq 0 ] && [ "$rx" -eq 0 ] && continue
-        if grep -q "^${u}|" "$STATS_FILE" 2>/dev/null; then
-            old_tx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
-            old_rx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
-            new_tx=$(( ${old_tx:-0} + tx )); new_rx=$(( ${old_rx:-0} + rx ))
-            sed -i "s#^${u}|.*#${u}|${new_tx}|${new_rx}#" "$STATS_FILE"
-        else
-            echo "${u}|${tx}|${rx}" >> "$STATS_FILE"
-        fi
-    done <<< "$users_uniq"
+        echo "${u}|${tx}|${rx}"
+    done <<< "$users_uniq" | _stats_add    # общий доклад в stats.dat под flock
 }
 
-# TUIC-трафик в общий учёт (STATS_FILE). У sing-box 1.13 нет StatsService
-# (v2ray_api убрали в 1.8), поэтому кумулятива per-user нет — считаем ПРИБЛИЖЁННО
-# по дельтам байт каждого соединения (clash_api /connections отдаёт upload/download
-# на соединение) между двумя снимками. Совпадающие по id соединения дают дельту;
-# закрывшиеся между снимками выпадают (их хвост теряется). Для доминирующего
-# объёма (стриминг/загрузки = долгие соединения) это ловится хорошо; короткие
-# запросы недосчитываются. ВАЖНО: вызывать ЧАСТО (раз в минуту, из --online-sync),
-# иначе почти все соединения успеют закрыться между снимками и учёт занулится.
+# Адреса, за которыми стоит РОВНО ОДИН юзер: «ip<TAB>user». Источники — ips.dat,
+# authmap.dat и такие же файлы пиров. Адрес, с которого за окно ходил не один
+# юзер (общий CGNAT, семья, офис), НЕ попадает в вывод вовсе: на нём атрибуция
+# по IP означала бы записать чужие байты в чужую квоту. Недосчитать безопаснее.
+TUIC_IP_OWNER_WINDOW_DAYS="${TUIC_IP_OWNER_WINDOW_DAYS:-7}"
+_proto_ip_sole_owner_lines() {
+    local cut=$(( $(date +%s) - TUIC_IP_OWNER_WINDOW_DAYS * 86400 ))
+    {
+        cat "$IPS_FILE" 2>/dev/null                              # user|ip|first|last|count
+        cat "$PEERS_DIR"/*.ips 2>/dev/null
+        awk -F'|' 'NF>=3 && $1!="" && $2!="" { print $1"|"$2"|0|"$3"|1" }' \
+            "$AUTHMAP_FILE" 2>/dev/null                          # user|ip|ts -> тот же вид
+    } | awk -F'|' -v cut="$cut" '
+        NF>=4 && $1!="" && $2!="" && $4+0 >= cut {
+            if (!seen[$2 "|" $1]++) { n[$2]++; owner[$2] = $1 }
+        }
+        END { for (ip in n) if (n[ip] == 1) print ip "\t" owner[ip] }'
+}
+
+# TUIC-трафик в общий учёт (STATS_FILE). Per-user счётчиков у sing-box нет:
+# StatsService живёт за тегом сборки `with_v2ray_api`, которого в официальных
+# релизах нет (проверено на 1.13.14: в бинарнике строка «v2ray api is not
+# included in this build»), а clash_api не отдаёт `metadata.user` (P-17).
+# Поэтому считаем ПРИБЛИЖЁННО: дельты байт каждого соединения (clash_api
+# /connections отдаёт upload/download на соединение) между двумя снимками, юзер —
+# по `sourceIP` и ТОЛЬКО для однозначных адресов (_proto_ip_sole_owner_lines).
+# Совпадающие по id соединения дают дельту; закрывшиеся между снимками выпадают
+# (их хвост теряется). Для доминирующего объёма (стриминг/загрузки = долгие
+# соединения) это ловится хорошо; короткие запросы недосчитываются. ВАЖНО:
+# вызывать ЧАСТО (раз в минуту, из --online-sync), иначе почти все соединения
+# успеют закрыться между снимками и учёт занулится.
 # Снимок id->bytes храним в PROTO_DIR/tuic_conn_prev.
 proto_collect_tuic_traffic() {
     proto_tuic_enabled || return 0
@@ -781,41 +868,43 @@ proto_collect_tuic_traffic() {
     [ -n "$conns" ] || return 0
     echo "$conns" | jq empty 2>/dev/null || return 0
 
-    declare -A _prev _du
+    declare -A _prev _du _owner
     if [ -f "$prev" ]; then
         while IFS=$'\t' read -r id bytes; do
             [ -n "$id" ] && [[ "$bytes" =~ ^[0-9]+$ ]] && _prev[$id]=$bytes
         done < "$prev"
     fi
+    # ip -> ЕДИНСТВЕННЫЙ юзер этого адреса (см. _proto_ip_sole_owner_lines).
+    local ip user
+    while IFS=$'\t' read -r ip user; do
+        [ -n "$ip" ] && [ -n "$user" ] && _owner[$ip]=$user
+    done < <(_proto_ip_sole_owner_lines)
+
     : > "$newprev"
-    local id user bytes p d
-    while IFS=$'\t' read -r id user bytes; do
-        [ -n "$id" ] && [ -n "$user" ] || continue
+    local id bytes p d
+    while IFS=$'\t' read -r id ip bytes; do
+        [ -n "$id" ] || continue
         [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+        # Снимок пишем по ВСЕМ соединениям, даже неатрибутируемым: иначе на
+        # следующем тике их байты пришли бы дельтой «с нуля» и, если адрес к тому
+        # времени стал однозначным, разом записались бы одному юзеру.
         printf '%s\t%s\n' "$id" "$bytes" >> "$newprev"
+        user=${_owner[$ip]:-}; [ -n "$user" ] || continue
         p=${_prev[$id]:-0}
         if [ "$bytes" -ge "$p" ]; then d=$(( bytes - p )); else d=$bytes; fi   # d<0 = переоткрытый id
         [ "$d" -gt 0 ] && _du[$user]=$(( ${_du[$user]:-0} + d ))
     done < <(echo "$conns" | jq -r '(.connections // [])[]
-        | select(.metadata.user != null and .metadata.user != "")
-        | "\(.id)\t\(.metadata.user)\t\((.upload // 0) + (.download // 0))"' 2>/dev/null)
+        | select(.metadata.sourceIP != null)
+        | "\(.id)\t\(.metadata.sourceIP)\t\((.upload // 0) + (.download // 0))"' 2>/dev/null)
     mv "$newprev" "$prev" 2>/dev/null
 
     # Докладываем дельты в STATS_FILE (всё в rx: клиент преимущественно качает,
     # для суммарной квоты сторона не важна — как в proto_collect_traffic).
-    local u old_tx old_rx new_rx
+    local u
     for u in "${!_du[@]}"; do
         d=${_du[$u]}
-        [ "$d" -gt 0 ] || continue
-        if grep -q "^${u}|" "$STATS_FILE" 2>/dev/null; then
-            old_tx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f2)
-            old_rx=$(grep "^${u}|" "$STATS_FILE" | head -1 | cut -d'|' -f3)
-            new_rx=$(( ${old_rx:-0} + d ))
-            sed -i "s#^${u}|.*#${u}|${old_tx:-0}|${new_rx}#" "$STATS_FILE"
-        else
-            echo "${u}|0|${d}" >> "$STATS_FILE"
-        fi
-    done
+        [ "$d" -gt 0 ] && echo "${u}|0|${d}"
+    done | _stats_add
 }
 
 # ---------------- Активность доп. протоколов ----------------
@@ -873,7 +962,7 @@ proto_xray_split_lines() {
 # (сумма upload+download открытых TUIC-соединений юзера). ТОЛЬКО для онлайна:
 # на общем CGNAT-IP изредка попадёт не тот юзер — для индикатора приемлемо, в
 # трафик/квоты это НЕ идёт. См. docs/guide/ONLINE.md.
-proto_tuic_activity_lines() {   # [bytes|conns]
+proto_tuic_activity_lines() {   # [bytes|conns|ips]
     proto_tuic_enabled || return 0
     local mode="${1:-bytes}" secret conns
     secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
@@ -893,11 +982,17 @@ proto_tuic_activity_lines() {   # [bytes|conns]
           END{ for(x in u) print x"\t"u[x] }' )
 
     # sourceIP+bytes каждого TUIC-соединения -> резолв в юзера -> сумма.
-    declare -A _du
+    # В режиме ips вместо суммы печатаем сами пары «user|ip» (разные IP одного
+    # юзера, без повторов) — из них считается число устройств, см. refresh_online.
+    declare -A _du _seen
     local bytes u2
     while IFS=$'\t' read -r ip bytes; do
         [ -n "$ip" ] || continue
         u2=${_ipuser[$ip]:-}; [ -n "$u2" ] || continue
+        if [ "$mode" = ips ]; then
+            [ -n "${_seen[$u2|$ip]:-}" ] || { _seen[$u2|$ip]=1; echo "${u2}|${ip}"; }
+            continue
+        fi
         [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
         [ "$mode" = conns ] && bytes=1        # считаем соединения, а не байты
         _du[$u2]=$(( ${_du[$u2]:-0} + bytes ))
@@ -909,54 +1004,56 @@ proto_tuic_activity_lines() {   # [bytes|conns]
 }
 
 # ---------------- Онлайн доп. протоколов ----------------
-# Возвращает JSON {user: conns} по доп. протоколам (best-effort; при любой ошибке
-# — пустой {}, чтобы никогда не ломать основной онлайн Hysteria).
-# Xray: счётчики онлайна (policy.levels."0".statsUserOnline) — по юзеру за раз.
-# sing-box: число активных TUIC-соединений на юзера из clash_api /connections.
-proto_online_json() {
-    proto_any_enabled || { echo '{}'; return 0; }
-    local merged='{}'
+# Печатает строки «user|ip» — АДРЕСА, с которых юзер сейчас в сети по доп.
+# протоколам (best-effort; при любой ошибке — пусто, чтобы никогда не ломать
+# основной онлайн Hysteria). Считать устройства по этим строкам — дело
+# refresh_online: один клиент пингует все протоколы сразу и виден и в Xray, и в
+# TUIC, и в Hysteria с ОДНОГО адреса — суммировать их значило бы считать одно
+# устройство трижды.
+# Xray: карта онлайн-IP (policy.levels."0".statsUserOnline) — по юзеру за раз.
+# sing-box: sourceIP активных TUIC-соединений, резолв в юзера по ips.dat.
+proto_online_ip_lines() {
+    proto_any_enabled || return 0
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
         # Онлайн живёт в ОТДЕЛЬНОМ реестре Xray: `statsquery -pattern online`
         # отдаёт пустой {} даже при непустом traffic (проверено на 26.3.27) —
-        # достать его можно только командой statsonline по одному юзеру.
+        # достать его можно только по одному юзеру.
         # Юзеров на ноде десятки, вызов локальный, крон раз в минуту — терпимо.
-        local u v lines="" xonline
+        #
+        # НЕ `statsonline`: его value = размер карты онлайн-IP, а Xray эту карту
+        # не чистит (на node-a встречались записи 137-часовой давности) — на
+        # мобильном CGNAT один телефон за сутки меняет IP и превращается в 5-11
+        # «устройств». Берём `statsonlineiplist` (та же одна команда, отдаёт
+        # ip → last_seen) и считаем только свежие IP. См. P-33.
+        # Разбираем ответ awk'ом, а не jq: команда идёт по юзеру, а jq стоит
+        # ~100 мс на запуск — на два десятка профилей это лишние секунды на
+        # КАЖДУЮ перерисовку экрана. Формат ответа простой: строки «"<ip>": <ts>»
+        # (ts всегда после последнего двоеточия, так что IPv6 не ломает разбор).
+        local u now
+        now=$(date +%s)
         while IFS=: read -r u _; do
             [ -n "$u" ] || continue
-            # value в ответе — protobuf-JSON: при нуле поля просто нет.
-            v=$("$XRAY_BIN" api statsonline --server="127.0.0.1:${XRAY_API_PORT}" \
-                    -email "$u" 2>/dev/null | grep -o '"value"[^,}]*' | tr -dc '0-9')
-            [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && lines+="${u} ${v}"$'\n'
+            "$XRAY_BIN" api statsonlineiplist --server="127.0.0.1:${XRAY_API_PORT}" \
+                    -email "$u" 2>/dev/null \
+                | awk -v u="$u" -v now="$now" -v w="${XRAY_ONLINE_WINDOW_SEC:-120}" '
+                    {
+                        s = $0
+                        while (match(s, /"[0-9a-fA-F][0-9a-fA-F.:]*"[ \t]*:[ \t]*[0-9]+/)) {
+                            tok = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+                            split(tok, q, "\""); n = split(tok, r, ":")
+                            if (now - (r[n] + 0) <= w) print u "|" q[2]
+                        }
+                    }'
         done < "$USERS_DB"
-        if [ -n "$lines" ]; then
-            xonline=$(printf '%s' "$lines" | jq -Rc -n \
-                '[inputs | split(" ") | select(length == 2) | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)
-            [ -n "$xonline" ] && merged=$(_proto_merge_online "$merged" "$xonline")
-        fi
     fi
     if proto_tuic_enabled; then
         # metadata.user у sing-box НЕТ (перепроверено на 1.13.14: 44 соединения
         # подряд — поле отсутствует у всех), поэтому фильтр по нему давал вечно
         # пустой онлайн. Резолвим соединения в юзеров по sourceIP тем же путём,
-        # что и активность, — proto_tuic_activity_lines в режиме conns.
-        local tlines tonline
-        tlines=$(proto_tuic_activity_lines conns)
-        if [ -n "$tlines" ]; then
-            tonline=$(printf '%s' "$tlines" | jq -Rc -n \
-                '[inputs | split("|") | select(length == 2) | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)
-            [ -n "$tonline" ] && merged=$(_proto_merge_online "$merged" "$tonline")
-        fi
+        # что и активность, — proto_tuic_activity_lines в режиме ips.
+        proto_tuic_activity_lines ips
     fi
-    echo "$merged"
-}
-
-# Слить два JSON {user:n}, суммируя значения по ключу.
-_proto_merge_online() {   # a b -> merged
-    printf '%s\n%s\n' "$1" "$2" | jq -s '
-        reduce .[] as $o ({};
-            reduce ($o | to_entries[]) as $e (.; .[$e.key] = ((.[$e.key] // 0) + ($e.value // 0))))' 2>/dev/null \
-    || echo '{}'
+    return 0
 }
 
 # ---------------- Кик сессий доп. протоколов ----------------
