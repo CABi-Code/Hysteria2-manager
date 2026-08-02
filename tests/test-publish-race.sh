@@ -20,6 +20,8 @@ source "$SCRIPT_DIR/lib/publish.sh"
 sub_enabled()           { return 0; }
 secure_web_files()      { :; }
 api_get()               { echo '{"alice":1,"bob":0}'; }
+refresh_online()        { CACHED_ONLINE='{"alice":1,"bob":0}'; }
+get_user_online_count() { echo "$CACHED_ONLINE" | jq -r --arg u "$1" '.[$u]//0'; }
 get_user_traffic()      { echo "$1|100|200"; }
 get_user_speed()        { echo "$1|10|20"; }
 get_user_active()       { echo 1; }
