@@ -24,7 +24,7 @@
 
 | Файл | О чём | Проблем |
 |---|---|:--:|
-| [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 5 |
+| [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 6 |
 | [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 11 |
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 4 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 4 |
@@ -54,6 +54,7 @@
 | [P-09](BILLING.md#p-09) | Роль издателя расщеплена между менеджером и webapp | cross-repo | [billing](BILLING.md) | 🟡 |
 | [P-11](BILLING.md#p-11) | Длина ваучера в стоковых клиентах не проверена | — | [billing](BILLING.md) | 🟡 |
 | [P-14](CLUSTER.md#p-14) | Осиротевшие токены подписки не убираются никогда | `lib/sub_links.sh` | [cluster](CLUSTER.md) | 🟡 |
+| [P-33](PROTOCOLS.md#p-33) | Онлайн Xray считал историю IP: один телефон = 5–11 «устройств» | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-17](PROTOCOLS.md#p-17) | Трафик/онлайн TUIC читают `metadata.user`, которого нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-18](PROTOCOLS.md#p-18) | IP-трекинг только по журналу Hysteria — от него зависят тарифы | `lib/ip_tracking.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-19](BILLING.md#p-19) | Покупка тарифа обнуляет персональный тариф скорости | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
@@ -70,4 +71,4 @@
 | [P-30](WEBAPP.md#p-30) | `laravel.log` без ротации, туда же пишут прогоны тестов | `.env` | [webapp](WEBAPP.md) | 🟢 |
 | [P-31](CLUSTER.md#p-31) | Недоступный пир никак себя не проявлял в менеджере | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
 
-Следующий свободный номер — **P-33**.
+Следующий свободный номер — **P-34**.
