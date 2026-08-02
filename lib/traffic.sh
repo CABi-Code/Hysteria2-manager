@@ -9,7 +9,9 @@
 # пересечении с другим сборщиком его дельта терялась целиком — P-21. TUI зовёт
 # сбор на каждой перерисовке, крон — по расписанию, пересекаются они регулярно.
 _stats_add() {
-    local tmp="${STATS_FILE}.tmp.$BASHPID"
+    local tmp="${STATS_FILE}.tmp.$BASHPID" input
+    input=$(cat)
+    [ -n "$input" ] || return 0     # докладывать нечего — файл не трогаем вовсе
     exec 9>"${DATA_DIR}/.stats.lock" 2>/dev/null || return 0
     flock 9 2>/dev/null || { exec 9>&-; return 0; }
     awk -F'|' -v old="$STATS_FILE" '
@@ -25,7 +27,7 @@ _stats_add() {
             tx[$1] += $2 + 0; rx[$1] += $3 + 0
         }
         END { for (i = 1; i <= total; i++) printf "%s|%.0f|%.0f\n", ord[i], tx[ord[i]], rx[ord[i]] }
-    ' > "$tmp" && mv "$tmp" "$STATS_FILE" || rm -f "$tmp"
+    ' <<< "$input" > "$tmp" && mv "$tmp" "$STATS_FILE" || rm -f "$tmp"
     chmod 644 "$STATS_FILE" 2>/dev/null
     exec 9>&-
 }
