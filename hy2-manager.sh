@@ -84,6 +84,7 @@ if [ "$1" = "--collect" ]; then
     setup_stats_api
     collect_traffic          # Hysteria + Xray (VLESS/SS2022/Trojan) в общий учёт
     collect_ips
+    authmap_trim       # живой маппинг user→IP: выбросить записи старше двух суток
     collect_sub_ips    # IP по токенам подписки из access-лога Caddy
     publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
     publish_subips     # разослать IP по токенам подписки
