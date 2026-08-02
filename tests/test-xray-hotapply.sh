@@ -109,23 +109,29 @@ is "  состояние не тронуто" "$(cat "$XRAY_APPLIED_USERS")" "$b
 ls "$PROTO_DIR"/.xray.users.* "$PROTO_DIR"/.xray.adu.* >/dev/null 2>&1 \
     && bad "  временные файлы остались" || ok "  временные файлы убраны"
 
-# 8. P-15: онлайн Xray. Счётчики онлайна лежат в отдельном реестре — их отдаёт
-#    только `api statsonline -email` по одному юзеру, и при нуле поля value в
-#    ответе просто НЕТ (protobuf-JSON). Такой юзер в онлайн попасть не должен.
+# 8. P-15/P-33: онлайн Xray. Счётчики онлайна лежат в отдельном реестре и
+#    достаются по одному юзеру. Берём `statsonlineiplist` (ip → last_seen), а не
+#    `statsonline`: его value = размер карты, которую Xray не чистит, и старые
+#    IP мобильного юзера копятся в «устройства». Считаем только свежие IP.
 echo
-echo "── Онлайн Xray (statsonline) ──"
+echo "── Онлайн Xray (statsonlineiplist, только свежие IP) ──"
 cat > "$XRAY_BIN" <<'EOF'
 #!/bin/bash
 for a in "$@"; do [ "$prev" = "-email" ] && u="$a"; prev="$a"; done
+now=$(date +%s)
 case "$u" in
-  u1) printf '{\n "stat": {\n  "name": "user>>>u1>>>online",\n  "value": "3"\n }\n}\n' ;;
-  *)  printf '{\n "stat": {\n  "name": "user>>>%s>>>online"\n }\n}\n' "$u" ;;
+  # 3 свежих IP + 2 протухших (сутки и трое суток назад — их считать нельзя)
+  u1) printf '{"ips":{"10.0.0.1":%s,"10.0.0.2":%s,"10.0.0.3":%s,"10.0.0.4":%s,"10.0.0.5":%s},"name":"user>>>u1>>>online"}\n' \
+        "$now" "$((now-30))" "$((now-119))" "$((now-86400))" "$((now-259200))" ;;
+  # ни одного свежего: юзер офлайн, хотя карта непустая
+  u2) printf '{"ips":{"10.0.0.9":%s},"name":"user>>>u2>>>online"}\n' "$((now-3600))" ;;
+  *)  printf '{"name":"user>>>%s>>>online"}\n' "$u" ;;
 esac
 EOF
 chmod +x "$XRAY_BIN"
 users u1:pass1 u2:pass2
 proto_tuic_enabled() { return 1; }   # только ветка Xray
-is "онлайн только у того, у кого сессии" "$(proto_online_json | jq -c .)" '{"u1":3}'
+is "в онлайн идут только свежие IP" "$(proto_online_json | jq -c .)" '{"u1":3}'
 
 # 9. P-17: онлайн TUIC. metadata.user sing-box не отдаёт (перепроверено на
 #    1.13.14), поэтому соединения резолвятся в юзера по sourceIP из ips.dat —

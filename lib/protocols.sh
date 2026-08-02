@@ -27,6 +27,10 @@ TUIC_CRT="$PROTO_DIR/tuic.crt"
 TUIC_KEY="$PROTO_DIR/tuic.key"
 # Локальный gRPC API Xray (StatsService/HandlerService) — только 127.0.0.1.
 XRAY_API_PORT="${XRAY_API_PORT:-10085}"
+# Окно свежести онлайн-IP Xray, сек: IP из statsonlineiplist старше него не
+# считается устройством в сети (карту онлайна Xray сам не чистит, см. P-33).
+# Крон онлайна ходит раз в минуту — 120 с даёт запас на один пропущенный тик.
+XRAY_ONLINE_WINDOW_SEC="${XRAY_ONLINE_WINDOW_SEC:-120}"
 # Clash API sing-box (онлайн/трафик TUIC) — только 127.0.0.1.
 SINGBOX_API_PORT="${SINGBOX_API_PORT:-9090}"
 SINGBOX_API_SECRET_FILE="$PROTO_DIR/singbox_api.secret"
@@ -919,14 +923,22 @@ proto_online_json() {
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
         # Онлайн живёт в ОТДЕЛЬНОМ реестре Xray: `statsquery -pattern online`
         # отдаёт пустой {} даже при непустом traffic (проверено на 26.3.27) —
-        # достать его можно только командой statsonline по одному юзеру.
+        # достать его можно только по одному юзеру.
         # Юзеров на ноде десятки, вызов локальный, крон раз в минуту — терпимо.
-        local u v lines="" xonline
+        #
+        # НЕ `statsonline`: его value = размер карты онлайн-IP, а Xray эту карту
+        # не чистит (на fin2 встречались записи 137-часовой давности) — на
+        # мобильном CGNAT один телефон за сутки меняет IP и превращается в 5-11
+        # «устройств». Берём `statsonlineiplist` (та же одна команда, отдаёт
+        # ip → last_seen) и считаем только свежие IP. См. P-33.
+        local u v lines="" xonline now
+        now=$(date +%s)
         while IFS=: read -r u _; do
             [ -n "$u" ] || continue
-            # value в ответе — protobuf-JSON: при нуле поля просто нет.
-            v=$("$XRAY_BIN" api statsonline --server="127.0.0.1:${XRAY_API_PORT}" \
-                    -email "$u" 2>/dev/null | grep -o '"value"[^,}]*' | tr -dc '0-9')
+            v=$("$XRAY_BIN" api statsonlineiplist --server="127.0.0.1:${XRAY_API_PORT}" \
+                    -email "$u" 2>/dev/null \
+                | jq -r --argjson n "$now" --argjson w "$XRAY_ONLINE_WINDOW_SEC" \
+                    '[(.ips // {}) | to_entries[] | select($n - .value <= $w)] | length' 2>/dev/null)
             [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && lines+="${u} ${v}"$'\n'
         done < "$USERS_DB"
         if [ -n "$lines" ]; then
