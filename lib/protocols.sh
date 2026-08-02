@@ -785,47 +785,10 @@ proto_disable_protocol() {   # name
 }
 
 # ---------------- Учёт трафика доп. протоколов ----------------
-# Xray StatsService через штатный CLI `xray api statsquery -reset`: отдаёт трафик
-# с момента прошлого сброса (аналог hysteria /traffic?clear=1) и обнуляет счётчики.
-# Суммируем uplink+downlink по каждому юзеру (email) и ДОКЛАДЫВАЕМ в STATS_FILE —
-# ровно как collect_traffic для Hysteria, чтобы квоты/статистика учитывали и VLESS/SS.
-# TUIC (sing-box) считается отдельно (proto_collect_tuic_traffic) — приближённо,
-# по дельтам соединений, т.к. StatsService у sing-box нет (см. ту функцию).
-proto_collect_traffic() {
-    proto_xray_needed || return 0
-    [ -x "$XRAY_BIN" ] || return 0
-    local json
-    json=$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -reset 2>/dev/null) || return 0
-    [ -n "$json" ] || return 0
-    # name = "user>>>EMAIL>>>traffic>>>uplink|downlink". Собираем user|tx|rx
-    # (downlink=клиенту=tx, uplink=от клиента=rx; для суммарной квоты порядок не важен).
-    local pairs
-    pairs=$(printf '%s' "$json" | jq -r '
-        (.stat // [])[]
-        | select(.name != null and (.name | startswith("user>>>")))
-        | (.name | split(">>>")) as $p
-        | "\($p[1])|\($p[3])|\(.value // 0)"' 2>/dev/null)
-    [ -n "$pairs" ] || return 0
-    # Свернём в user -> tx,rx
-    declare -A _tx _rx
-    local email dir val
-    while IFS='|' read -r email dir val; do
-        [ -n "$email" ] || continue
-        [[ "$val" =~ ^[0-9]+$ ]] || val=0
-        case "$dir" in
-            downlink) _tx[$email]=$(( ${_tx[$email]:-0} + val )) ;;
-            uplink)   _rx[$email]=$(( ${_rx[$email]:-0} + val )) ;;
-        esac
-    done <<< "$pairs"
-    local u tx rx users_uniq
-    users_uniq=$(printf '%s\n' "${!_tx[@]}" "${!_rx[@]}" | grep -v '^$' | sort -u)
-    while IFS= read -r u; do
-        [ -n "$u" ] || continue
-        tx=${_tx[$u]:-0}; rx=${_rx[$u]:-0}
-        [ "$tx" -eq 0 ] && [ "$rx" -eq 0 ] && continue
-        echo "${u}|${tx}|${rx}"
-    done <<< "$users_uniq" | _stats_add    # общий доклад в stats.dat под flock
-}
+# Отдельного сборщика Xray с `-reset` больше НЕТ: обнулять счётчики нельзя, их
+# читают ещё минутная активность и 5-секундный спидометр, и любой сброс крал у
+# них интервал (P-37). Кумулятив Xray отдаёт `proto_xray_split_lines` (без
+# reset), а дельту к базе считает collect_traffic (lib/traffic.sh).
 
 # Адреса, за которыми стоит РОВНО ОДИН юзер: «ip<TAB>user». Источники — ips.dat,
 # authmap.dat и такие же файлы пиров. Адрес, с которого за окно ходил не один
@@ -899,7 +862,7 @@ proto_collect_tuic_traffic() {
     mv "$newprev" "$prev" 2>/dev/null
 
     # Докладываем дельты в STATS_FILE (всё в rx: клиент преимущественно качает,
-    # для суммарной квоты сторона не важна — как в proto_collect_traffic).
+    # для суммарной квоты сторона не важна).
     local u
     for u in "${!_du[@]}"; do
         d=${_du[$u]}
@@ -909,7 +872,7 @@ proto_collect_tuic_traffic() {
 
 # ---------------- Активность доп. протоколов ----------------
 # Печатает строки «user|cum» — КУМУЛЯТИВНЫЙ трафик (tx+rx, байт) юзера по доп.
-# протоколам, БЕЗ сброса счётчиков (в отличие от proto_collect_traffic с -reset).
+# протоколам, БЕЗ сброса счётчиков — их читают ещё и общий сбор со спидометром.
 # Нужен collect_activity (lib/traffic.sh) для расчёта скорости за интервал и флага
 # «онлайн/активен» по всем протоколам, а не только Hysteria. best-effort: любой
 # сбой источника — просто нет его строк (Hysteria-активность не ломаем).

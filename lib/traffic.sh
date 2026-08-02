@@ -3,17 +3,24 @@
 # Сбор и отображение трафика пользователей
 # ================================================
 
-# Прибавить дельты к общему счётчику stats.dat. Со stdin — строки «user|tx|rx»
-# (только дельта за интервал, не кумулятив). Один проход awk под flock: раньше
-# каждый сборщик (Hysteria, Xray, TUIC) сам делал grep+sed -i на юзера, и при
-# пересечении с другим сборщиком его дельта терялась целиком — P-21. TUI зовёт
-# сбор на каждой перерисовке, крон — по расписанию, пересекаются они регулярно.
-_stats_add() {
-    local tmp="${STATS_FILE}.tmp.$BASHPID" input
-    input=$(cat)
-    [ -n "$input" ] || return 0     # докладывать нечего — файл не трогаем вовсе
-    exec 9>"${DATA_DIR}/.stats.lock" 2>/dev/null || return 0
-    flock 9 2>/dev/null || { exec 9>&-; return 0; }
+# База кумулятивов протоколов: «user|tx_cum|rx_cum» на момент прошлого сбора.
+# Именно она делает сбор НЕразрушающим: раньше трафик снимался с обнулением
+# (`/traffic?clear=1`, `statsquery -reset`), а значит любой лишний вызов сбора
+# крал байты у спидометра и у минутной активности — TUI зовёт сбор на каждой
+# перерисовке, и при открытом списке юзеров скорость по всему кластеру падала
+# в ноль (P-37). Теперь счётчики движков никто не трогает, а дельта считается
+# относительно этой базы.
+TRAFFIC_PREV_FILE="$DATA_DIR/traffic_prev.dat"
+
+# Блокировка вокруг stats.dat: read-modify-write делают три сборщика + TUI, и
+# пересечение теряло дельту целиком (P-21).
+_stats_lock()   { exec 9>"${DATA_DIR}/.stats.lock" 2>/dev/null || return 1; flock 9 2>/dev/null || { exec 9>&-; return 1; }; }
+_stats_unlock() { exec 9>&-; }
+
+# Прибавить дельты «user|tx|rx» со stdin к stats.dat. БЕЗ блокировки — зовётся
+# из-под неё.
+_stats_apply() {
+    local tmp="${STATS_FILE}.tmp.$BASHPID"
     awk -F'|' -v old="$STATS_FILE" '
         BEGIN {
             while ((getline line < old) > 0) {
@@ -27,54 +34,97 @@ _stats_add() {
             tx[$1] += $2 + 0; rx[$1] += $3 + 0
         }
         END { for (i = 1; i <= total; i++) printf "%s|%.0f|%.0f\n", ord[i], tx[ord[i]], rx[ord[i]] }
-    ' <<< "$input" > "$tmp" && mv "$tmp" "$STATS_FILE" || rm -f "$tmp"
+    ' > "$tmp" && mv "$tmp" "$STATS_FILE" || rm -f "$tmp"
     chmod 644 "$STATS_FILE" 2>/dev/null
-    exec 9>&-
 }
 
-# Общий счётчик трафика по ВСЕМ протоколам. Hysteria отдаёт «с прошлого clear»
-# (?clear=1), Xray — «с прошлого reset», обе дельты докладываются в stats.dat.
-# Xray собирается ЗДЕСЬ, а не только в 30-минутном кроне: иначе трафик
-# VLESS/Trojan/SS в менеджере обновлялся раз в полчаса и выглядел зависшим,
-# пока Hysteria-часть той же строки шла живьём (P-35).
-collect_traffic() {
-    local response now last_ts elapsed have_baseline=1
-    response=$(api_get "/traffic?clear=1")
-    declare -F proto_collect_traffic >/dev/null 2>&1 && proto_collect_traffic
+# Доклад ДЕЛЬТАМИ (у TUIC кумулятива нет — только байты живых соединений).
+_stats_add() {
+    local input; input=$(cat)
+    [ -n "$input" ] || return 0     # докладывать нечего — файл не трогаем вовсе
+    _stats_lock || return 0
+    printf '%s\n' "$input" | _stats_apply
+    _stats_unlock
+}
 
-    # Интервал с прошлого сбора — нужен для расчёта скорости (B/s).
-    # /traffic?clear=1 отдаёт трафик с момента прошлого clear и обнуляет
-    # счётчики, поэтому delta за интервал = это и есть значения tx/rx ответа.
+# Доклад КУМУЛЯТИВАМИ «user|tx_cum|rx_cum» со stdin: под одной блокировкой
+# считаем дельту к базе, прибавляем её к stats.dat и обновляем базу. Печатает
+# применённые дельты (нужны для мгновенной скорости).
+# Счётчик уехал вниз — движок рестартовал, весь текущий кумулятив и есть дельта.
+# Базы ещё нет (первый сбор после обновления) — только запоминаем её: прибавлять
+# нечего, иначе история движка легла бы в счётчик вторым разом.
+_stats_add_cum() {
+    local input deltas ptmp="${TRAFFIC_PREV_FILE}.tmp.$BASHPID"
+    input=$(cat)
+    [ -n "$input" ] || return 0
+    _stats_lock || return 0
+    if [ -s "$TRAFFIC_PREV_FILE" ]; then
+        deltas=$(printf '%s\n' "$input" | awk -F'|' -v prevf="$TRAFFIC_PREV_FILE" '
+            BEGIN {
+                while ((getline line < prevf) > 0) {
+                    n = split(line, p, "|")
+                    if (n >= 3 && p[1] != "") { ptx[p[1]] = p[2] + 0; prx[p[1]] = p[3] + 0 }
+                }
+            }
+            NF >= 3 && $1 != "" {
+                tx = $2 + 0; rx = $3 + 0
+                dtx = ($1 in ptx && tx >= ptx[$1]) ? tx - ptx[$1] : tx
+                drx = ($1 in prx && rx >= prx[$1]) ? rx - prx[$1] : rx
+                if (dtx > 0 || drx > 0) printf "%s|%.0f|%.0f\n", $1, dtx, drx
+            }')
+        [ -n "$deltas" ] && printf '%s\n' "$deltas" | _stats_apply
+    fi
+    printf '%s\n' "$input" > "$ptmp" && mv "$ptmp" "$TRAFFIC_PREV_FILE" || rm -f "$ptmp"
+    _stats_unlock
+    [ -n "$deltas" ] && printf '%s\n' "$deltas"
+    return 0
+}
+
+# Общий счётчик трафика по ВСЕМ протоколам, НЕразрушающий: читаем кумулятивы
+# Hysteria (`/traffic` без clear) и Xray (`statsquery` без reset) и докладываем
+# дельту к базе. Звать можно сколько угодно часто — счётчики движков общие с
+# минутной активностью и 5-секундным спидометром, и обнулять их под ними нельзя
+# (P-37). TUIC считается отдельно: кумулятива per-user у sing-box нет.
+collect_traffic() {
+    local now last_ts elapsed have_baseline=1 hy merged deltas
+    hy=$(api_get "/traffic")
+    { [ -z "$hy" ] || [ "$hy" = "null" ]; } && return 0
+    echo "$hy" | jq empty 2>/dev/null || return 0
+
+    # Кумулятив per-user по протоколам: Hysteria tx/rx + Xray downlink/uplink
+    # (downlink = клиенту = tx, как и было в старом сборщике).
+    merged=$(
+        {
+            echo "$hy" | jq -r 'to_entries[] | "\(.key)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null
+            declare -F proto_xray_split_lines >/dev/null 2>&1 && proto_xray_split_lines 2>/dev/null
+        } | awk -F'|' 'NF>=3 && $1!="" {
+                if (!($1 in tx)) { ord[++n] = $1; tx[$1] = 0; rx[$1] = 0 }
+                tx[$1] += $2 + 0; rx[$1] += $3 + 0
+            }
+            END { for (i = 1; i <= n; i++) printf "%s|%.0f|%.0f\n", ord[i], tx[ord[i]], rx[ord[i]] }'
+    )
+    [ -n "$merged" ] || return 0
+
+    # Интервал с прошлого сбора — для мгновенной скорости (B/s).
     now=$(date +%s)
     [ -s "$SPEED_TS_FILE" ] && last_ts=$(cat "$SPEED_TS_FILE" 2>/dev/null)
     if [[ "$last_ts" =~ ^[0-9]+$ ]]; then
         elapsed=$(( now - last_ts ))
     else
-        # Первый запуск: базовой точки нет — скорость в этот тик не считаем,
-        # иначе накопленный трафик показался бы как мгновенная скорость.
-        elapsed=1
-        have_baseline=0
+        elapsed=1; have_baseline=0
     fi
     [ "$elapsed" -lt 1 ] && elapsed=1
     echo "$now" > "$SPEED_TS_FILE"
 
-    # Файл скорости пересобираем каждый интервал: кого нет в ответе —
-    # у того скорость 0 (get_user_speed вернёт 0 при отсутствии строки).
+    deltas=$(printf '%s\n' "$merged" | _stats_add_cum)
+
+    # Файл скорости пересобираем каждый интервал: кого нет в ответе — у того
+    # скорость 0 (get_user_speed вернёт 0 при отсутствии строки).
     : > "$SPEED_FILE"
-
-    { [ -z "$response" ] || [ "$response" = "null" ]; } && return
-
-    local deltas
-    deltas=$(echo "$response" | jq -r 'to_entries[]
-        | select((.value.tx // 0) + (.value.rx // 0) > 0)
-        | "\(.key)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null)
-    [ -n "$deltas" ] || return 0
-    printf '%s\n' "$deltas" | _stats_add
-
-    # Мгновенная скорость за интервал (байт/сек)
-    [ "$have_baseline" = 1 ] || return 0
+    [ "$have_baseline" = 1 ] && [ -n "$deltas" ] || return 0
     printf '%s\n' "$deltas" | awk -F'|' -v el="$elapsed" \
         'NF>=3 && $1!="" { printf "%s|%d|%d\n", $1, ($2+0)/el, ($3+0)/el }' >> "$SPEED_FILE"
+    return 0
 }
 
 # ---- Учёт АКТИВНОГО трафика для жёсткой проверки (traffic-based) ----
