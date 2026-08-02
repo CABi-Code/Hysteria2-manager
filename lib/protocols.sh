@@ -877,7 +877,7 @@ proto_xray_split_lines() {
 # (сумма upload+download открытых TUIC-соединений юзера). ТОЛЬКО для онлайна:
 # на общем CGNAT-IP изредка попадёт не тот юзер — для индикатора приемлемо, в
 # трафик/квоты это НЕ идёт. См. docs/guide/ONLINE.md.
-proto_tuic_activity_lines() {   # [bytes|conns]
+proto_tuic_activity_lines() {   # [bytes|conns|ips]
     proto_tuic_enabled || return 0
     local mode="${1:-bytes}" secret conns
     secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
@@ -897,11 +897,17 @@ proto_tuic_activity_lines() {   # [bytes|conns]
           END{ for(x in u) print x"\t"u[x] }' )
 
     # sourceIP+bytes каждого TUIC-соединения -> резолв в юзера -> сумма.
-    declare -A _du
+    # В режиме ips вместо суммы печатаем сами пары «user|ip» (разные IP одного
+    # юзера, без повторов) — из них считается число устройств, см. refresh_online.
+    declare -A _du _seen
     local bytes u2
     while IFS=$'\t' read -r ip bytes; do
         [ -n "$ip" ] || continue
         u2=${_ipuser[$ip]:-}; [ -n "$u2" ] || continue
+        if [ "$mode" = ips ]; then
+            [ -n "${_seen[$u2|$ip]:-}" ] || { _seen[$u2|$ip]=1; echo "${u2}|${ip}"; }
+            continue
+        fi
         [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
         [ "$mode" = conns ] && bytes=1        # считаем соединения, а не байты
         _du[$u2]=$(( ${_du[$u2]:-0} + bytes ))
@@ -913,13 +919,16 @@ proto_tuic_activity_lines() {   # [bytes|conns]
 }
 
 # ---------------- Онлайн доп. протоколов ----------------
-# Возвращает JSON {user: conns} по доп. протоколам (best-effort; при любой ошибке
-# — пустой {}, чтобы никогда не ломать основной онлайн Hysteria).
-# Xray: счётчики онлайна (policy.levels."0".statsUserOnline) — по юзеру за раз.
-# sing-box: число активных TUIC-соединений на юзера из clash_api /connections.
-proto_online_json() {
-    proto_any_enabled || { echo '{}'; return 0; }
-    local merged='{}'
+# Печатает строки «user|ip» — АДРЕСА, с которых юзер сейчас в сети по доп.
+# протоколам (best-effort; при любой ошибке — пусто, чтобы никогда не ломать
+# основной онлайн Hysteria). Считать устройства по этим строкам — дело
+# refresh_online: один клиент пингует все протоколы сразу и виден и в Xray, и в
+# TUIC, и в Hysteria с ОДНОГО адреса — суммировать их значило бы считать одно
+# устройство трижды.
+# Xray: карта онлайн-IP (policy.levels."0".statsUserOnline) — по юзеру за раз.
+# sing-box: sourceIP активных TUIC-соединений, резолв в юзера по ips.dat.
+proto_online_ip_lines() {
+    proto_any_enabled || return 0
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
         # Онлайн живёт в ОТДЕЛЬНОМ реестре Xray: `statsquery -pattern online`
         # отдаёт пустой {} даже при непустом traffic (проверено на 26.3.27) —
@@ -931,44 +940,35 @@ proto_online_json() {
         # мобильном CGNAT один телефон за сутки меняет IP и превращается в 5-11
         # «устройств». Берём `statsonlineiplist` (та же одна команда, отдаёт
         # ip → last_seen) и считаем только свежие IP. См. P-33.
-        local u v lines="" xonline now
+        # Разбираем ответ awk'ом, а не jq: команда идёт по юзеру, а jq стоит
+        # ~100 мс на запуск — на два десятка профилей это лишние секунды на
+        # КАЖДУЮ перерисовку экрана. Формат ответа простой: строки «"<ip>": <ts>»
+        # (ts всегда после последнего двоеточия, так что IPv6 не ломает разбор).
+        local u now
         now=$(date +%s)
         while IFS=: read -r u _; do
             [ -n "$u" ] || continue
-            v=$("$XRAY_BIN" api statsonlineiplist --server="127.0.0.1:${XRAY_API_PORT}" \
+            "$XRAY_BIN" api statsonlineiplist --server="127.0.0.1:${XRAY_API_PORT}" \
                     -email "$u" 2>/dev/null \
-                | jq -r --argjson n "$now" --argjson w "$XRAY_ONLINE_WINDOW_SEC" \
-                    '[(.ips // {}) | to_entries[] | select($n - .value <= $w)] | length' 2>/dev/null)
-            [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && lines+="${u} ${v}"$'\n'
+                | awk -v u="$u" -v now="$now" -v w="${XRAY_ONLINE_WINDOW_SEC:-120}" '
+                    {
+                        s = $0
+                        while (match(s, /"[0-9a-fA-F][0-9a-fA-F.:]*"[ \t]*:[ \t]*[0-9]+/)) {
+                            tok = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+                            split(tok, q, "\""); n = split(tok, r, ":")
+                            if (now - (r[n] + 0) <= w) print u "|" q[2]
+                        }
+                    }'
         done < "$USERS_DB"
-        if [ -n "$lines" ]; then
-            xonline=$(printf '%s' "$lines" | jq -Rc -n \
-                '[inputs | split(" ") | select(length == 2) | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)
-            [ -n "$xonline" ] && merged=$(_proto_merge_online "$merged" "$xonline")
-        fi
     fi
     if proto_tuic_enabled; then
         # metadata.user у sing-box НЕТ (перепроверено на 1.13.14: 44 соединения
         # подряд — поле отсутствует у всех), поэтому фильтр по нему давал вечно
         # пустой онлайн. Резолвим соединения в юзеров по sourceIP тем же путём,
-        # что и активность, — proto_tuic_activity_lines в режиме conns.
-        local tlines tonline
-        tlines=$(proto_tuic_activity_lines conns)
-        if [ -n "$tlines" ]; then
-            tonline=$(printf '%s' "$tlines" | jq -Rc -n \
-                '[inputs | split("|") | select(length == 2) | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)
-            [ -n "$tonline" ] && merged=$(_proto_merge_online "$merged" "$tonline")
-        fi
+        # что и активность, — proto_tuic_activity_lines в режиме ips.
+        proto_tuic_activity_lines ips
     fi
-    echo "$merged"
-}
-
-# Слить два JSON {user:n}, суммируя значения по ключу.
-_proto_merge_online() {   # a b -> merged
-    printf '%s\n%s\n' "$1" "$2" | jq -s '
-        reduce .[] as $o ({};
-            reduce ($o | to_entries[]) as $e (.; .[$e.key] = ((.[$e.key] // 0) + ($e.value // 0))))' 2>/dev/null \
-    || echo '{}'
+    return 0
 }
 
 # ---------------- Кик сессий доп. протоколов ----------------
