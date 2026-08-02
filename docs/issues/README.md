@@ -28,7 +28,7 @@
 | [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 11 |
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 4 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 4 |
-| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 3 |
+| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 4 |
 | [WEBAPP.md](WEBAPP.md) | Мини-апп и веб-кабинет `/opt/надстройка` (отдельный репозиторий) | 5 |
 
 ## Сводка
@@ -60,7 +60,8 @@
 | [P-18](PROTOCOLS.md#p-18) | IP-трекинг только по журналу Hysteria — от него зависят тарифы | `lib/ip_tracking.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-19](BILLING.md#p-19) | Покупка тарифа обнуляет персональный тариф скорости | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
 | [P-20](BILLING.md#p-20) | Двойное зачисление ЮMoney: проверка и запись разнесены | `lib/yoomoney.sh` | [billing](BILLING.md) | ✅ |
-| [P-21](OPS.md#p-21) | `stats.dat` правится без блокировки, кроны пересекаются | `lib/traffic.sh` | [ops](OPS.md) | 🟡 |
+| [P-21](OPS.md#p-21) | `stats.dat` правится без блокировки, кроны пересекаются | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
+| [P-35](OPS.md#p-35) | Трафик Xray в менеджере обновлялся раз в полчаса — выглядел зависшим | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
 | [P-22](CLUSTER.md#p-22) | Кластерная сумма трафика немонотонна, free-план строит на ней разницу | `lib/freeplan.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-28](WEBAPP.md#p-28) | Резервный провайдер курсов мёртв: цепочка фактически из одного | `app/Services/RatesService.php` | [webapp](WEBAPP.md) | 🟡 |
 | [P-10](LIMITS.md#p-10) | tc-классы привязаны к имени юзера из `users.db` | `lib/perf.sh` | [limits](LIMITS.md) | 🟢 |
@@ -72,4 +73,4 @@
 | [P-30](WEBAPP.md#p-30) | `laravel.log` без ротации, туда же пишут прогоны тестов | `.env` | [webapp](WEBAPP.md) | 🟢 |
 | [P-31](CLUSTER.md#p-31) | Недоступный пир никак себя не проявлял в менеджере | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
 
-Следующий свободный номер — **P-35**.
+Следующий свободный номер — **P-36**.

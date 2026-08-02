@@ -82,8 +82,7 @@ fi
 
 if [ "$1" = "--collect" ]; then
     setup_stats_api
-    collect_traffic
-    proto_collect_traffic    # трафик VLESS/SS2022 из Xray StatsService в общий учёт
+    collect_traffic          # Hysteria + Xray (VLESS/SS2022/Trojan) в общий учёт
     collect_ips
     collect_sub_ips    # IP по токенам подписки из access-лога Caddy
     publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
