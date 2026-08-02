@@ -122,6 +122,21 @@ bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
     [ "$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
 }
 
+# Нажата кнопка в карточке «Вход в веб-версию» (callback_data «wl:ok|no:<id>»).
+# Решение принимает мини-апп: он же и переписывает карточку в чате. Здесь только
+# доставка нажатия — long-polling наш. См. надстройка/docs/WEB-LOGIN.md.
+bot_weblogin_cb() {   # chat_id tg_id message_id action id
+    local url secret body
+    url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
+    [ -n "$url" ] && [ -n "$secret" ] || return 1
+    body=$(jq -nc --argjson chat "$1" --argjson tg "$2" --argjson mid "${3:-0}" \
+        --arg act "$4" --arg id "$5" \
+        '{chat_id:$chat, tg_id:$tg, message_id:$mid, action:$act, request:$id}') || return 1
+    curl -s --max-time 15 -X POST "${url%/}/api/bot/weblogin" \
+        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
+        --data-binary "$body" >/dev/null 2>&1
+}
+
 # ---------- клиентские действия ----------
 bot_client_link() {   # chat_id
     local chat="$1" user
@@ -339,7 +354,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
         return
     fi
     newexp=$(bot_extend_user "$user" "$days" nonotify)
-    [ "$devices" -gt 0 ] 2>/dev/null && set_user_limits "$user" "$devices" "$(get_user_hardcheck "$user")"
+    [ "$devices" -gt 0 ] 2>/dev/null && set_user_devices "$user" "$devices"
     tg_bind "$tgid" "$user"
     write_authlimits 2>/dev/null
     sub_enabled && sub_refresh >/dev/null 2>&1

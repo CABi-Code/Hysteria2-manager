@@ -65,6 +65,76 @@ cluster_call() {   # host path [timeout] -> stdout
     curl -fsS --max-time "$to" -H "X-Cluster-Auth: $secret" "https://${host}${path}" 2>/dev/null
 }
 
+# ---- Здоровье пиров -----------------------------------------------------
+# Диагноз по пиру. DNS проверяем ОТДЕЛЬНО от HTTPS: пропавшая A-запись (смена
+# NS, домен за прокси-CDN) выглядит так же, как «пир выключен», но чинится
+# совсем иначе — и клиенты при этом ловят ровно тот же обрыв, что и мы.
+peer_probe() {   # host -> 0/1, печатает причину при отказе
+    local host="$1"
+    # Сначала реальный запрос: он единственный судья доступности. DNS проверяем
+    # ТОЛЬКО чтобы объяснить уже случившийся отказ — иначе флапающий резолвер
+    # (негативный кэш апстрима после смены NS отдаёт NXDOMAIN через раз)
+    # хоронил бы живого пира, до которого curl достучался бы сам.
+    cluster_call "$host" "/cluster/manifest" 8 >/dev/null 2>&1 && return 0
+    local tls_ok=1
+    echo | timeout 8 openssl s_client -connect "${host}:443" -servername "$host" \
+        >/dev/null 2>&1 || tls_ok=0
+    if ! getent hosts "$host" >/dev/null 2>&1; then
+        echo "домен не резолвится (нет A-записи / DNS)"
+    elif [ "$tls_ok" = 0 ]; then
+        echo "не отвечает на :443 (нода лежит / файрвол)"
+    elif ! echo | timeout 8 openssl s_client -connect "${host}:443" -servername "$host" \
+              -verify_return_error >/dev/null 2>&1; then
+        # Рукопожатие проходит, проверка цепочки — нет. Так выглядит нода,
+        # которой Caddy не смог выписать Let's Encrypt и откатился на свой CA:
+        # клиенты при этом не могут ни забрать подписку, ни поднять TLS-протокол.
+        echo "сертификат невалиден (самоподписанный / не переоформлен)"
+    else
+        echo "сертификат ок, но данные не отдаёт (секрет кластера / Caddy)"
+    fi
+    return 1
+}
+
+# Итог опроса пира на диск. Пишется и при молчаливом cron-прогоне — иначе
+# недоступность видно только в verbose-логе ручной синхронизации.
+peer_health_set() {   # host name ok reason
+    mkdir -p "$PEERS_DIR" 2>/dev/null
+    local tmp; tmp=$(mktemp) || return 0
+    grep -v "^$1|" "$PEERS_HEALTH_FILE" 2>/dev/null > "$tmp"
+    printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$(date +%s)" "$4" >> "$tmp"
+    cat "$tmp" > "$PEERS_HEALTH_FILE"; rm -f "$tmp"
+}
+
+# Сводка для TUI/бота: пусто = всё в порядке. Иначе строки «name (host) — причина».
+# Пир, по которому синхронизации не было дольше PEER_STALE_SEC, тоже проблема:
+# cron мог не отработать вовсе, и тогда свежего вердикта просто нет.
+PEER_STALE_SEC=900
+cluster_health_report() {
+    [ -s "$PEERS_HEALTH_FILE" ] || return 0
+    local now; now=$(date +%s)
+    local host name ok ts reason age
+    while IFS='|' read -r host name ok ts reason; do
+        [ -n "$host" ] || continue
+        [ "$host" = "$(node_host)" ] && continue          # мы сами
+        # Пир удалён из реестра — старый вердикт не повод для тревоги.
+        grep -q "|$host\$" "$CLUSTER_CONF" 2>/dev/null || continue
+        [[ "$ts" =~ ^[0-9]+$ ]] || ts=0
+        age=$(( now - ts ))
+        if [ "$ok" != "1" ]; then
+            printf '%s (%s) — %s\n' "${name:-$host}" "$host" "${reason:-недоступен}"
+        elif [ "$age" -gt "$PEER_STALE_SEC" ]; then
+            printf '%s (%s) — нет синхронизации %d мин\n' "${name:-$host}" "$host" "$((age / 60))"
+        fi
+    done < "$PEERS_HEALTH_FILE"
+}
+
+# Одна строка для шапки главного меню. Пусто = проблем нет.
+cluster_health_banner() {
+    local bad; bad=$(cluster_health_report | grep -c .) || true
+    [ "${bad:-0}" -gt 0 ] || return 0
+    printf '%s' "🔴 Пиров с проблемой: $bad — ключи этих нод могут не работать у клиентов"
+}
+
 # Живой опрос статистики пиров — для интерактивных экранов, где видно онлайн/
 # скорость/трафик по кластеру. Троттлинг: не чаще раза в LIVE_THROTTLE сек, чтобы
 # не дёргать пиров на каждый перерисов. Тайм-аут короткий (живые пиры отвечают
@@ -182,7 +252,7 @@ cluster_sync() {
         fi
     fi
 
-    local host name data cnt total=0 okp=0 badp=0 s
+    local host name data cnt total=0 okp=0 badp=0 s reason
     while IFS= read -r host; do
         [ -n "$host" ] || continue
         total=$((total + 1))
@@ -192,12 +262,16 @@ cluster_sync() {
         _vp ""
         _vp "  🔗 Нода «$name» ($host)"
         if [ -n "$V" ]; then printf '     Подключение... '; fi
-        # Жёсткая проверка связи с пиром (TLS + секрет кластера).
-        if ! cluster_call "$host" "/cluster/manifest" 8 >/dev/null 2>&1; then
-            [ -n "$V" ] && echo "❌ недоступна (DNS/сертификат/секрет/файрвол пира)"
+        # Жёсткая проверка связи с пиром (DNS, затем TLS + секрет кластера).
+        # Вердикт кладём на диск ВСЕГДА, не только в verbose: cron-прогон молчит,
+        # и без этого недоступный пир ничем себя не выдавал.
+        if ! reason=$(peer_probe "$host"); then
+            [ -n "$V" ] && echo "❌ $reason"
+            peer_health_set "$host" "$name" 0 "$reason"
             badp=$((badp + 1))
             continue
         fi
+        peer_health_set "$host" "$name" 1 ""
         [ -n "$V" ] && echo "✅ подключено"
 
         # gossip реестра
@@ -398,6 +472,7 @@ cluster_delete_local() {   # user
     db_remove_user "$user"
     sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" 2>/dev/null
     roster_remove "$user"
+    declare -F remove_user_abuse >/dev/null && remove_user_abuse "$user"
     api_post "/kick" "[\"$user\"]" &>/dev/null
 }
 

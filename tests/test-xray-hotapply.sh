@@ -109,6 +109,46 @@ is "  состояние не тронуто" "$(cat "$XRAY_APPLIED_USERS")" "$b
 ls "$PROTO_DIR"/.xray.users.* "$PROTO_DIR"/.xray.adu.* >/dev/null 2>&1 \
     && bad "  временные файлы остались" || ok "  временные файлы убраны"
 
+# 8. P-15: онлайн Xray. Счётчики онлайна лежат в отдельном реестре — их отдаёт
+#    только `api statsonline -email` по одному юзеру, и при нуле поля value в
+#    ответе просто НЕТ (protobuf-JSON). Такой юзер в онлайн попасть не должен.
+echo
+echo "── Онлайн Xray (statsonline) ──"
+cat > "$XRAY_BIN" <<'EOF'
+#!/bin/bash
+for a in "$@"; do [ "$prev" = "-email" ] && u="$a"; prev="$a"; done
+case "$u" in
+  u1) printf '{\n "stat": {\n  "name": "user>>>u1>>>online",\n  "value": "3"\n }\n}\n' ;;
+  *)  printf '{\n "stat": {\n  "name": "user>>>%s>>>online"\n }\n}\n' "$u" ;;
+esac
+EOF
+chmod +x "$XRAY_BIN"
+users u1:pass1 u2:pass2
+proto_tuic_enabled() { return 1; }   # только ветка Xray
+is "онлайн только у того, у кого сессии" "$(proto_online_json | jq -c .)" '{"u1":3}'
+
+# 9. P-17: онлайн TUIC. metadata.user sing-box не отдаёт (перепроверено на
+#    1.13.14), поэтому соединения резолвятся в юзера по sourceIP из ips.dat —
+#    тем же путём, что и активность. Незнакомый IP в онлайн не попадает.
+echo
+echo "── Онлайн TUIC (резолв по sourceIP) ──"
+proto_tuic_enabled() { return 0; }   # в п.8 глушили — включаем обратно
+printf 'PROTO_VLESS_ENABLED=1\nPROTO_TROJAN_ENABLED=1\nPROTO_TUIC_ENABLED=1\n' > "$PROTO_CONF"
+printf 'u1|10.0.0.1|100|200|5\nu2|10.0.0.2|100|300|5\n' > "$IPS_FILE"
+curl() {   # заглушка clash_api: у соединений НЕТ metadata.user
+    cat <<'JSON'
+{"connections":[
+ {"upload":10,"download":20,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"upload":30,"download":40,"metadata":{"sourceIP":"10.0.0.1","type":"tuic/tuic-in"}},
+ {"upload":50,"download":60,"metadata":{"sourceIP":"10.0.0.2","type":"tuic/tuic-in"}},
+ {"upload":70,"download":80,"metadata":{"sourceIP":"203.0.113.9","type":"tuic/tuic-in"}}
+]}
+JSON
+}
+# u1: 3 сессии Xray (заглушка п.8) + 2 соединения TUIC, u2: 1 соединение TUIC.
+is "соединения TUIC разошлись по юзерам" "$(proto_online_json | jq -Sc .)" '{"u1":5,"u2":1}'
+is "  и байты тем же путём"              "$(proto_tuic_activity_lines | sort | tr '\n' ' ')" "u1|100 u2|110 "
+
 echo
 [ "$FAIL" = 0 ] && echo "✅ Все проверки прошли" || echo "❌ Есть падения"
 exit "$FAIL"

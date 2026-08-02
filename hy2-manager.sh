@@ -345,6 +345,13 @@ while true; do
         if is_restart_pending; then
             echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria (Настройки → 2)"
         fi
+        if declare -F cluster_health_banner >/dev/null 2>&1; then
+            _cl_banner=$(cluster_health_banner 2>/dev/null)
+            [ -n "$_cl_banner" ] && {
+                echo "  $_cl_banner"
+                cluster_health_report 2>/dev/null | sed 's/^/       · /'
+            }
+        fi
         if declare -F manager_update_banner >/dev/null 2>&1; then
             _upd_banner=$(manager_update_banner 2>/dev/null)
             [ -n "$_upd_banner" ] && echo "  🔔 $_upd_banner — обновить: Настройки → 8"

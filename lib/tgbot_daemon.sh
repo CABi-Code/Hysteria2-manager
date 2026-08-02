@@ -44,6 +44,10 @@ bot_handle_update() {   # json
         tg_answer_cb "$cb_id"
         [ -z "$chat" ] && return 0
         case "$data" in
+            wl:*)
+                # Подтверждение входа в веб-версию: «wl:<ok|no>:<id запроса>».
+                local wl="${data#wl:}"
+                bot_weblogin_cb "$chat" "$from" "${mid:-0}" "${wl%%:*}" "${wl#*:}" ;;
             m:link)   bot_client_link "$chat" ;;
             m:sub)
                 local u; u=$(tg_bound_user "$chat")
@@ -177,8 +181,9 @@ ${tl:-нет тарифов}
         "/start "*)
             local code="${text#/start }" u
             code=$(printf '%s' "$code" | tr -d '[:space:]')
-            # ref_<КОД> — реферальная ссылка мини-аппа (не код привязки).
-            if [ "${code#ref_}" != "$code" ]; then
+            # ref_<КОД> — реферальная ссылка мини-аппа (не код привязки);
+            # wl_<id> — подтверждение входа в веб-версию (карточку шлёт мини-апп).
+            if [ "${code#ref_}" != "$code" ] || [ "${code#wl_}" != "$code" ]; then
                 bot_miniapp_start "$chat" "$from" "$code" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
                     "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
                     || bot_client_menu "$chat"
@@ -193,6 +198,24 @@ ${tl:-нет тарифов}
                 tg_send "$chat" "❌ Код неверен или истёк. Запросите новый у администратора."
                 bot_client_menu "$chat"
             fi ;;
+        "/web "*|"/web@"*|"/веб "*|"/сайт "*)
+            # Вход на сайт кодом, набранным руками: Telegram у человека может
+            # стоять вообще на другом устройстве, где кнопка-deeplink не
+            # открывается. Дальше всё как у deeplink — карточку подтверждения
+            # шлёт мини-апп. См. надстройка/docs/WEB-LOGIN.md.
+            local wcode
+            # Всё после первого слова: «/web@бот КОД» и «/web  код» тоже валидны.
+            wcode=$(printf '%s' "$text" | sed 's/^[^[:space:]]*[[:space:]]*//' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+            if [ -z "$wcode" ]; then
+                tg_send "$chat" "Отправьте код со страницы входа: <code>/web КОД</code>"
+            else
+                bot_miniapp_start "$chat" "$from" "wl_${wcode}" \
+                    "$(echo "$upd" | jq -r '.message.from.username // empty')" \
+                    "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
+                    || tg_send "$chat" "Не получилось проверить код — попробуйте ещё раз через минуту."
+            fi ;;
+        /web|/веб|/сайт)
+            tg_send "$chat" "🌐 Вход на сайт: откройте <b>домен-надстройки</b>, возьмите код со страницы и пришлите его сюда командой <code>/web КОД</code>." ;;
         /menu|/help)
             if bot_is_admin "$from"; then
                 tg_send "$chat" "🛠 <b>Команды администратора</b>
@@ -237,7 +260,7 @@ ${tl:-нет тарифов}
                     extra=" · до $(bot_extend_user "$u" "$days")"
                 fi
                 if [[ "$dev" =~ ^[0-9]+$ ]] && [ "$dev" -gt 0 ]; then
-                    set_user_limits "$u" "$dev" 0; extra="$extra · устройств: $dev"
+                    set_user_devices "$u" "$dev"; extra="$extra · устройств: $dev"
                 fi
                 write_authlimits 2>/dev/null
                 sub_enabled && sub_refresh >/dev/null 2>&1
