@@ -28,7 +28,7 @@
 | [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 11 |
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 4 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 4 |
-| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 4 |
+| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 5 |
 | [WEBAPP.md](WEBAPP.md) | Мини-апп и веб-кабинет `/opt/cibpn-webapp` (отдельный репозиторий) | 5 |
 
 ## Сводка
@@ -70,7 +70,8 @@
 | [P-24](CLUSTER.md#p-24) | Хвосты удалённого профиля достаются одноимённому новому | `lib/users.sh` | [cluster](CLUSTER.md) | 🟢 |
 | [P-25](OPS.md#p-25) | Web API не знает про Trojan | `webapi/wa_dispatch.py` | [ops](OPS.md) | ✅ |
 | [P-29](WEBAPP.md#p-29) | `topup:watch-ton` рапортует о зачислении, которого не было | `app/Services/TonWatcher.php` | [webapp](WEBAPP.md) | 🟢 |
+| [P-36](OPS.md#p-36) | `authmap.dat` растёт вечно, а его читает каждый перерасчёт онлайна | `lib/ip_tracking.sh` | [ops](OPS.md) | 🟢 |
 | [P-30](WEBAPP.md#p-30) | `laravel.log` без ротации, туда же пишут прогоны тестов | `.env` | [webapp](WEBAPP.md) | 🟢 |
 | [P-31](CLUSTER.md#p-31) | Недоступный пир никак себя не проявлял в менеджере | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
 
-Следующий свободный номер — **P-36**.
+Следующий свободный номер — **P-37**.
