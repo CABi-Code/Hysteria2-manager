@@ -113,6 +113,8 @@ def enabled_protocols():
     out = ["hysteria2"]
     if p.get("PROTO_VLESS_ENABLED") == "1":
         out.append("vless-reality-xhttp")
+    if p.get("PROTO_TROJAN_ENABLED") == "1":
+        out.append("trojan-ws")
     if p.get("PROTO_SS_ENABLED") == "1":
         out.append("shadowsocks-2022")
     if p.get("PROTO_TUIC_ENABLED") == "1":

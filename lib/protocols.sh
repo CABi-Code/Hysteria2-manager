@@ -323,7 +323,7 @@ proto_write_xray_config() {
   "api": { "tag": "api", "services": ["HandlerService", "StatsService"] },
   "stats": {},
   "policy": {
-    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
+    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true } },
     "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
   },
   "inbounds": [
@@ -873,9 +873,9 @@ proto_xray_split_lines() {
 # (сумма upload+download открытых TUIC-соединений юзера). ТОЛЬКО для онлайна:
 # на общем CGNAT-IP изредка попадёт не тот юзер — для индикатора приемлемо, в
 # трафик/квоты это НЕ идёт. См. docs/guide/ONLINE.md.
-proto_tuic_activity_lines() {
+proto_tuic_activity_lines() {   # [bytes|conns]
     proto_tuic_enabled || return 0
-    local secret conns
+    local mode="${1:-bytes}" secret conns
     secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
     conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
         "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
@@ -899,6 +899,7 @@ proto_tuic_activity_lines() {
         [ -n "$ip" ] || continue
         u2=${_ipuser[$ip]:-}; [ -n "$u2" ] || continue
         [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+        [ "$mode" = conns ] && bytes=1        # считаем соединения, а не байты
         _du[$u2]=$(( ${_du[$u2]:-0} + bytes ))
     done < <(echo "$conns" | jq -r '(.connections // [])[]
         | select(.metadata.sourceIP != null)
@@ -910,31 +911,40 @@ proto_tuic_activity_lines() {
 # ---------------- Онлайн доп. протоколов ----------------
 # Возвращает JSON {user: conns} по доп. протоколам (best-effort; при любой ошибке
 # — пустой {}, чтобы никогда не ломать основной онлайн Hysteria).
-# Xray: online-статистика StatsService (name ".*>>>online"), если движок её отдаёт.
+# Xray: счётчики онлайна (policy.levels."0".statsUserOnline) — по юзеру за раз.
 # sing-box: число активных TUIC-соединений на юзера из clash_api /connections.
 proto_online_json() {
     proto_any_enabled || { echo '{}'; return 0; }
     local merged='{}'
     if proto_xray_needed && [ -x "$XRAY_BIN" ]; then
-        local xj xonline
-        xj=$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -pattern "online" 2>/dev/null)
-        if [ -n "$xj" ]; then
-            xonline=$(printf '%s' "$xj" | jq -c '
-                reduce ((.stat // [])[] | select(.name != null and (.name | test(">>>online$"))))
-                    as $s ({}; .[($s.name | split(">>>"))[1]] = (($s.value // 0) | tonumber))' 2>/dev/null)
+        # Онлайн живёт в ОТДЕЛЬНОМ реестре Xray: `statsquery -pattern online`
+        # отдаёт пустой {} даже при непустом traffic (проверено на 26.3.27) —
+        # достать его можно только командой statsonline по одному юзеру.
+        # Юзеров на ноде десятки, вызов локальный, крон раз в минуту — терпимо.
+        local u v lines="" xonline
+        while IFS=: read -r u _; do
+            [ -n "$u" ] || continue
+            # value в ответе — protobuf-JSON: при нуле поля просто нет.
+            v=$("$XRAY_BIN" api statsonline --server="127.0.0.1:${XRAY_API_PORT}" \
+                    -email "$u" 2>/dev/null | grep -o '"value"[^,}]*' | tr -dc '0-9')
+            [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && lines+="${u} ${v}"$'\n'
+        done < "$USERS_DB"
+        if [ -n "$lines" ]; then
+            xonline=$(printf '%s' "$lines" | jq -Rc -n \
+                '[inputs | split(" ") | select(length == 2) | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)
             [ -n "$xonline" ] && merged=$(_proto_merge_online "$merged" "$xonline")
         fi
     fi
     if proto_tuic_enabled; then
-        local secret conns tonline
-        secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
-        conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
-            "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
-        if [ -n "$conns" ]; then
-            # Считаем соединения по юзеру: metadata.user (sing-box кладёт имя юзера инбаунда).
-            tonline=$(printf '%s' "$conns" | jq -c '
-                reduce ((.connections // [])[] | .metadata.user // empty) as $u
-                    ({}; .[$u] = ((.[$u] // 0) + 1))' 2>/dev/null)
+        # metadata.user у sing-box НЕТ (перепроверено на 1.13.14: 44 соединения
+        # подряд — поле отсутствует у всех), поэтому фильтр по нему давал вечно
+        # пустой онлайн. Резолвим соединения в юзеров по sourceIP тем же путём,
+        # что и активность, — proto_tuic_activity_lines в режиме conns.
+        local tlines tonline
+        tlines=$(proto_tuic_activity_lines conns)
+        if [ -n "$tlines" ]; then
+            tonline=$(printf '%s' "$tlines" | jq -Rc -n \
+                '[inputs | split("|") | select(length == 2) | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)
             [ -n "$tonline" ] && merged=$(_proto_merge_online "$merged" "$tonline")
         fi
     fi

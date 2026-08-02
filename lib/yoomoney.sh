@@ -129,7 +129,23 @@ ym_find_operation() {   # label
 
 # Проверить один счёт и выдать доступ, если оплачен.
 # Коды возврата: 0 — оплачен и выдан, 1 — оплаты нет, 2 — пришло меньше цены.
+# Проверка идемпотентности смотрит в журнал оплат, а строку туда пишет
+# bot_fulfill_payment В КОНЦЕ — после провижининга (~18 с, внутри рестарт
+# протоколов). Всё это окно кнопка «Проверить оплату» и крон --ym-poll видят
+# «не выдавали» и продлевают второй раз за один платёж. Замок закрывает окно
+# целиком: второй процесс ждёт и после ожидания уже находит запись в журнале.
+# Не дождался за 60 с — считаем «оплаты нет» (вернётся следующим опросом).
+# fd 7: 8 занят подметанием уведомлений, 9 — тиком скоростей.
 ym_settle() {   # label
+    local rc
+    exec 7>"$DATA_DIR/.yoomoney.lock" 2>/dev/null || return 1
+    flock -w 60 7 2>/dev/null || { exec 7>&- 2>/dev/null; return 1; }
+    _ym_settle "$1"; rc=$?
+    flock -u 7 2>/dev/null; exec 7>&- 2>/dev/null
+    return $rc
+}
+
+_ym_settle() {   # label
     local label="$1" row ts tgid code user sum price op amount
     row=$(ym_pending_get "$label"); [ -n "$row" ] || return 1
     IFS='|' read -r label ts tgid code user sum price <<< "$row"

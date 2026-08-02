@@ -127,6 +127,9 @@ DEMOS_DB="$DATA_DIR/demos.db"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
+PEERS_HEALTH_FILE="$PEERS_DIR/.health"      # «host|name|ok|ts|причина» — итог последнего
+                                            # опроса каждого пира (пишет cluster_sync,
+                                            # в т.ч. молчаливый cron-прогон)
 # --- Обновления менеджера (GitHub) ---
 # Единый источник ссылок на репозиторий — меняется только здесь. Проверка версии
 # тянет файл VERSION, само обновление запускает install.sh (режим «только менеджер»).
