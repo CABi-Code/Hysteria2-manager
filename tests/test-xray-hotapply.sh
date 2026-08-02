@@ -131,7 +131,8 @@ EOF
 chmod +x "$XRAY_BIN"
 users u1:pass1 u2:pass2
 proto_tuic_enabled() { return 1; }   # только ветка Xray
-is "в онлайн идут только свежие IP" "$(proto_online_json | jq -c .)" '{"u1":3}'
+is "в онлайн идут только свежие IP" \
+   "$(proto_online_ip_lines | sort | tr '\n' ' ')" "u1|10.0.0.1 u1|10.0.0.2 u1|10.0.0.3 "
 
 # 9. P-17: онлайн TUIC. metadata.user sing-box не отдаёт (перепроверено на
 #    1.13.14), поэтому соединения резолвятся в юзера по sourceIP из ips.dat —
@@ -151,9 +152,26 @@ curl() {   # заглушка clash_api: у соединений НЕТ metadata
 ]}
 JSON
 }
-# u1: 3 сессии Xray (заглушка п.8) + 2 соединения TUIC, u2: 1 соединение TUIC.
-is "соединения TUIC разошлись по юзерам" "$(proto_online_json | jq -Sc .)" '{"u1":5,"u2":1}'
+# u1: 3 свежих IP Xray (заглушка п.8) + TUIC с 10.0.0.1 (уже в списке — повтора
+# быть не должно), u2: TUIC с 10.0.0.2. 203.0.113.9 не резолвится ни в кого.
+is "соединения TUIC разошлись по юзерам" \
+   "$(proto_online_ip_lines | sort -u | tr '\n' ' ')" "u1|10.0.0.1 u1|10.0.0.2 u1|10.0.0.3 u2|10.0.0.2 "
 is "  и байты тем же путём"              "$(proto_tuic_activity_lines | sort | tr '\n' ' ')" "u1|100 u2|110 "
+
+# 10. P-34: устройства считаются по РАЗНЫМ адресам, а не сложением сессий по
+#     протоколам — один клиент пингует все протоколы сразу с одного IP.
+echo
+echo "── Схлопывание онлайна по IP ──"
+source "$SCRIPT_DIR/lib/online.sh"
+api_get() { [ "$1" = "/online" ] && echo '{"u1":2,"u2":1,"u3":1}'; }   # заглушка Hysteria
+# u1 переподключался с 10.0.0.1 (тот же адрес, что в Xray/TUIC) и с 10.0.0.7;
+# u2 — только с 10.0.0.2 (уже учтён по TUIC); u3 в authmap отсутствует вовсе.
+printf 'u1|10.0.0.1|1\nu1|10.0.0.7|2\nu2|10.0.0.2|3\n' > "$AUTHMAP_FILE"
+refresh_online
+is "адрес, общий для протоколов, считается один раз" "$(echo "$CACHED_ONLINE" | jq -Sc .)" \
+   '{"u1":4,"u2":1,"u3":1}'
+is "  и без Hysteria-сессий счёт тот же"  \
+   "$(api_get() { echo '{}'; }; refresh_online; echo "$CACHED_ONLINE" | jq -Sc .)" '{"u1":3,"u2":1}'
 
 echo
 [ "$FAIL" = 0 ] && echo "✅ Все проверки прошли" || echo "❌ Есть падения"

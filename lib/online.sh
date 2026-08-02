@@ -3,21 +3,51 @@
 # Онлайн-статус пользователей через API
 # ================================================
 
+# Онлайн юзера = число РАЗНЫХ адресов, с которых он сейчас в сети, а не сумма
+# сессий по протоколам: клиент для замера латентности держит подписку на всех
+# протоколах сразу, и один телефон виден и в Hysteria, и в Xray, и в TUIC — с
+# одного и того же IP. Поэтому собираем со всех протоколов строки «user|ip» и
+# считаем уникальные (см. docs/guide/ONLINE.md).
 refresh_online() {
-    CACHED_ONLINE=$(api_get "/online")
-    # Если API недоступен или ответ невалиден — подставляем пустой объект
-    if [ -z "$CACHED_ONLINE" ] || ! echo "$CACHED_ONLINE" | jq empty 2>/dev/null; then
-        CACHED_ONLINE='{}'
-    fi
-    # Подмешиваем онлайн доп. протоколов (VLESS/SS2022/TUIC), суммируя по юзеру.
-    # best-effort: при выключенных протоколах или сбое — CACHED_ONLINE не меняется.
-    if declare -F proto_online_json >/dev/null 2>&1 && proto_any_enabled; then
-        local _po
-        _po=$(proto_online_json 2>/dev/null)
-        if [ -n "$_po" ] && [ "$_po" != '{}' ]; then
-            CACHED_ONLINE=$(_proto_merge_online "$CACHED_ONLINE" "$_po")
-        fi
-    fi
+    local hy
+    hy=$(api_get "/online")
+    { [ -n "$hy" ] && echo "$hy" | jq empty 2>/dev/null; } || hy='{}'
+    CACHED_ONLINE=$(
+        {
+            _online_hysteria_ip_lines "$hy"
+            declare -F proto_online_ip_lines >/dev/null 2>&1 && proto_online_ip_lines 2>/dev/null
+        } | awk -F'|' '
+            NF>=2 && $1!="" && $2!="" {
+                if ($2 == "?") { ph[$1]=1; next }          # адрес неизвестен — см. ниже
+                if (!seen[$1"|"$2]++) c[$1]++
+            }
+            END {
+                for (u in ph) if (!(u in c)) c[u]=1        # сессия есть, IP не нашли → 1
+                for (u in c) printf "%s|%d\n", u, c[u]
+            }' \
+          | jq -Rc -n '[inputs | split("|") | select(length == 2)
+                        | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null
+    )
+    [ -n "$CACHED_ONLINE" ] || CACHED_ONLINE='{}'
+}
+
+# Адреса Hysteria-сессий: своего API с IP у Hysteria нет, но auth-скрипт пишет
+# «user|ip|ts» в authmap.dat на КАЖДОЕ подключение. Берём столько последних
+# РАЗНЫХ адресов юзера, сколько у него сейчас сессий по /online: одно устройство
+# с тремя QUIC-сессиями даст три записи с одним IP и схлопнется в одно.
+# Если записей нет вовсе (свежая нода, потерянный файл) — отдаём «user|?»:
+# refresh_online засчитает такому юзеру одно устройство, а не ноль.
+_online_hysteria_ip_lines() {   # json {user: conns}
+    local user n ips
+    while IFS='|' read -r user n; do
+        [ -n "$user" ] || continue
+        [ "${n:-0}" -gt 0 ] 2>/dev/null || continue
+        ips=$(awk -F'|' -v u="$user" -v lim="$n" '
+                $1==u && $2!="" { a[++total]=$2 }
+                END { for (i=total; i>0 && k<lim; i--) if (!s[a[i]]++) { print u "|" a[i]; k++ } }
+              ' "$AUTHMAP_FILE" 2>/dev/null)
+        [ -n "$ips" ] && echo "$ips" || printf '%s|?\n' "$user"
+    done < <(echo "$1" | jq -r 'to_entries[] | select(.value > 0) | "\(.key)|\(.value)"' 2>/dev/null)
 }
 
 get_user_online_count() {
