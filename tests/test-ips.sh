@@ -37,6 +37,24 @@ printf '' | _ips_merge "$IPS_FILE" "$NOW"
 grep -q '^old|' "$IPS_FILE" && bad "запись старше 30 дней должна уйти" || ok "запись 40-дневной давности выброшена"
 grep -q '^fresh|' "$IPS_FILE" && ok "свежая запись на месте" || bad "свежую запись потеряли"
 
+echo "── подрезка authmap"
+# Файл пишет auth-скрипт на каждое подключение и сам не чистит (P-36).
+printf 'alice|1.1.1.1|%s\nalice|1.1.1.2|%s\nbob|2.2.2.2|%s\nмусор\n' \
+    "$OLD" "$NOW" "$OLD" > "$AUTHMAP_FILE"
+service_identity() { echo "$(id -un) $(id -gn)"; }   # без сервиса Hysteria в тесте
+authmap_trim
+check "протухшие записи выброшены" "$(wc -l < "$AUTHMAP_FILE")" "1"
+check "свежая запись на месте"     "$(cat "$AUTHMAP_FILE")"     "alice|1.1.1.2|$NOW"
+check "файл дописываемый"          "$(printf 'bob|3.3.3.3|%s\n' "$NOW" >> "$AUTHMAP_FILE" && wc -l < "$AUTHMAP_FILE")" "2"
+
+# Резать нечего — файл не должен переписываться (mtime врал бы про свежесть,
+# а гонка с auth-скриптом стоит потерянной строки).
+before=$(stat -c %Y "$AUTHMAP_FILE"); sleep 1
+authmap_trim
+check "без протухших записей файл не тронут" "$(stat -c %Y "$AUTHMAP_FILE")" "$before"
+ls "$DATA_DIR"/authmap.dat.tmp.* >/dev/null 2>&1 \
+    && bad "временные файлы остались" || ok "временные файлы убраны"
+
 echo "── разбор журнала Hysteria"
 journalctl() {
     cat <<'EOF'

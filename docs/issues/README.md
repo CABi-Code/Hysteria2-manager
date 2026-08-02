@@ -70,7 +70,7 @@
 | [P-24](CLUSTER.md#p-24) | Хвосты удалённого профиля достаются одноимённому новому | `lib/users.sh` | [cluster](CLUSTER.md) | 🟢 |
 | [P-25](OPS.md#p-25) | Web API не знает про Trojan | `webapi/wa_dispatch.py` | [ops](OPS.md) | ✅ |
 | [P-29](WEBAPP.md#p-29) | `topup:watch-ton` рапортует о зачислении, которого не было | `app/Services/TonWatcher.php` | [webapp](WEBAPP.md) | 🟢 |
-| [P-36](OPS.md#p-36) | `authmap.dat` растёт вечно, а его читает каждый перерасчёт онлайна | `lib/ip_tracking.sh` | [ops](OPS.md) | 🟢 |
+| [P-36](OPS.md#p-36) | `authmap.dat` растёт вечно, а его читает каждый перерасчёт онлайна | `lib/ip_tracking.sh` | [ops](OPS.md) | ✅ |
 | [P-30](WEBAPP.md#p-30) | `laravel.log` без ротации, туда же пишут прогоны тестов | `.env` | [webapp](WEBAPP.md) | 🟢 |
 | [P-31](CLUSTER.md#p-31) | Недоступный пир никак себя не проявлял в менеджере | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
 

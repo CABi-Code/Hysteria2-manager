@@ -9,6 +9,38 @@
 # максимум на неделю назад.
 IPS_RETENTION_DAYS="${IPS_RETENTION_DAYS:-30}"
 
+# Сколько держим записи в ЖИВОМ маппинге user→IP (authmap.dat). Он не история, а
+# рабочая таблица: klimit_reconcile смотрит на час назад, счётчик устройств — на
+# последние адреса юзера. Двух суток хватает обоим с большим запасом.
+AUTHMAP_RETENTION_DAYS="${AUTHMAP_RETENTION_DAYS:-2}"
+
+# Подрезка authmap.dat по возрасту (P-36). Auth-скрипт дописывает строку
+# «user|ip|ts» на КАЖДОЕ подключение и сам файл не чистит — он растёт линейно от
+# числа подключений, а читает его теперь ещё и каждый пересчёт онлайна.
+# Гонка с auth-скриптом: строка, дописанная между чтением и mv, потеряется. Цена
+# мала (вернётся со следующим подключением, а раскладка тарифов подстрахована
+# ips.dat), поэтому чистим редко — из 30-минутного --collect — и только когда
+# резать реально есть что.
+authmap_trim() {
+    [ -s "$AUTHMAP_FILE" ] || return 0
+    local cut tmp owner group
+    cut=$(( $(date +%s) - AUTHMAP_RETENTION_DAYS * 86400 ))
+    # Есть ли хоть одна протухшая строка? Нет — файл не трогаем вовсе.
+    awk -F'|' -v cut="$cut" 'NF>=3 && $3+0 < cut { found=1; exit } END { exit(found?0:1) }' \
+        "$AUTHMAP_FILE" || return 0
+    tmp="${AUTHMAP_FILE}.tmp.$BASHPID"
+    awk -F'|' -v cut="$cut" 'NF>=3 && $1!="" && $3+0 >= cut' "$AUTHMAP_FILE" > "$tmp" \
+        && mv "$tmp" "$AUTHMAP_FILE" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    # Файл дописывает сервис Hysteria из-под своего пользователя: после mv вернуть
+    # владельца обязательно, иначе append начнёт молча падать и живой маппинг
+    # user→IP умрёт (тарифный шейпинг и счёт устройств вместе с ним).
+    if declare -F service_identity >/dev/null 2>&1; then
+        read -r owner group < <(service_identity)
+        [ -n "$owner" ] && chown "${owner}:${group}" "$AUTHMAP_FILE" 2>/dev/null
+    fi
+    chmod 644 "$AUTHMAP_FILE" 2>/dev/null
+}
+
 # Слияние «user|ip» (или «token|ip») со stdin в файл истории «key|ip|first|last|count».
 # Одним awk: старый файл читается один раз, новые пары досчитываются в памяти,
 # протухшие записи выбрасываются. Раньше на КАЖДУЮ строку журнала делались grep
