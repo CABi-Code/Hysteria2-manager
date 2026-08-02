@@ -82,9 +82,9 @@ fi
 
 if [ "$1" = "--collect" ]; then
     setup_stats_api
-    collect_traffic
-    proto_collect_traffic    # трафик VLESS/SS2022 из Xray StatsService в общий учёт
+    collect_traffic          # Hysteria + Xray (VLESS/SS2022/Trojan) в общий учёт
     collect_ips
+    authmap_trim       # живой маппинг user→IP: выбросить записи старше двух суток
     collect_sub_ips    # IP по токенам подписки из access-лога Caddy
     publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
     publish_subips     # разослать IP по токенам подписки
@@ -141,6 +141,9 @@ if [ "$1" = "--online-sync" ]; then
     # успеют закрыться между снимками. До cluster_online_sync — чтобы publish_stats
     # уже включил свежие байты. Xray/Hysteria учитываются в --collect (30 мин).
     declare -F proto_collect_tuic_traffic >/dev/null 2>&1 && proto_collect_tuic_traffic
+    # Отложенный рестарт TUIC: состав юзеров мог смениться, а рвать сессии сразу
+    # мы не стали (см. proto_tuic_apply). Дешёвый no-op, когда применять нечего.
+    declare -F proto_tuic_apply >/dev/null 2>&1 && proto_tuic_apply
     cluster_online_sync
     # Бесплатный тариф: расход по окнам считается минутно — на этой ноде байты
     # видны сразу, а отключение по исчерпанию не должно ждать 30-мин сбора.
