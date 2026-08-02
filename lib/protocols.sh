@@ -475,6 +475,15 @@ _proto_apply_service() {   # service config_file hash_file
 # её не видно) — клиент переподключается сам, данных в полёте нет.
 TUIC_APPLY_MAX_DELAY_SEC="${TUIC_APPLY_MAX_DELAY_SEC:-600}"
 SINGBOX_PENDING_TS="$PROTO_DIR/.singbox.pending"
+SINGBOX_STRUCT_HASH="$PROTO_DIR/.singbox.struct"
+
+# Хэш конфига БЕЗ списков юзеров: от нового юзера не меняется, от смены порта,
+# сертификата или состава инбаундов — меняется. Отсрочка про состав; параметры
+# узла админ меняет руками и ждёт результата сейчас, а не через десять минут.
+_proto_singbox_struct_hash() {
+    jq -Sc 'del(.inbounds[].users)' "$SINGBOX_CONFIG" 2>/dev/null \
+        | sha256sum 2>/dev/null | cut -d' ' -f1
+}
 
 _proto_tuic_conn_count() {
     local secret n
@@ -488,12 +497,14 @@ _proto_tuic_conn_count() {
 proto_tuic_apply() {
     proto_tuic_enabled || return 0
     [ -s "$SINGBOX_CONFIG" ] || return 0
-    local newh oldh now since
+    local newh oldh now since sh osh
     newh=$(sha256sum "$SINGBOX_CONFIG" 2>/dev/null | cut -d' ' -f1)
     oldh=$(cat "$SINGBOX_APPLIED_HASH" 2>/dev/null)
     systemctl enable "$SINGBOX_SERVICE" >/dev/null 2>&1
+    sh=$(_proto_singbox_struct_hash)
     if [ "$newh" = "$oldh" ] && systemctl is-active --quiet "$SINGBOX_SERVICE" 2>/dev/null; then
         rm -f "$SINGBOX_PENDING_TS"
+        [ -n "$sh" ] && echo "$sh" > "$SINGBOX_STRUCT_HASH"
         return 0
     fi
     now=$(date +%s)
@@ -502,13 +513,16 @@ proto_tuic_apply() {
         since=$now
         echo "$now" > "$SINGBOX_PENDING_TS"
     fi
+    osh=$(cat "$SINGBOX_STRUCT_HASH" 2>/dev/null)
     if systemctl is-active --quiet "$SINGBOX_SERVICE" 2>/dev/null \
+       && [ -n "$sh" ] && [ -n "$osh" ] && [ "$sh" = "$osh" ] \
        && [ "$(( now - since ))" -lt "$TUIC_APPLY_MAX_DELAY_SEC" ] \
        && [ "$(_proto_tuic_conn_count)" -gt 0 ]; then
-        return 0                      # кто-то в сети, и ждать ещё можно
+        return 0                      # сменился только состав, кто-то в сети — ждём
     fi
     systemctl restart "$SINGBOX_SERVICE" >/dev/null 2>&1
     echo "$newh" > "$SINGBOX_APPLIED_HASH"
+    [ -n "$sh" ] && echo "$sh" > "$SINGBOX_STRUCT_HASH"
     rm -f "$SINGBOX_PENDING_TS"
 }
 
