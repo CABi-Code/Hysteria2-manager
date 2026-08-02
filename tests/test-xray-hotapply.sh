@@ -207,31 +207,46 @@ restarts() { grep -c . "$RESTARTS"; }
 busy()  { curl() { printf '{"connections":[{"id":"c1","metadata":{"sourceIP":"10.0.0.1"}}]}'; }; }
 idle()  { curl() { printf '{"connections":[]}'; }; }
 
-printf '{"users":["u1"]}' > "$SINGBOX_CONFIG"
-rm -f "$SINGBOX_APPLIED_HASH" "$SINGBOX_PENDING_TS"
+printf '{"inbounds":[{"listen_port":2053,"users":["u1"]}]}' > "$SINGBOX_CONFIG"
+rm -f "$SINGBOX_APPLIED_HASH" "$SINGBOX_PENDING_TS" "$SINGBOX_STRUCT_HASH"
 busy
 proto_tuic_apply
-is "по TUIC ходят — рестарт отложен" "$(restarts)" "0"
+is "первое применение (структуры ещё не знаем) идёт сразу" "$(restarts)" "1"
+
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u5"]}]}' > "$SINGBOX_CONFIG"
+proto_tuic_apply
+is "по TUIC ходят — рестарт отложен" "$(restarts)" "1"
 [ -s "$SINGBOX_PENDING_TS" ] && ok "  отсрочка помечена" || bad "  метка отсрочки не поставлена"
 
 echo $(( $(date +%s) - TUIC_APPLY_MAX_DELAY_SEC - 1 )) > "$SINGBOX_PENDING_TS"
 proto_tuic_apply
-is "ждали дольше предела — применили" "$(restarts)" "1"
+is "ждали дольше предела — применили" "$(restarts)" "2"
 [ -f "$SINGBOX_PENDING_TS" ] && bad "  метка отсрочки осталась" || ok "  метка отсрочки снята"
 
 proto_tuic_apply
-is "конфиг не менялся — рестарта нет" "$(restarts)" "1"
+is "конфиг не менялся — рестарта нет" "$(restarts)" "2"
 
-printf '{"users":["u1","u2"]}' > "$SINGBOX_CONFIG"
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u5","u6"]}]}' > "$SINGBOX_CONFIG"
 idle
 proto_tuic_apply
-is "по TUIC никого — применяем сразу" "$(restarts)" "2"
+is "по TUIC никого — применяем сразу" "$(restarts)" "3"
 
-printf '{"users":["u1","u2","u3"]}' > "$SINGBOX_CONFIG"
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u5","u6","u7"]}]}' > "$SINGBOX_CONFIG"
 busy; SVC_UP=1                            # сервис лежит — рвать всё равно нечего
 proto_tuic_apply
-is "сервис лежит — применяем сразу" "$(restarts)" "3"
+is "сервис лежит — применяем сразу" "$(restarts)" "4"
 SVC_UP=0
+
+# Отсрочка — только про состав юзеров. Смена параметров узла (порт, инбаунды)
+# идёт из меню, и админ ждёт результата сейчас.
+idle; proto_tuic_apply                    # ровняем состояние
+before=$(restarts)
+printf '{"inbounds":[{"listen_port":2053,"users":["u1","u9"]}]}' > "$SINGBOX_CONFIG"
+busy; proto_tuic_apply
+is "сменился только состав — ждём" "$(restarts)" "$before"
+printf '{"inbounds":[{"listen_port":2054,"users":["u1","u9"]}]}' > "$SINGBOX_CONFIG"
+proto_tuic_apply
+is "сменился порт — применяем сразу" "$(restarts)" "$(( before + 1 ))"
 
 # 12. P-34: устройства считаются по РАЗНЫМ адресам, а не сложением сессий по
 #     протоколам — один клиент пингует все протоколы сразу с одного IP.
