@@ -136,20 +136,22 @@ freeplan_activate() {   # user -> 0 ок · 1 нельзя · 3 подписка
 
 # Суммарные байты юзера ПО ВСЕМУ КЛАСТЕРУ (tx+rx, кумулятивно с момента заведения).
 freeplan_user_bytes() {   # user -> bytes
-    local user="$1" tl tx rx total line cum ats collts peers
+    local user="$1" tl tx rx total line cum base peers
     tl=$(get_user_traffic "$user"); tx=$(printf '%s' "$tl" | cut -d'|' -f2); rx=$(printf '%s' "$tl" | cut -d'|' -f3)
     total=$(( ${tx:-0} + ${rx:-0} ))
 
-    # Ещё не собранный кумулятив ЭТОЙ ноды (снимок обновляется раз в минуту) —
-    # даёт минутную точность там, где юзер сейчас и качает. Берём только если
-    # снимок свежее последнего сбора: иначе эти байты уже попали в STATS_FILE
-    # (collect_traffic делает /traffic?clear=1) и посчитались бы дважды.
+    # Ещё не собранный остаток ЭТОЙ ноды: минутный снимок кумулятива
+    # (activity_prev.dat) минус база, до которой уже досчитан STATS_FILE
+    # (traffic_prev.dat). Даёт минутную точность там, где юзер качает прямо
+    # сейчас, и не считает байты дважды. Раньше сбор обнулял счётчики движка, и
+    # здесь брался весь кумулятив снимка — с неразрушающим сбором (P-37) он
+    # растёт до рестарта движка, и такое сложение завысило бы расход в разы.
     line=$(grep "^${user}|" "$ACTIVITY_PREV_FILE" 2>/dev/null | head -1)
-    cum=$(printf '%s' "$line" | cut -d'|' -f2); ats=$(printf '%s' "$line" | cut -d'|' -f3)
-    collts=$(cat "$SPEED_TS_FILE" 2>/dev/null)
-    if [[ "$cum" =~ ^[0-9]+$ ]] && [[ "$ats" =~ ^[0-9]+$ ]] && [[ "$collts" =~ ^[0-9]+$ ]] \
-       && [ "$ats" -gt "$collts" ]; then
-        total=$(( total + cum ))
+    cum=$(printf '%s' "$line" | cut -d'|' -f2)
+    base=$(awk -F'|' -v u="$user" '$1==u {printf "%.0f", $2+$3; exit}' "$TRAFFIC_PREV_FILE" 2>/dev/null)
+    if [[ "$cum" =~ ^[0-9]+$ ]]; then
+        [[ "$base" =~ ^[0-9]+$ ]] || base=0
+        [ "$cum" -gt "$base" ] && total=$(( total + cum - base ))
     fi
 
     # ponytail: трафик пиров берём из их опубликованной статистики — она обновляется
