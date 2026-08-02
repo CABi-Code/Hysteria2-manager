@@ -87,7 +87,9 @@ write_authlimits() {
 # Снимок для auth пишем всегда.
 enforce_device_limits() {
     sub_enabled || return 0
-    refresh_online          # заполнит CACHED_ONLINE для get_user_online_count
+    # CACHED_ONLINE мог уже посчитать publish_stats в этом же процессе — второй
+    # опрос протоколов стоил бы ещё пары секунд ради тех же чисел.
+    [ -n "${CACHED_ONLINE:-}" ] || refresh_online
     local online_json="$CACHED_ONLINE"
     [ -z "$online_json" ] && online_json='{}'
     # Гейта «есть ли ГЛОБАЛЬНЫЙ лимит» здесь нет намеренно: pool_cap/node_cap

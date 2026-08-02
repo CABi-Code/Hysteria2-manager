@@ -16,13 +16,16 @@
 publish_stats() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local online tmp="$WEBROOT/cluster/stats.tmp.$BASHPID" u oc tl tx rx sp sptx sprx ac asince
-    online=$(api_get "/online")
-    echo "$online" | jq empty 2>/dev/null || online='{}'
+    local tmp="$WEBROOT/cluster/stats.tmp.$BASHPID" u oc tl tx rx sp sptx sprx ac asince
+    # Онлайн берём ОБЩИЙ (CACHED_ONLINE: Hysteria + Xray + TUIC, схлопнутый по
+    # адресам), а не сырой api_get "/online". Раньше здесь висел прямой запрос к
+    # Hysteria, и юзеры, сидящие по VLESS/TUIC, для остальных нод кластера были
+    # офлайн: их не видел ни список, ни лимит устройств (P-38).
+    [ -n "${CACHED_ONLINE:-}" ] || { declare -F refresh_online >/dev/null 2>&1 && refresh_online; }
     : > "$tmp"
     while IFS=: read -r u _; do
         [ -n "$u" ] || continue
-        oc=$(echo "$online" | jq -r --arg x "$u" '.[$x]//0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
+        oc=$(get_user_online_count "$u"); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
         tl=$(get_user_traffic "$u"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
         sp=$(get_user_speed "$u");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
         ac=$(get_user_active "$u");  asince=$(get_user_active_since "$u")

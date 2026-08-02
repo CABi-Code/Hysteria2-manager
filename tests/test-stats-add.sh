@@ -55,5 +55,25 @@ printf '' | _stats_add
 is "пустой доклад не трогает файл" "$(stat -c %Y "$STATS_FILE")" "$before"
 
 echo
+echo "── Доклад кумулятивами (неразрушающий сбор) ──"
+# Сбор больше не обнуляет счётчики движков (их читают спидометр и минутная
+# активность), поэтому дельта считается относительно базы traffic_prev.dat.
+: > "$STATS_FILE"; rm -f "$TRAFFIC_PREV_FILE"
+out=$(printf 'alice|1000|2000\nbob|50|60\n' | _stats_add_cum)
+is "первый сбор только запоминает базу" "$(grep -c '^' "$STATS_FILE")" "0"
+is "  и ничего не докладывает"          "$out" ""
+is "  база записана"                    "$(grep '^alice|' "$TRAFFIC_PREV_FILE")" "alice|1000|2000"
+
+out=$(printf 'alice|1500|2200\nbob|50|60\n' | _stats_add_cum)
+is "во второй раз идёт дельта к базе" "$(get_user_traffic alice)" "alice|500|200"
+is "  без движения — без строки"      "$(get_user_traffic bob)"   "bob|0|0"
+is "  дельта отдана вызывающему"      "$out"                      "alice|500|200"
+
+# Движок рестартовал: счётчик уехал вниз, весь текущий кумулятив и есть дельта.
+out=$(printf 'alice|30|10\n' | _stats_add_cum)
+is "сброс счётчика не даёт отрицательной дельты" "$(get_user_traffic alice)" "alice|530|210"
+is "  база перезаписана на новый кумулятив"      "$(grep '^alice|' "$TRAFFIC_PREV_FILE")" "alice|30|10"
+
+echo
 [ "$FAIL" = 0 ] && echo "✅ Все проверки прошли" || echo "❌ Есть падения"
 exit "$FAIL"
