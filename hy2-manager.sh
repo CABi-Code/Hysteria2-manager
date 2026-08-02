@@ -141,6 +141,9 @@ if [ "$1" = "--online-sync" ]; then
     # успеют закрыться между снимками. До cluster_online_sync — чтобы publish_stats
     # уже включил свежие байты. Xray/Hysteria учитываются в --collect (30 мин).
     declare -F proto_collect_tuic_traffic >/dev/null 2>&1 && proto_collect_tuic_traffic
+    # Отложенный рестарт TUIC: состав юзеров мог смениться, а рвать сессии сразу
+    # мы не стали (см. proto_tuic_apply). Дешёвый no-op, когда применять нечего.
+    declare -F proto_tuic_apply >/dev/null 2>&1 && proto_tuic_apply
     cluster_online_sync
     # Бесплатный тариф: расход по окнам считается минутно — на этой ноде байты
     # видны сразу, а отключение по исчерпанию не должно ждать 30-мин сбора.
