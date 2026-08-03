@@ -54,6 +54,14 @@ valid_num()   { [[ "$1" =~ ^[0-9]{1,7}$ ]] || fail 64 bad_number "ожидало
 # Со знаком: extend умеет и укорачивать срок (эскроу подарочных дней в мини-аппе).
 valid_snum()  { [[ "$1" =~ ^-?[0-9]{1,7}$ ]] || fail 64 bad_number "ожидалось число"; }
 valid_code()  { [[ "$1" =~ ^[A-Za-z0-9]{4,64}$ ]] || fail 64 bad_code "недопустимый код"; }
+# Тариф пишется строкой «code|title|days|devices|prices|currencies|opts»: любой
+# «|» или перевод строки в аргументе расщепил бы запись, поэтому проверяем здесь
+# ещё раз, независимо от демона.
+valid_tcode()       { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || fail 64 bad_code "недопустимый код тарифа"; }
+valid_ttitle()      { [ -n "$1" ] && [ ${#1} -le 64 ] && [[ "$1" != *"|"* ]] && [[ "$1" != *$'\n'* ]] || fail 64 bad_title "недопустимое название тарифа"; }
+valid_tprices()     { [[ "$1" =~ ^[0-9]+([.][0-9]{1,2})?(/[0-9]+([.][0-9]{1,2})?)*$ ]] || fail 64 bad_price "недопустимая цена"; }
+valid_tcurrencies() { [[ "$1" =~ ^[A-Z]{3}(/[A-Z]{3})*$ ]] || fail 64 bad_currency "недопустимая валюта"; }
+valid_topts()       { [[ "$1" =~ ^[A-Za-z0-9=\;.]{0,128}$ ]] || fail 64 bad_options "недопустимые опции тарифа"; }
 
 # Мутации сериализуются между собой. -w 15: лучше отдать 503 busy (rc 75,
 # демон добавит Retry-After), чем висеть вечно.
@@ -250,6 +258,60 @@ case "$verb" in
         while IFS= read -r _uri; do
             [ -n "$_uri" ] && printf 'link=%s\n' "$_uri"
         done < <(build_user_all_links "$1")
+        ;;
+
+    tariff-set)  # <code> <title> <days> <devices> <prices> <currencies> <options>
+                 # Upsert: существующий правим НА МЕСТЕ (позиция в витрине —
+                 # часть каталога), новый дописываем в конец. Бота не
+                 # рестартуем: tariff_list читает файл на каждом обращении.
+        [ $# -eq 7 ] || fail 64 bad_args "tariff-set <code> <title> <days> <devices> <prices> <currencies> <options>"
+        valid_tcode "$1"; valid_ttitle "$2"; valid_num "$3"; valid_num "$4"
+        valid_tprices "$5"; valid_tcurrencies "$6"; valid_topts "$7"
+        take_lock
+        if [ -n "$(tariff_get "$1")" ]; then
+            # force_opts: пустые опции от API означают «опций нет», а не
+            # «оставь как было» (иначе снять лимиты снаружи было бы нельзя).
+            tariff_update "$1" "$1" "$2" "$3" "$4" "$5" "$6" "$7" force_opts \
+                || fail 1 tariff_write_failed "не удалось записать тариф"
+        else
+            tariff_add "$1" "$2" "$3" "$4" "$5" "$6" "$7" \
+                || fail 1 tariff_write_failed "не удалось записать тариф"
+        fi
+        printf 'code=%s\n' "$1"
+        ;;
+
+    tariff-del)  # <code>
+        [ $# -eq 1 ] || fail 64 bad_args "tariff-del <code>"
+        valid_tcode "$1"
+        take_lock
+        [ -n "$(tariff_get "$1")" ] || fail 2 tariff_not_found "тариф не найден"
+        tariff_del "$1"
+        printf 'code=%s\n' "$1"
+        ;;
+
+    tariff-move) # <code> <up|down|позиция>
+        [ $# -eq 2 ] || fail 64 bad_args "tariff-move <code> <up|down|N>"
+        valid_tcode "$1"
+        take_lock
+        [ -n "$(tariff_get "$1")" ] || fail 2 tariff_not_found "тариф не найден"
+        case "$2" in
+            up|down) tariff_move "$1" "$2" || fail 3 tariff_at_edge "тариф уже с краю" ;;
+            [0-9]|[0-9][0-9]|[0-9][0-9][0-9])
+                tariff_move_to "$1" "$2" || fail 3 tariff_move_failed "не удалось переместить" ;;
+            *) fail 64 bad_args "направление: up, down или номер позиции" ;;
+        esac
+        printf 'code=%s\n' "$1"
+        ;;
+
+    pricing-set) # <fixed|rate> <rub_per_star> — режим звёздной цены (bot.conf)
+        [ $# -eq 2 ] || fail 64 bad_args "pricing-set <fixed|rate> <rub_per_star>"
+        case "$1" in fixed | rate) ;; *) fail 64 bad_args "режим: fixed или rate" ;; esac
+        [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail 64 bad_number "курс — число"
+        awk -v r="$2" 'BEGIN{exit !(r+0>0)}' || fail 64 bad_number "курс — число больше нуля"
+        take_lock
+        bot_set STARS_MODE "$1"
+        bot_set STARS_RUB_PER_STAR "$2"
+        printf 'stars_mode=%s\nrub_per_star=%s\n' "$1" "$2"
         ;;
 
     *)

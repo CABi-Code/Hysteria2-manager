@@ -59,6 +59,12 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
     ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
     ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
+    # Каталог на запись (scope tariffs): менеджер — источник правды по продаже,
+    # внешняя админка правит тарифы здесь, а не заводит свои. См. design/SALES.
+    ("POST", re.compile(r"^/v1/tariffs$"), "tariffs", "h_tariff_set"),
+    ("DELETE", re.compile(r"^/v1/tariffs/([^/]+)$"), "tariffs", "h_tariff_del"),
+    ("POST", re.compile(r"^/v1/tariffs/([^/]+)/move$"), "tariffs", "h_tariff_move"),
+    ("POST", re.compile(r"^/v1/pricing$"), "tariffs", "h_pricing_set"),
     ("POST", re.compile(r"^/v1/users$"), "users", "h_provision"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/extend$"), "users", "h_extend"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/enable$"), "users", "h_enable"),
@@ -98,6 +104,66 @@ def need_tg_id(value):
     return str(value)
 
 
+RE_TARIFF_CODE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+RE_TARIFF_PRICE = re.compile(r"^\d{1,9}([.,]\d{1,2})?$")
+RE_TARIFF_CURRENCY = re.compile(r"^[A-Z]{3}$")
+RE_TARIFF_OPTIONS = re.compile(r"^[A-Za-z0-9=;.]{0,128}$")
+
+
+def need_tariff_code(value):
+    if not RE_TARIFF_CODE.fullmatch(str(value or "")):
+        raise ApiError(400, "invalid_code", "код тарифа: латиница, цифры, _ и -, до 32 символов")
+    return str(value)
+
+
+def need_tariff_title(value):
+    title = str(value or "").strip()
+    # «|» — разделитель полей tariffs.conf, перевод строки — разделитель строк:
+    # и то и другое расщепило бы запись на две.
+    if not title or len(title) > 64 or "|" in title or "\n" in title:
+        raise ApiError(400, "invalid_title", "название: 1..64 символа, без «|» и переводов строк")
+    return title
+
+
+def need_tariff_prices(body):
+    """prices[{currency,price}] (или одиночные price/currency) → «/»-списки.
+
+    Формат хранения — два выровненных списка в одной строке tariffs.conf
+    (см. lib/tariffs.sh); здесь единственное место, где внешний JSON в него
+    переводится.
+    """
+    entries = body.get("prices")
+    if entries is None:
+        entries = [{"currency": body.get("currency"), "price": body.get("price")}]
+    if not isinstance(entries, list) or not 1 <= len(entries) <= 8:
+        raise ApiError(400, "invalid_prices", "prices: список из 1..8 цен")
+    prices, currencies = [], []
+    for e in entries:
+        if not isinstance(e, dict):
+            raise ApiError(400, "invalid_prices", "цена: объект {currency, price}")
+        price = str(e.get("price", "")).strip().replace(",", ".")
+        currency = str(e.get("currency", "")).strip().upper()
+        if not RE_TARIFF_PRICE.fullmatch(price):
+            raise ApiError(400, "invalid_price", "price: число, до 2 знаков после запятой")
+        if not RE_TARIFF_CURRENCY.fullmatch(currency):
+            raise ApiError(400, "invalid_currency", "currency: три заглавные буквы (XTR — Telegram Stars)")
+        if currency in currencies:
+            raise ApiError(400, "duplicate_currency", f"валюта {currency} указана дважды")
+        if currency == "XTR" and "." in price:
+            raise ApiError(400, "invalid_price", "цена в звёздах — целое число")
+        prices.append(price)
+        currencies.append(currency)
+    return "/".join(prices), "/".join(currencies)
+
+
+def need_tariff_options(value):
+    """7-е поле «k=v;k=v» (free/wk/mo/start, см. lib/freeplan.sh). Пусто = нет опций."""
+    options = str(value or "").strip()
+    if not RE_TARIFF_OPTIONS.fullmatch(options):
+        raise ApiError(400, "invalid_options", "options: строка вида «free=1;wk=3G;mo=10G»")
+    return options
+
+
 def is_int(value):
     # bool — подкласс int (isinstance(True, int) == True), но str(True) = "True"
     # ломает контракт dispatch.sh (rc 64 → 502). Отвергаем bool явно, чтобы
@@ -122,6 +188,60 @@ class Handler(BaseHTTPRequestHandler):
 
     def h_tariffs(self):
         return {"tariffs": tariffs(), "pricing": pricing()}
+
+    def h_tariff_set(self):
+        """Создать или заменить тариф целиком (upsert по коду).
+
+        Существующий правится НА МЕСТЕ: позиция в витрине — часть каталога, и
+        сохранить её важнее, чем сэкономить ветку. Опции (7-е поле) передаются
+        явно: не прислали — значит их нет (иначе внешняя админка не смогла бы
+        снять лимиты, docs/guide/API.md).
+        """
+        code = need_tariff_code(self.body.get("code"))
+        title = need_tariff_title(self.body.get("title"))
+        days = self.body.get("days")
+        devices = self.body.get("devices", 0)
+        if not (is_int(days) and 0 <= days <= 3650):
+            raise ApiError(400, "invalid_days", "days: целое 0..3650")
+        if not (is_int(devices) and 0 <= devices <= 1000):
+            raise ApiError(400, "invalid_devices", "devices: целое 0..1000")
+        prices, currencies = need_tariff_prices(self.body)
+        options = need_tariff_options(self.body.get("options", ""))
+        self.dispatch("tariff-set", code, title, str(days), str(devices),
+                      prices, currencies, options)
+        return {"tariff": next((t for t in tariffs() if t["code"] == code), None)}
+
+    def h_tariff_del(self, code):
+        code = need_tariff_code(code)
+        self.dispatch("tariff-del", code)
+        return {"code": code, "deleted": True}
+
+    def h_tariff_move(self, code):
+        """Порядок тарифов в витрине: up/down или на позицию N (с 1)."""
+        code = need_tariff_code(code)
+        where = self.body.get("position", self.body.get("direction"))
+        if is_int(where) and 1 <= where <= 999:
+            where = str(where)
+        elif where not in ("up", "down"):
+            raise ApiError(400, "invalid_move", "direction: up|down либо position: 1..999")
+        self.dispatch("tariff-move", code, where)
+        return {"tariffs": tariffs()}
+
+    def h_pricing_set(self):
+        """Режим звёздной цены ноды (см. guide/TARIFF-PRICING.md)."""
+        current = pricing()
+        mode = self.body.get("stars_mode", current["stars_mode"])
+        rate = self.body.get("rub_per_star", current["rub_per_star"])
+        if mode not in ("fixed", "rate"):
+            raise ApiError(400, "invalid_mode", "stars_mode: fixed|rate")
+        try:
+            rate = float(str(rate).replace(",", "."))
+        except (TypeError, ValueError):
+            rate = 0
+        if not 0 < rate <= 10000:
+            raise ApiError(400, "invalid_rate", "rub_per_star: число больше 0")
+        self.dispatch("pricing-set", mode, f"{rate:g}")
+        return {"pricing": pricing()}
 
     def h_nodes(self):
         return {"nodes": nodes()}
@@ -471,6 +591,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.handle_route("GET")
+
+    def do_DELETE(self):
+        self.handle_route("DELETE")
 
     def do_POST(self):
         self.handle_route("POST")
