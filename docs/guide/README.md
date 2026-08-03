@@ -15,6 +15,7 @@
 | [PEER-HEALTH.md](PEER-HEALTH.md) | **Здоровье пиров**: почему недоступная нода была не видна в TUI, диагноз пира (DNS / TLS / секрет), `.health`, баннер в главном меню | `lib/cluster.sh`, `lib/config.sh`, `hy2-manager.sh` |
 | [CLUSTER-SCOPE.md](CLUSTER-SCOPE.md) | **Область действия настроек в кластере**: локальный профиль против кластерного, что уезжает на другие ноды, правила для нового синхронизируемого поля | `lib/cluster.sh`, `lib/limits.sh`, `lib/ui_users.sh` |
 | [NOTIFICATIONS.md](NOTIFICATIONS.md) | **Уведомления бота**: подписка (менеджер) и баланс (надстройка), кастомные эмодзи, канал-DM, как добавить новое уведомление | `lib/notify.sh`, `lib/tgbot*.sh` |
+| [BOT-MODULES.md](BOT-MODULES.md) | **Модули бота**: продажу, уведомления и админ-панель можно включать по отдельности (`BOT_MODULES`); что при этом остаётся ядром | `lib/tgbot.sh`, `lib/tgbot_client.sh`, `lib/tgbot_daemon.sh`, `lib/tgbot_menu.sh` |
 | [BOT-START.md](BOT-START.md) | **`/start` и реферальные ссылки**: бот передаёт команду мини-аппу, тот шлёт приветствие и начисляет бонус (полное описание — `надстройка/docs/BOT-START.md`) | `lib/tgbot_client.sh`, `lib/tgbot_daemon.sh` |
 | [YOOMONEY.md](YOOMONEY.md) | **Приём рублей через ЮMoney**: продажа тарифов без платёжного провайдера (личный кошелёк, метка платежа, опрос истории) | `lib/yoomoney.sh`, `lib/tgbot_client.sh`, `lib/tgbot_menu.sh` |
 | [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи**: `demo_create()`, таблица `DEMOS_DB`, enforcement капов кроном, грейс-сутки и авто-purge | `lib/demo.sh`, `lib/ui_users.sh` |
