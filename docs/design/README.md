@@ -7,7 +7,6 @@
 | Проект | О чём | Код, который придётся править |
 |---|---|---|
 | [PLACEMENT/](PLACEMENT/README.md) | **Размещение профилей по нодам**: ёмкость ноды, N нод на профиль вместо «все на всех», фазы внедрения, задел под маркет локаций. Разбор проблем — [PROBLEMS.md](PLACEMENT/PROBLEMS.md), веса профилей — [USAGE-CLASSES.md](PLACEMENT/USAGE-CLASSES.md) | `lib/cluster.sh`, `lib/sub_links.sh`, `lib/node.sh`, `webapi/wa_dispatch.py` |
-| [SALES/](SALES/README.md) | **Продажа: менеджер — источник правды**: модули бота (продажу можно выключить, уведомления оставить), режимы звёздной цены, write-API каталога тарифов. Ответ на [P-09](../issues/BILLING.md#p-09) | `lib/tgbot*.sh`, `lib/tariffs.sh`, `webapi/*` |
 
 Реализация PLACEMENT упирается в [P-03](../issues/CLUSTER.md#p-03) (нельзя снять
 юзера с одной ноды) и ломает [P-07](../issues/LIMITS.md#p-07) (детект шаринга
