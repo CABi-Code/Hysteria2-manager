@@ -49,6 +49,7 @@ bot_menu() {
         echo "  Провайдер  : $([ -n "$prov" ] && echo "настроен, валюта $cur" || echo "не настроен (доступны Telegram Stars)")"
         echo "  ЮMoney     : $(ym_enabled && echo "кошелёк $(bot_get YM_WALLET), комиссия $(ym_fee) %, $([ "$(ym_type)" = PC ] && echo "кошелёк ЮMoney" || echo "карта")" || echo "не настроен")"
         echo "  Оплат всего: $(grep -c '^' "$PAYMENTS_LOG" 2>/dev/null | tr -dc '0-9' || echo 0)"
+        echo "  Модули     : $(for m in sales notify admin; do bot_mod_on "$m" && printf '%s ' "$m"; done)"
         echo ""
         echo "  1. 🔑 Задать токен бота (из @BotFather)"
         echo "  2. 👑 Задать админов (chat ID через запятую; свой ID — команда /id боту)"
@@ -60,6 +61,7 @@ bot_menu() {
         echo "  8. 📨 Тест: сообщение всем админам"
         echo "  9. 📜 Логи бота (последние 25 строк)"
         echo " 10. 🪙 ЮMoney: приём рублей на личный кошелёк (без провайдера)"
+        echo " 11. 🧩 Модули бота (продажа / уведомления / админ-панель)"
         echo "  0. ↩  Назад"
         echo ""
         local ch; ask ch "  Выберите: "
@@ -180,6 +182,44 @@ bot_menu() {
                     echo "  ⚠️  Без токена оплату подтвердить нечем — способ останется выключенным."
                 fi
                 bot_restart
+                pause ;;
+            11)
+                echo ""
+                echo "  Бот собран из модулей — выключенный исчезает у клиента, остальное работает."
+                echo "  Вне модулей (не выключаются): привязка по коду, приём пополнений мини-аппа,"
+                echo "  делегирование /start мини-аппу. Подробнее: docs/design/SALES/README.md."
+                echo ""
+                echo "   sales  — продажа тарифов ботом: витрина, счета Stars/провайдер/ЮMoney"
+                echo "   notify — уведомления: истечение срока, бесплатный тариф, алерты админам"
+                echo "   admin  — админ-панель и админ-команды в боте"
+                echo ""
+                local mod mods x
+                for x in sales notify admin; do
+                    printf '   %-7s %s\n' "$x" "$(bot_mod_on "$x" && echo "💚 включён" || echo "⚪ выключен")"
+                done
+                echo ""
+                ask mod "  Какой модуль переключить (sales/notify/admin, Enter — назад): "
+                mod=$(printf '%s' "$mod" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+                case "$mod" in
+                    sales|notify|admin)
+                        mods=""
+                        for x in sales notify admin; do
+                            if [ "$x" = "$mod" ]; then
+                                bot_mod_on "$x" && continue      # был включён — выключаем
+                            else
+                                bot_mod_on "$x" || continue      # чужой выключенный не воскрешаем
+                            fi
+                            mods="${mods:+$mods,}$x"
+                        done
+                        # Пустое значение ключа означало бы «включено всё» (так
+                        # ведут себя старые конфиги), поэтому «выключено всё» —
+                        # это явное none.
+                        bot_set BOT_MODULES "${mods:-none}"
+                        echo "  ✅ Включены: ${mods:-— (ничего, бот только принимает пополнения и привязки)}"
+                        bot_restart ;;
+                    "") ;;
+                    *) echo "  ❌ Нет такого модуля." ;;
+                esac
                 pause ;;
             6)
                 echo ""

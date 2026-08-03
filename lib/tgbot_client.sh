@@ -78,7 +78,14 @@ bot_access_text() {   # username
 }
 
 # ---------- клавиатуры ----------
-KB_CLIENT='{"inline_keyboard":[[{"text":"🔗 Моя ссылка","callback_data":"m:link"},{"text":"📡 Подписка","callback_data":"m:sub"}],[{"text":"📊 Мой статус","callback_data":"m:status"},{"text":"💳 Купить / продлить","callback_data":"m:buy"}]]}'
+# Клиентская клавиатура собирается на лету: кнопка покупки есть, только если бот
+# продаёт сам (модуль sales, см. lib/tgbot.sh). Переменной KB_CLIENT больше нет —
+# статическая строка не умеет спрашивать про модули.
+bot_kb_client() {
+    local buy=''
+    bot_sales_on && buy=',{"text":"💳 Купить / продлить","callback_data":"m:buy"}'
+    printf '%s' '{"inline_keyboard":[[{"text":"🔗 Моя ссылка","callback_data":"m:link"},{"text":"📡 Подписка","callback_data":"m:sub"}],[{"text":"📊 Мой статус","callback_data":"m:status"}'"$buy"']]}'
+}
 KB_ADMIN='{"inline_keyboard":[[{"text":"👥 Пользователи","callback_data":"a:users:1"},{"text":"📈 Сервер","callback_data":"a:stat"}],[{"text":"➕ Добавить (/add)","callback_data":"a:add"},{"text":"🎫 Код привязки (/code)","callback_data":"a:codehelp"}],[{"text":"💰 Тарифы","callback_data":"a:tariffs"}]]}'
 
 # Меню клиента / приветствие.
@@ -87,8 +94,8 @@ bot_client_menu() {   # chat_id
     user=$(tg_bound_user "$chat")
     if [ -n "$user" ]; then
         tg_send "$chat" "👤 Аккаунт: <b>$(tg_esc "$user")</b>
-Выберите действие:" "$KB_CLIENT"
-    elif [ "$(tariff_count)" -gt 0 ] 2>/dev/null; then
+Выберите действие:" "$(bot_kb_client)"
+    elif bot_sales_on; then
         tg_send "$chat" "👋 Привет! Это бот VPN-доступа (Hysteria 2).
 У вас пока нет аккаунта. Можно купить доступ прямо здесь — аккаунт создастся автоматически, или введите код привязки от администратора: <code>/start КОД</code>" '{"inline_keyboard":[[{"text":"💳 Купить доступ","callback_data":"m:buy"}]]}'
     else
@@ -173,12 +180,16 @@ bot_client_status() {   # chat_id
 Срок действия: $exps
 Трафик: ↑$(format_bytes "$tx") · ↓$(format_bytes "$rx")
 Устройств (лимит): $dev
-Подключений сейчас: $oc" "$KB_CLIENT"
+Подключений сейчас: $oc" "$(bot_kb_client)"
 }
 
 # Список тарифов кнопками (для покупки).
 bot_buy_menu() {   # chat_id
     local chat="$1"
+    if ! bot_mod_on sales; then
+        tg_send "$chat" "Покупка через бота отключена — доступ оформляется там, где вы его покупали."
+        return
+    fi
     if [ "$(tariff_count)" -eq 0 ] 2>/dev/null; then
         tg_send "$chat" "Тарифы пока не настроены. Свяжитесь с администратором."
         return
@@ -283,6 +294,8 @@ bot_buy_currency_menu() {   # chat_id tariff_code
 # Без валюты: одна валюта → сразу счёт; несколько → меню выбора валюты.
 bot_buy_dispatch() {   # chat_id rest(код | код:валюта)
     local chat="$1" rest="$2" code cur
+    # Второй барьер: кнопка из старого сообщения переживает выключение модуля.
+    bot_mod_on sales || { tg_send "$chat" "Покупка через бота отключена."; return; }
     code="${rest%%:*}"
     if [ "$rest" = "$code" ]; then
         local -a ca; read -r -a ca <<< "$(tariff_currencies_of "$code")"
@@ -367,7 +380,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
 Тариф: $(tg_esc "$title")
 Действует до: <b>${newexp:-без срока}</b>
 
-$(bot_access_text "$user")" "$KB_CLIENT"
+$(bot_access_text "$user")" "$(bot_kb_client)"
     local amount_h="$amount"
     [ "$cur" != "XTR" ] && amount_h=$(awk "BEGIN{printf \"%.2f\", $amount/100}")
     bot_notify_admins "💰 <b>Оплата</b>: $(tg_esc "$user") · тариф «$(tg_esc "$title")» · ${amount_h} ${cur}

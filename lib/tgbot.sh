@@ -51,13 +51,33 @@ bot_set() {   # key value
     rm -f "$tmp"
 }
 
+# ---------- модули бота ----------
+# BOT_MODULES — какие части бота включены (через запятую из sales/notify/admin).
+# Ключа нет → включено ВСЁ: свежая установка продаёт из коробки, старые конфиги
+# не меняют поведение. Смысл модулей и границу «модуль или ядро» см.
+# docs/design/SALES/README.md. Ядро (привязка, фулфилмент пополнений мини-аппа,
+# делегирование /start мини-аппу) не выключается — на нём держится надстройка.
+bot_mod_on() {   # sales|notify|admin
+    local v; v=$(bot_get BOT_MODULES)
+    [ -n "$v" ] || return 0
+    case ",$(printf '%s' "$v" | tr -d '[:space:]')," in *",$1,"*) return 0 ;; esac
+    return 1
+}
+
+# Продаёт ли бот сам: модуль включён И есть что продавать. Тем же условием
+# решается, упоминать ли /buy в уведомлениях.
+bot_sales_on() { bot_mod_on sales && [ "$(tariff_count 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null; }
+
 bot_token()    { bot_get BOT_TOKEN; }
 bot_enabled()  { [ -n "$(bot_token)" ] && [ -f "$BOT_UNIT" ]; }
 bot_running()  { systemctl is-active --quiet hy2-bot.service 2>/dev/null; }
 
-# Является ли chat_id админом (список через запятую/пробел).
+# Является ли chat_id админом (список через запятую/пробел). При выключенном
+# модуле admin админов для бота нет вообще — иначе гейт пришлось бы дублировать
+# в каждой из восьми админ-команд демона, и новая забыла бы его.
 bot_is_admin() {
     local id="$1" a
+    bot_mod_on admin || return 1
     for a in $(bot_get ADMIN_IDS | tr ',;' '  '); do
         [ "$a" = "$id" ] && return 0
     done
@@ -104,9 +124,10 @@ tg_answer_cb() {   # callback_id [text]
         ${2:+--data-urlencode "text=$2"} >/dev/null
 }
 
-# Разослать всем админам.
+# Разослать всем админам (модуль notify — с ним выключаются и алерты об оплатах).
 bot_notify_admins() {
     local a
+    bot_mod_on notify || return 0
     [ -n "${BOT_TOKEN:-}" ] || BOT_TOKEN=$(bot_token)
     [ -n "$BOT_TOKEN" ] || return 0
     for a in $(bot_get ADMIN_IDS | tr ',;' '  '); do
