@@ -38,11 +38,12 @@ POST $MINIAPP_API/api/bot/start
 ## Настройка (`bot.conf`)
 
 ```
-MINIAPP_API=https://домен-надстройки
+MINIAPP_API=https://miniapp.example.com
 MINIAPP_SECRET=<то же, что TELEGRAM_BOT_START_SECRET в .env мини-аппа>
+MINIAPP_WEB_URL=web.example.com   # что бот называет в ответе на /web; пусто — адрес не упоминается
 ```
 
-Ключей нет в TUI: мини-апп живёт только на ноде node-a, остальные ноды бота не
+Ключей нет в TUI: мини-апп живёт только на одной ноде, остальные ноды бота не
 держат. Понадобится на второй ноде — добавьте пару полей в меню
 «Настройки → Telegram-бот» (`lib/tgbot_menu.sh`) рядом с `PAY_PROVIDER_TOKEN`.
 
