@@ -284,6 +284,9 @@ bot_tariffs_menu() {
         while IFS='|' read -r code title days devices price cur topts; do
             [ -n "$code" ] || continue
             i=$((i+1)); t_codes[$i]="$code"
+            # Показываем то же, что увидит клиент: в режиме rate звёздная цена
+            # пересчитана из рублёвой, а не взята из файла.
+            read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
             printf "    %d. [%s] %s — %s дн., устройств: %s, цена: %s%s\n" \
                 "$i" "$code" "$title" "$days" "$devices" "$(tariff_price_str "$price" "$cur")" \
                 "${topts:+ · $topts}"
@@ -299,6 +302,7 @@ bot_tariffs_menu() {
         echo "  3. ↕️  Переместить тариф (вверх/вниз или на позицию N)"
         echo "  4. ➖ Удалить тариф (по номеру)"
         echo "  5. 🧩 Создать типовые тарифы-примеры (Stars: 30/90/365 дней)"
+        echo "  6. ⭐ Цена в звёздах: $([ "$(stars_mode)" = rate ] && echo "из рублёвой, $(stars_rub_per_star) ₽ за звезду" || echo "фиксированная (из тарифа)")"
         echo "  0. ↩  Назад"
         echo ""
         local ch; ask ch "  Выберите: "
@@ -397,6 +401,44 @@ bot_tariffs_menu() {
                 tariff_add m3  "3 месяца"  90  0 250  XTR
                 tariff_add y1  "1 год"     365 0 800  XTR
                 echo "  ✅ Созданы примеры (Stars): m1/m3/y1. Отредактируйте цены под себя."
+                bot_restart
+                pause ;;
+            6)
+                echo ""
+                echo "  Цена в звёздах берётся одним из двух способов:"
+                echo "   • фиксированная — как записано в тарифе (колонка XTR);"
+                echo "   • из рублёвой — XTR = цена в ₽ ÷ курс, с округлением вверх."
+                echo "  Во втором случае колонку XTR в тарифах можно не заполнять:"
+                echo "  витрина, счёт и API отдадут посчитанную цену."
+                echo ""
+                echo "  Сейчас: $([ "$(stars_mode)" = rate ] && echo "из рублёвой, $(stars_rub_per_star) ₽ за звезду" || echo "фиксированная")"
+                echo ""
+                local sm sr
+                ask sm "  Режим: f — фиксированная, r — из рублёвой (Enter — не менять): "
+                case "$(printf '%s' "$sm" | tr 'A-Z' 'a-z' | tr -d '[:space:]')" in
+                    f|fixed) bot_set STARS_MODE fixed; echo "  ✅ Фиксированная цена в звёздах." ;;
+                    r|rate)  bot_set STARS_MODE rate;  echo "  ✅ Звёзды считаются из рублёвой цены." ;;
+                    "") ;;
+                    *) echo "  ❌ Только f или r." ;;
+                esac
+                if [ "$(stars_mode)" = rate ]; then
+                    ask sr "  Рублей за звезду (сейчас $(stars_rub_per_star), Enter — не менять): "
+                    if [ -n "$sr" ]; then
+                        sr=$(printf '%s' "$sr" | tr ',' '.' | tr -d '[:space:]')
+                        if [[ "$sr" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v r="$sr" 'BEGIN{exit !(r+0>0)}'; then
+                            bot_set STARS_RUB_PER_STAR "$sr"; echo "  ✅ Курс: $sr ₽ за звезду."
+                        else
+                            echo "  ❌ Курс — число больше нуля."
+                        fi
+                    fi
+                    local rt; rt=$(tariff_list | head -1)
+                    if [ -n "$rt" ]; then
+                        local rp rc
+                        IFS='|' read -r _ _ _ _ rp rc <<< "$rt"
+                        read -r rp rc <<< "$(tariff_prices_effective "$rp" "$rc")"
+                        echo "  Пример (первый тариф): $(tariff_price_str "$rp" "$rc")"
+                    fi
+                fi
                 bot_restart
                 pause ;;
             0) return ;;

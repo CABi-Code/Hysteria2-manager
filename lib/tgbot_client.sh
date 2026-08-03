@@ -200,6 +200,7 @@ bot_buy_menu() {   # chat_id
     rows=$(tariff_list | while IFS='|' read -r code title days devices price cur _opts; do
         [ -n "$code" ] || continue
         [ "$(tariff_opt "$code" free)" = "1" ] && continue
+        read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
         jq -nc --arg t "$title — $(tariff_price_str "$price" "$cur")" --arg d "buy:$code" '[{text:$t,callback_data:$d}]'
     done | jq -sc '.')
     kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:$r}')
@@ -213,6 +214,7 @@ bot_send_invoice() {   # chat_id tariff_code [currency]
     row=$(tariff_get "$code")
     [ -z "$row" ] && { tg_send "$chat" "Тариф не найден (возможно, удалён)."; return; }
     IFS='|' read -r code title days devices price cur _opts <<< "$row"
+    read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
     # Мультивалютный тариф: берём указанную валюту, иначе первую в списке.
     local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
     local pick=0 k
@@ -279,6 +281,7 @@ bot_buy_currency_menu() {   # chat_id tariff_code
     row=$(tariff_get "$code")
     [ -z "$row" ] && { tg_send "$chat" "Тариф не найден."; return; }
     IFS='|' read -r _ title _ _ price cur _opts <<< "$row"
+    read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
     local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
     local rows i c p label
     rows=$(for i in "${!ca[@]}"; do

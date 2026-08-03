@@ -118,13 +118,21 @@ curl -H "$H" "$BASE/v1/info"
 валюту (ловили в редакторе тарифов 2026-07-22). В меню это пункт
 «Редактировать тариф» — вопросы про бесплатность и лимиты идут после устройств.
 
+Блок `pricing` — режим звёздной цены ноды (`fixed` — цена XTR из тарифа,
+`rate` — считается из рублёвой по курсу `rub_per_star`, округление вверх).
+**Цену пересчитывать не нужно:** в `prices[]` она уже посчитана по режиму, в
+`rate` звёздная цена есть даже у тарифа, где её не задавали. Режим и курс
+отдаются, чтобы их могла показать и поправить внешняя админка. Подробнее —
+[TARIFF-PRICING.md](TARIFF-PRICING.md).
+
 ```bash
 curl -H "$H" "$BASE/v1/tariffs"
 ```
 ```json
 {"ok":true,"data":{"tariffs":[
   {"code":"m1","title":"Месяц","days":30,"devices":3,"price":"100","currency":"XTR",
-   "prices":[{"currency":"XTR","price":"100"},{"currency":"RUB","price":"199"}]}]}}
+   "prices":[{"currency":"XTR","price":"100"},{"currency":"RUB","price":"199"}]}],
+  "pricing":{"stars_mode":"fixed","rub_per_star":1.0}}}
 ```
 
 ### GET /v1/nodes — ноды кластера (scope: read)

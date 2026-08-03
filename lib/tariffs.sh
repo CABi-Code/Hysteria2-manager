@@ -118,10 +118,45 @@ tariff_price_in_list() {   # price_list cur_list want_currency
     return 1
 }
 
-# Список валют тарифа (через пробел) по его коду.
+# ---------- цена в звёздах: fixed или от рублёвой ----------
+# Два режима (bot.conf, меню «Цена в звёздах»), см. docs/design/SALES/README.md:
+#   fixed — цена XTR берётся из строки тарифа как есть (поведение по умолчанию);
+#   rate  — XTR считается из рублёвой цены: ceil(RUB / STARS_RUB_PER_STAR),
+#           колонка XTR в файле игнорируется и может отсутствовать.
+# Режим живёт ЗДЕСЬ, а не в надстройке: цена — часть каталога, а каталог у
+# менеджера. Курс пополнения баланса — не сюда, это деньги надстройки.
+stars_mode() { [ "$(bot_get STARS_MODE)" = rate ] && printf 'rate' || printf 'fixed'; }
+
+# Рублей за звезду для режима rate. Мусор и 0 → 1 (цена в звёздах = цене в ₽),
+# лишь бы не делить на ноль в витрине.
+stars_rub_per_star() {
+    awk -v r="$(bot_get STARS_RUB_PER_STAR)" 'BEGIN{ r=r+0; printf "%s", (r>0 ? r : 1) }'
+}
+
+# Цены тарифа с учётом режима: в rate звёздная цена пересчитывается из рублёвой
+# (и появляется, даже если её нет в файле). Единственная точка пересчёта —
+# витрина, счёт и API зовут её, а не считают сами.
+tariff_prices_effective() {   # price_list cur_list -> «price_list cur_list»
+    local pl="$1" cl="$2" rub xtr i seen=0
+    [ "$(stars_mode)" = rate ] || { printf '%s %s' "$pl" "$cl"; return; }
+    rub=$(tariff_price_in_list "$pl" "$cl" RUB) || { printf '%s %s' "$pl" "$cl"; return; }
+    # Округляем ВВЕРХ: звёзды целые, а недобор — это продажа ниже цены.
+    xtr=$(awk -v r="$rub" -v k="$(stars_rub_per_star)" 'BEGIN{ s=r/k; printf "%d", (s==int(s) ? s : int(s)+1) }')
+    local -a pa ca; IFS='/' read -r -a pa <<< "$pl"; IFS='/' read -r -a ca <<< "$cl"
+    for i in "${!ca[@]}"; do
+        [ "${ca[$i]}" = "XTR" ] && { pa[$i]="$xtr"; seen=1; }
+    done
+    [ "$seen" = 0 ] && { pa+=("$xtr"); ca+=("XTR"); }
+    local p c
+    p=$(IFS='/'; printf '%s' "${pa[*]}"); c=$(IFS='/'; printf '%s' "${ca[*]}")
+    printf '%s %s' "$p" "$c"
+}
+
+# Список валют тарифа (через пробел) по его коду — с учётом режима звёздной цены.
 tariff_currencies_of() {   # code
-    local row c; row=$(tariff_get "$1"); [ -z "$row" ] && return 1
-    IFS='|' read -r _ _ _ _ _ c <<< "$row"
+    local row p c; row=$(tariff_get "$1"); [ -z "$row" ] && return 1
+    IFS='|' read -r _ _ _ _ p c <<< "$row"
+    read -r p c <<< "$(tariff_prices_effective "$p" "$c")"
     printf '%s' "$c" | tr '/' ' '
 }
 

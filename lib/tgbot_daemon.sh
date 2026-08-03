@@ -90,6 +90,7 @@ bot_handle_update() {   # json
                     a:tariffs)
                         local tl
                         tl=$(tariff_list | while IFS='|' read -r c t d dv p cur _opts; do
+                            read -r p cur <<< "$(tariff_prices_effective "$p" "$cur")"
                             [ -n "$c" ] && echo "• <code>$c</code> — $(tg_esc "$t"): ${d} дн., устройств ${dv}, $(tariff_price_str "$p" "$cur")"
                         done)
                         tg_send "$chat" "💰 <b>Тарифы</b>
