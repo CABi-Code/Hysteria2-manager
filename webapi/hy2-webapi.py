@@ -121,7 +121,7 @@ class Handler(BaseHTTPRequestHandler):
         return node_info()
 
     def h_tariffs(self):
-        return {"tariffs": tariffs()}
+        return {"tariffs": tariffs(), "pricing": pricing()}
 
     def h_nodes(self):
         return {"nodes": nodes()}
