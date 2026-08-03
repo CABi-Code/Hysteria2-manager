@@ -45,6 +45,7 @@ Authorization: Bearer hyk_<40 символов>
 | `users` | создание/продление/включение/отключение/лимиты пользователей |
 | `payments` | чтение журнала оплат `/v1/payments` |
 | `telegram` | привязка Telegram-аккаунтов, погашение кодов |
+| `tariffs` | правка каталога: создать/изменить/удалить/переставить тариф, режим звёздной цены |
 | `*` | всё |
 
 Рекомендация: каждому приложению — свой ключ с минимальными scopes (mini-app
@@ -133,6 +134,61 @@ curl -H "$H" "$BASE/v1/tariffs"
   {"code":"m1","title":"Месяц","days":30,"devices":3,"price":"100","currency":"XTR",
    "prices":[{"currency":"XTR","price":"100"},{"currency":"RUB","price":"199"}]}],
   "pricing":{"stars_mode":"fixed","rub_per_star":1.0}}}
+```
+
+### POST /v1/tariffs — создать или заменить тариф (scope: tariffs)
+
+Upsert по коду: существующий тариф правится **на месте** (позиция в витрине
+сохраняется), новый дописывается в конец. Так внешняя админка правит каталог,
+не заводя своей копии тарифов — менеджер остаётся источником правды по продаже
+([design/SALES/](../design/SALES/README.md)).
+
+Тело: `code`, `title`, `days`, `devices`, цены (`prices[{currency,price}]` либо
+одиночные `price`+`currency`) и необязательное `options` — 7-е поле
+`«free=1;wk=3G;mo=10G;start=online»`. **`options` передаются полностью:** не
+прислали — значит опций нет (иначе снять лимиты снаружи было бы нельзя).
+Переименование кода не поддерживается — удалите и создайте заново.
+
+```bash
+curl -X POST -H "$H" -H 'Content-Type: application/json' "$BASE/v1/tariffs" \
+  -d '{"code":"m1","title":"Месяц","days":30,"devices":3,
+       "prices":[{"currency":"XTR","price":"100"},{"currency":"RUB","price":"199"}]}'
+```
+```json
+{"ok":true,"data":{"tariff":{"code":"m1","title":"Месяц","days":30,"devices":3,
+  "price":"100","currency":"XTR","prices":[{"currency":"XTR","price":"100"},
+  {"currency":"RUB","price":"199"}],"free":false,
+  "traffic_limits":{"week_bytes":0,"month_bytes":0},"period_start":"paid"}}}
+```
+
+Ошибки: `400 invalid_code|invalid_title|invalid_days|invalid_devices|invalid_price|
+invalid_currency|duplicate_currency|invalid_options`.
+
+### DELETE /v1/tariffs/{code} — удалить тариф (scope: tariffs)
+
+`404 tariff_not_found`, если тарифа нет. Купленный доступ не трогается —
+удаляется только позиция каталога.
+
+```json
+{"ok":true,"data":{"code":"m1","deleted":true}}
+```
+
+### POST /v1/tariffs/{code}/move — порядок в витрине (scope: tariffs)
+
+Тело: `{"direction":"up"}`, `{"direction":"down"}` или `{"position":1}` (с 1).
+Отдаёт весь каталог после перестановки. `409 tariff_at_edge` — тариф уже с краю.
+
+### POST /v1/pricing — режим звёздной цены (scope: tariffs)
+
+Тело: `stars_mode` (`fixed`|`rate`) и `rub_per_star` (для `rate`). Смысл режимов
+— [TARIFF-PRICING.md](TARIFF-PRICING.md). Не переданное поле остаётся прежним.
+
+```bash
+curl -X POST -H "$H" -H 'Content-Type: application/json' "$BASE/v1/pricing" \
+  -d '{"stars_mode":"rate","rub_per_star":1.5}'
+```
+```json
+{"ok":true,"data":{"pricing":{"stars_mode":"rate","rub_per_star":1.5}}}
 ```
 
 ### GET /v1/nodes — ноды кластера (scope: read)
