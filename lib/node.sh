@@ -11,17 +11,7 @@ sub_enabled() {
 }
 
 # Значение поля из node.conf (NODE_NAME / NODE_HOST / WEBROOT).
-# Чистый bash вместо `grep|head|cut`: node_get зовётся сотни раз за прогон
-# (каждый node_label/sub_tag_tmpl/link_host — это он), и три процесса на чтение
-# одной строки складывались в заметную долю форков --online-sync.
-node_get() {
-    local k v
-    [ -f "$NODE_CONF" ] || return 0
-    while IFS='=' read -r k v || [ -n "$k" ]; do
-        [ "$k" = "$1" ] && { printf '%s\n' "$v"; return 0; }
-    done < "$NODE_CONF"
-    return 0
-}
+node_get() { conf_get "$NODE_CONF" "$1"; }
 node_host() { node_get NODE_HOST; }
 node_name() { local n; n=$(node_get NODE_NAME); echo "${n:-node}"; }
 

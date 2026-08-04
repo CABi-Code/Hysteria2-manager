@@ -175,6 +175,20 @@ AUTHMAP_FILE="$DATA_DIR/authmap.dat"
 SUBIPS_FILE="$DATA_DIR/subips.dat"
 SUBLOG_TS="$DATA_DIR/sublog_ts"
 
+# Значение поля «КЛЮЧ=значение» из конфига-файла (node.conf, protocols.conf,
+# klimit.conf, webapi.conf, bot.conf — формат у всех один). Первое совпадение,
+# как раньше делал `grep|head -1|cut`. Чистый bash: эти геттеры зовутся сотнями
+# за прогон крона, а три процесса на чтение одной строки — это и был основной
+# источник 400-500 форков в секунду на боевой ноде.
+conf_get() {   # file key -> value
+    local k v
+    [ -f "$1" ] || return 0
+    while IFS='=' read -r k v || [ -n "$k" ]; do
+        [ "$k" = "$2" ] && { printf '%s\n' "$v"; return 0; }
+    done < "$1"
+    return 0
+}
+
 API_PORT=25580
 PAGE_SIZE=10
 # Интервал автообновления интерактивных меню (секунды)
