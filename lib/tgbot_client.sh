@@ -370,7 +370,11 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
         return
     fi
     newexp=$(bot_extend_user "$user" "$days" nonotify)
-    [ "$devices" -gt 0 ] 2>/dev/null && set_user_devices "$user" "$devices"
+    # Тариф ПОДНИМАЕТ лимит устройств, но не опускает: сверх тарифных устройства
+    # докупаются отдельно и за деньги (надстройка, надстройка/docs/DEVICES.md),
+    # а «поставить ровно тарифное» стирало их при каждой оплате в боте (P-42).
+    # Та же болезнь, что была у тарифа скорости (P-19).
+    tariff_raise_devices "$user" "$devices"
     tg_bind "$tgid" "$user"
     write_authlimits 2>/dev/null
     sub_enabled && sub_refresh >/dev/null 2>&1

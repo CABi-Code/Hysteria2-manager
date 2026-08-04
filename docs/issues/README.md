@@ -77,8 +77,8 @@
 | [P-30](WEBAPP.md#p-30) | `laravel.log` без ротации, туда же пишут прогоны тестов | `.env` | [webapp](WEBAPP.md) | ✅ |
 | [P-40](WEBAPP.md#p-40) | Caddy резал PUT и DELETE: админка не сохранялась | `/etc/caddy/extra/00-common.caddy` | [webapp](WEBAPP.md) | ✅ |
 | [P-31](CLUSTER.md#p-31) | Недоступный пир никак себя не проявлял в менеджере | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
-| [P-41](LIMITS.md#p-41) | Жёсткая проверка снимает лимит устройств внутри ноды | `lib/devlimits.sh` | [limits](LIMITS.md) | 🔴 |
-| [P-42](LIMITS.md#p-42) | Оплата тарифа в боте затирает докупленные устройства | `lib/tgbot_client.sh` | [limits](LIMITS.md) | 🟡 |
+| [P-41](LIMITS.md#p-41) | Жёсткая проверка снимает лимит устройств внутри ноды | `lib/devlimits.sh` | [limits](LIMITS.md) | ✅ |
+| [P-42](LIMITS.md#p-42) | Оплата тарифа в боте затирает докупленные устройства | `lib/tgbot_client.sh` | [limits](LIMITS.md) | ✅ |
 | [P-43](OPS.md#p-43) | Спидометр залипал на сотнях Мбит/с: mawk обрезал кумулятив до 2^31-1 | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
 
 Следующий свободный номер — **P-44**.
