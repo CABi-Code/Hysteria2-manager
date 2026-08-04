@@ -123,7 +123,7 @@ collect_traffic() {
     : > "$SPEED_FILE"
     [ "$have_baseline" = 1 ] && [ -n "$deltas" ] || return 0
     printf '%s\n' "$deltas" | awk -F'|' -v el="$elapsed" \
-        'NF>=3 && $1!="" { printf "%s|%d|%d\n", $1, ($2+0)/el, ($3+0)/el }' >> "$SPEED_FILE"
+        'NF>=3 && $1!="" { printf "%s|%.0f|%.0f\n", $1, ($2+0)/el, ($3+0)/el }' >> "$SPEED_FILE"
     return 0
 }
 
@@ -270,8 +270,13 @@ collect_rates() {
                 dr = int((dc >= pd[$1] ? dc - pd[$1] : dc) / el)
                 ur = int((uc >= pu[$1] ? uc - pu[$1] : uc) / el)
             }
-            printf "%s|%d|%d|%d\n", $1, dr, ur, now >> rates
-            printf "%s|%d|%d|%d\n", $1, dc, uc, now > prevout
+            # %.0f, а НЕ %d: mawk печатает %d через 32-битный int и всё, что
+            # больше 2^31-1, превращает в 2147483647. Кумулятив Xray выше 2 ГБ
+            # ложился в rates_prev.dat обрезанным, и следующий тик считал
+            # дельту «реальный кумулятив − 2147483647» — спидометр намертво
+            # вставал на сотни Мбит/с и рос дальше (P-43).
+            printf "%s|%.0f|%.0f|%d\n", $1, dr, ur, now >> rates
+            printf "%s|%.0f|%.0f|%d\n", $1, dc, uc, now > prevout
         }'
     mv "$rtmp" "$RATES_FILE" 2>/dev/null
     mv "$ptmp" "$RATES_PREV_FILE" 2>/dev/null

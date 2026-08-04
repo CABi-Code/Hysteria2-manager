@@ -16,8 +16,11 @@ source "$SCRIPT_DIR/lib/notify.sh"
 
 fail() { echo "❌ $1"; exit 1; }
 
-# Заглушки Telegram: считаем реальные отправки в личку.
+# Заглушки Telegram: считаем реальные отправки в личку. Как и bot_enabled, они
+# живут в lib/tgbot.sh, который тут не сорсится, — включая проверку модуля
+# notify (см. docs/design/SALES/README.md); здесь модуль всегда включён.
 SENDS=0
+bot_mod_on()    { return 0; }
 bot_enabled()   { return 0; }
 bot_token()     { printf 'TESTTOKEN'; }
 tg_send()       { SENDS=$((SENDS+1)); }

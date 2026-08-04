@@ -49,6 +49,7 @@ bot_menu() {
         echo "  Провайдер  : $([ -n "$prov" ] && echo "настроен, валюта $cur" || echo "не настроен (доступны Telegram Stars)")"
         echo "  ЮMoney     : $(ym_enabled && echo "кошелёк $(bot_get YM_WALLET), комиссия $(ym_fee) %, $([ "$(ym_type)" = PC ] && echo "кошелёк ЮMoney" || echo "карта")" || echo "не настроен")"
         echo "  Оплат всего: $(grep -c '^' "$PAYMENTS_LOG" 2>/dev/null | tr -dc '0-9' || echo 0)"
+        echo "  Модули     : $(for m in sales notify admin; do bot_mod_on "$m" && printf '%s ' "$m"; done)"
         echo ""
         echo "  1. 🔑 Задать токен бота (из @BotFather)"
         echo "  2. 👑 Задать админов (chat ID через запятую; свой ID — команда /id боту)"
@@ -60,6 +61,7 @@ bot_menu() {
         echo "  8. 📨 Тест: сообщение всем админам"
         echo "  9. 📜 Логи бота (последние 25 строк)"
         echo " 10. 🪙 ЮMoney: приём рублей на личный кошелёк (без провайдера)"
+        echo " 11. 🧩 Модули бота (продажа / уведомления / админ-панель)"
         echo "  0. ↩  Назад"
         echo ""
         local ch; ask ch "  Выберите: "
@@ -181,6 +183,44 @@ bot_menu() {
                 fi
                 bot_restart
                 pause ;;
+            11)
+                echo ""
+                echo "  Бот собран из модулей — выключенный исчезает у клиента, остальное работает."
+                echo "  Вне модулей (не выключаются): привязка по коду, приём пополнений мини-аппа,"
+                echo "  делегирование /start мини-аппу. Подробнее: docs/design/SALES/README.md."
+                echo ""
+                echo "   sales  — продажа тарифов ботом: витрина, счета Stars/провайдер/ЮMoney"
+                echo "   notify — уведомления: истечение срока, бесплатный тариф, алерты админам"
+                echo "   admin  — админ-панель и админ-команды в боте"
+                echo ""
+                local mod mods x
+                for x in sales notify admin; do
+                    printf '   %-7s %s\n' "$x" "$(bot_mod_on "$x" && echo "💚 включён" || echo "⚪ выключен")"
+                done
+                echo ""
+                ask mod "  Какой модуль переключить (sales/notify/admin, Enter — назад): "
+                mod=$(printf '%s' "$mod" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+                case "$mod" in
+                    sales|notify|admin)
+                        mods=""
+                        for x in sales notify admin; do
+                            if [ "$x" = "$mod" ]; then
+                                bot_mod_on "$x" && continue      # был включён — выключаем
+                            else
+                                bot_mod_on "$x" || continue      # чужой выключенный не воскрешаем
+                            fi
+                            mods="${mods:+$mods,}$x"
+                        done
+                        # Пустое значение ключа означало бы «включено всё» (так
+                        # ведут себя старые конфиги), поэтому «выключено всё» —
+                        # это явное none.
+                        bot_set BOT_MODULES "${mods:-none}"
+                        echo "  ✅ Включены: ${mods:-— (ничего, бот только принимает пополнения и привязки)}"
+                        bot_restart ;;
+                    "") ;;
+                    *) echo "  ❌ Нет такого модуля." ;;
+                esac
+                pause ;;
             6)
                 echo ""
                 echo "  Привязки (tg_id → пользователь):"
@@ -244,6 +284,9 @@ bot_tariffs_menu() {
         while IFS='|' read -r code title days devices price cur topts; do
             [ -n "$code" ] || continue
             i=$((i+1)); t_codes[$i]="$code"
+            # Показываем то же, что увидит клиент: в режиме rate звёздная цена
+            # пересчитана из рублёвой, а не взята из файла.
+            read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
             printf "    %d. [%s] %s — %s дн., устройств: %s, цена: %s%s\n" \
                 "$i" "$code" "$title" "$days" "$devices" "$(tariff_price_str "$price" "$cur")" \
                 "${topts:+ · $topts}"
@@ -259,6 +302,7 @@ bot_tariffs_menu() {
         echo "  3. ↕️  Переместить тариф (вверх/вниз или на позицию N)"
         echo "  4. ➖ Удалить тариф (по номеру)"
         echo "  5. 🧩 Создать типовые тарифы-примеры (Stars: 30/90/365 дней)"
+        echo "  6. ⭐ Цена в звёздах: $([ "$(stars_mode)" = rate ] && echo "из рублёвой, $(stars_rub_per_star) ₽ за звезду" || echo "фиксированная (из тарифа)")"
         echo "  0. ↩  Назад"
         echo ""
         local ch; ask ch "  Выберите: "
@@ -357,6 +401,44 @@ bot_tariffs_menu() {
                 tariff_add m3  "3 месяца"  90  0 250  XTR
                 tariff_add y1  "1 год"     365 0 800  XTR
                 echo "  ✅ Созданы примеры (Stars): m1/m3/y1. Отредактируйте цены под себя."
+                bot_restart
+                pause ;;
+            6)
+                echo ""
+                echo "  Цена в звёздах берётся одним из двух способов:"
+                echo "   • фиксированная — как записано в тарифе (колонка XTR);"
+                echo "   • из рублёвой — XTR = цена в ₽ ÷ курс, с округлением вверх."
+                echo "  Во втором случае колонку XTR в тарифах можно не заполнять:"
+                echo "  витрина, счёт и API отдадут посчитанную цену."
+                echo ""
+                echo "  Сейчас: $([ "$(stars_mode)" = rate ] && echo "из рублёвой, $(stars_rub_per_star) ₽ за звезду" || echo "фиксированная")"
+                echo ""
+                local sm sr
+                ask sm "  Режим: f — фиксированная, r — из рублёвой (Enter — не менять): "
+                case "$(printf '%s' "$sm" | tr 'A-Z' 'a-z' | tr -d '[:space:]')" in
+                    f|fixed) bot_set STARS_MODE fixed; echo "  ✅ Фиксированная цена в звёздах." ;;
+                    r|rate)  bot_set STARS_MODE rate;  echo "  ✅ Звёзды считаются из рублёвой цены." ;;
+                    "") ;;
+                    *) echo "  ❌ Только f или r." ;;
+                esac
+                if [ "$(stars_mode)" = rate ]; then
+                    ask sr "  Рублей за звезду (сейчас $(stars_rub_per_star), Enter — не менять): "
+                    if [ -n "$sr" ]; then
+                        sr=$(printf '%s' "$sr" | tr ',' '.' | tr -d '[:space:]')
+                        if [[ "$sr" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v r="$sr" 'BEGIN{exit !(r+0>0)}'; then
+                            bot_set STARS_RUB_PER_STAR "$sr"; echo "  ✅ Курс: $sr ₽ за звезду."
+                        else
+                            echo "  ❌ Курс — число больше нуля."
+                        fi
+                    fi
+                    local rt; rt=$(tariff_list | head -1)
+                    if [ -n "$rt" ]; then
+                        local rp rc
+                        IFS='|' read -r _ _ _ _ rp rc <<< "$rt"
+                        read -r rp rc <<< "$(tariff_prices_effective "$rp" "$rc")"
+                        echo "  Пример (первый тариф): $(tariff_price_str "$rp" "$rc")"
+                    fi
+                fi
                 bot_restart
                 pause ;;
             0) return ;;
