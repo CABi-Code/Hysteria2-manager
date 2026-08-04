@@ -22,7 +22,8 @@
 | Настройка на соседней ноде другая — это баг? | [guide/CLUSTER-SCOPE.md](guide/CLUSTER-SCOPE.md) |
 | Оплата пришла, доступа нет | [guide/YOOMONEY.md](guide/YOOMONEY.md), [issues/BILLING.md](issues/BILLING.md) |
 | Удалил юзера, а подписка работает | [issues/CLUSTER.md#p-13](issues/CLUSTER.md#p-13) |
-| Лимит устройств не держит | [issues/LIMITS.md#p-16](issues/LIMITS.md#p-16) |
+| Откуда у юзера число устройств и что оно ограничивает | [guide/DEVICE-LIMITS.md](guide/DEVICE-LIMITS.md) |
+| Лимит устройств не держит | [issues/LIMITS.md#p-16](issues/LIMITS.md#p-16), [#p-41](issues/LIMITS.md#p-41) |
 | Файлы и логи растут, что чистить | [guide/MAINTENANCE.md](guide/MAINTENANCE.md) |
 
 Список модулей и «тема → какой `lib/*.sh` править» — в корневом
