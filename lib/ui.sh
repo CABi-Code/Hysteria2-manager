@@ -15,13 +15,13 @@ USER_LIST_TOTAL=0
 # build_user_stats_snapshot читает каждый источник РОВНО ОДИН раз в ассоциативные
 # массивы; рендер берёт готовые значения без новых процессов.
 declare -gA SNAP_ON SNAP_DIS SNAP_LTX SNAP_LRX SNAP_LSTX SNAP_LSRX
-declare -gA PEER_ON PEER_TX PEER_RX PEER_STX PEER_SRX
+declare -gA SNAP_CONN PEER_TX PEER_RX PEER_STX PEER_SRX
 declare -gA SNAP_IPC SNAP_EXP SNAP_DEV SNAP_HC
 declare -g SNAP_POOL SNAP_NODE
 
 build_user_stats_snapshot() {
     SNAP_ON=();  SNAP_DIS=(); SNAP_LTX=(); SNAP_LRX=(); SNAP_LSTX=(); SNAP_LSRX=()
-    PEER_ON=();  PEER_TX=();  PEER_RX=();  PEER_STX=(); PEER_SRX=()
+    SNAP_CONN=(); PEER_TX=(); PEER_RX=(); PEER_STX=(); PEER_SRX=()
     SNAP_IPC=(); SNAP_EXP=(); SNAP_DEV=(); SNAP_HC=()
     local u a b c d e cnt
 
@@ -45,13 +45,44 @@ build_user_stats_snapshot() {
     # Суммы по пирам — ОДИН awk на все *.stats (а не на каждого юзера × колонку).
     # %.0f, а НЕ %s: mawk отдаёт числа > 2^31 в виде «2.15506e+11» (CONVFMT), и
     # bash-арифметика ниже на таком падает — трафик по пирам терялся.
+    # Устройства (кол. 1 вывода) — НЕ сумма счётчиков, а число РАЗНЫХ адресов по
+    # всему кластеру, включая локальные: одно устройство видно сразу нескольким
+    # нодам, и сложение показывало ⚠️ тем, кто лимит не превышал (P-45). Адреса
+    # пиров — кол. 9 их stats; нода, которая её ещё не публикует, считается
+    # по-старому. Неизвестный адрес («?») делаем пер-нодовым, чтобы не схлопнуть
+    # разные устройства в одно.
     if [ -d "$PEERS_DIR" ] && compgen -G "$PEERS_DIR/*.stats" >/dev/null 2>&1; then
         while IFS=$'\t' read -r u a b c d e; do
             [ -n "$u" ] || continue
-            PEER_ON["$u"]=$a; PEER_TX["$u"]=$b; PEER_RX["$u"]=$c; PEER_STX["$u"]=$d; PEER_SRX["$u"]=$e
-        done < <(awk -F'\t' '{on[$1]+=$2; tx[$1]+=$3; rx[$1]+=$4; stx[$1]+=$5; srx[$1]+=$6}
-                             END{for(k in on) printf "%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n",k,on[k],tx[k],rx[k],stx[k],srx[k]}' \
-                             "$PEERS_DIR"/*.stats 2>/dev/null)
+            SNAP_CONN["$u"]=$a; PEER_TX["$u"]=$b; PEER_RX["$u"]=$c; PEER_STX["$u"]=$d; PEER_SRX["$u"]=$e
+        done < <(awk -F'\t' -v loc="${CACHED_ONLINE_IPS:-}" '
+                     BEGIN {
+                         n = split(loc, L, "\n")
+                         for (i = 1; i <= n; i++) {
+                             p = index(L[i], "|"); if (p < 2) continue
+                             u = substr(L[i], 1, p - 1); ip = substr(L[i], p + 1)
+                             if (ip == "" ) continue
+                             if (ip == "?") ip = "self#?"
+                             if (!seen[u "|" ip]++) on[u]++
+                         }
+                     }
+                     { tx[$1]+=$3; rx[$1]+=$4; stx[$1]+=$5; srx[$1]+=$6
+                       if (NF >= 9 && $9 != "") {
+                           m = split($9, A, ",")
+                           for (j = 1; j <= m; j++) {
+                               ip = A[j]; if (ip == "") continue
+                               if (ip == "?") ip = FILENAME "#?"
+                               if (!seen[$1 "|" ip]++) on[$1]++
+                           }
+                       } else on[$1] += $2
+                       have[$1] = 1 }
+                     END { for (k in have) printf "%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n",
+                                              k, on[k], tx[k], rx[k], stx[k], srx[k]
+                           for (k in on) if (!(k in have)) printf "%s\t%.0f\t0\t0\t0\t0\n", k, on[k] }' \
+                     "$PEERS_DIR"/*.stats 2>/dev/null)
+    else
+        # Пиров нет — устройства это просто локальный онлайн.
+        for u in "${!SNAP_ON[@]}"; do SNAP_CONN["$u"]="${SNAP_ON[$u]}"; done
     fi
 
     # Уникальные IP по кластеру (локально + кэши пиров) — один проход awk.
@@ -65,7 +96,8 @@ build_user_stats_snapshot() {
 # Аксессоры снимка (без процессов). Кластерные = локальные + суммы по пирам.
 snap_disabled() { [ -n "${SNAP_DIS[$1]:-}" ]; }
 snap_online()   { echo "${SNAP_ON[$1]:-0}"; }
-snap_conn()     { echo $(( ${SNAP_ON[$1]:-0}   + ${PEER_ON[$1]:-0} )); }
+# Устройства по кластеру: уже с учётом локальных, дедуплицировано по адресам.
+snap_conn()     { echo "${SNAP_CONN[$1]:-0}"; }
 snap_tx()       { echo $(( ${SNAP_LTX[$1]:-0}  + ${PEER_TX[$1]:-0} )); }
 snap_rx()       { echo $(( ${SNAP_LRX[$1]:-0}  + ${PEER_RX[$1]:-0} )); }
 snap_stx()      { echo $(( ${SNAP_LSTX[$1]:-0} + ${PEER_STX[$1]:-0} )); }

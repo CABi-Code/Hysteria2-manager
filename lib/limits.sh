@@ -68,6 +68,19 @@ set_user_devices()   { set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" ""
 set_user_hardcheck() { set_user_limits "$1" "$(get_user_devices "$1")" "$2" "" "$(get_user_rate "$1")"; }
 set_user_rate()      { set_user_limits "$1" "$(get_user_devices "$1")" "$(get_user_hardcheck "$1")" "" "$2"; }
 
+# Поднять лимит устройств до тарифного, НЕ опуская уже имеющийся (P-42).
+# Тариф обещает «не меньше N устройств»; всё, что сверх, человек мог докупить
+# отдельно и за деньги (надстройка, cibpn-webapp/docs/DEVICES.md), и оплата
+# тарифа не должна это стирать. devices=0 у тарифа = «лимит не задан» → не
+# трогаем вовсе; devices=0 у ЮЗЕРА = «глобальный лимит», его тариф перебивает.
+tariff_raise_devices() {   # user tariff_devices
+    local user="$1" want="$2" cur
+    { [[ "$want" =~ ^[0-9]+$ ]] && [ "$want" -gt 0 ]; } || return 0
+    cur=$(get_user_devices "$user")
+    [ "${cur:-0}" -ge "$want" ] 2>/dev/null && return 0
+    set_user_devices "$user" "$want"
+}
+
 # Удалить персональные лимиты (например, при полном удалении юзера).
 remove_user_limits() {
     sed -i "/^${1}|/d" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" 2>/dev/null

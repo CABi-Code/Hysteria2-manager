@@ -16,7 +16,7 @@
 publish_stats() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    local tmp="$WEBROOT/cluster/stats.tmp.$BASHPID" u oc tl tx rx sp sptx sprx ac asince
+    local tmp="$WEBROOT/cluster/stats.tmp.$BASHPID" u oc tl tx rx sp sptx sprx ac asince ips
     # Онлайн берём ОБЩИЙ (CACHED_ONLINE: Hysteria + Xray + TUIC, схлопнутый по
     # адресам), а не сырой api_get "/online". Раньше здесь висел прямой запрос к
     # Hysteria, и юзеры, сидящие по VLESS/TUIC, для остальных нод кластера были
@@ -29,7 +29,12 @@ publish_stats() {
         tl=$(get_user_traffic "$u"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
         sp=$(get_user_speed "$u");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
         ac=$(get_user_active "$u");  asince=$(get_user_active_since "$u")
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" >> "$tmp"
+        # Кол. 9 — адреса юзера на этой ноде через запятую. Нужна, чтобы соседи
+        # не считали одно устройство за несколько (P-45): клиент замеряет пинг по
+        # всем серверам подписки, и его сессия появляется на каждой ноде.
+        # Старые ноды колонку не публикуют — читатели это переживают.
+        ips=$(get_user_online_ips "$u" | paste -sd, - 2>/dev/null)
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" "${ips}" >> "$tmp"
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/stats"
     # Локальная копия в DATA_DIR: webapi берёт отсюда число подключений СВОЕЙ ноды
@@ -128,10 +133,42 @@ _peer_stat_sum() {   # user col
     echo "$total"
 }
 
-# Суммарные подключения юзера по всему кластеру: локально (CACHED_ONLINE) + пиры.
+# По токену на устройство: адреса, если нода их публикует, иначе синтетические
+# «нода#N» по числу сессий. «?» (адрес не определён) тоже делаем пер-нодовым:
+# схлопывать неизвестное с неизвестным нельзя, это разные устройства.
+_online_tokens() {   # tag count ips_csv
+    local tag="$1" n="$2" csv="$3"
+    if [ -n "$csv" ]; then
+        printf '%s\n' "$csv" | tr ',' '\n' | grep -v '^$' | sed "s|^?\$|${tag}#?|"
+    else
+        seq 1 "${n:-0}" 2>/dev/null | sed "s|^|${tag}#|"
+    fi
+}
+
+# Устройства юзера по всему кластеру = число РАЗНЫХ адресов, а не сумма счётчиков
+# нод. Одно устройство видно сразу нескольким нодам: клиент замеряет пинг по всем
+# серверам подписки, и на каждой остаётся его сессия (нулевая по трафику). Пока
+# складывали счётчики, такой телефон считался за столько устройств, сколько нод в
+# профиле, и лимит срабатывал на пустом месте (P-45).
+# Нода, которая ещё не публикует адреса (кол. 9 в stats), даёт синтетические
+# токены — её сессии считаются как раньше, отдельными.
 cluster_user_connections() {
-    local user="$1"
-    echo $(( $(get_user_online_count "$user") + $(_peer_stat_sum "$user" 2) ))
+    local user="$1" f name row n csv
+    {
+        _online_tokens "$(node_host 2>/dev/null || echo self)" \
+                       "$(get_user_online_count "$user")" \
+                       "$(get_user_online_ips "$user" 2>/dev/null | paste -sd, -)"
+        if [ -d "$PEERS_DIR" ]; then
+            for f in "$PEERS_DIR"/*.stats; do
+                [ -f "$f" ] || continue
+                name=$(basename "$f" .stats)
+                row=$(awk -F'\t' -v u="$user" '$1==u{printf "%d\t%s", $2, (NF>=9?$9:""); exit}' "$f" 2>/dev/null)
+                n=${row%%$'\t'*}; csv=${row#*$'\t'}; [ "$csv" = "$row" ] && csv=""
+                [ "${n:-0}" -gt 0 ] 2>/dev/null || continue
+                _online_tokens "$name" "$n" "$csv"
+            done
+        fi
+    } | grep -v '^$' | LC_ALL=C sort -u | awk 'NF{n++} END{print n+0}'
 }
 
 # Суммарный трафик по кластеру: печатает «tx rx».

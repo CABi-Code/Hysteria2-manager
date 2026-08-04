@@ -45,7 +45,7 @@
 | [P-07](LIMITS.md#p-07) | Детект шаринга имеет потолок и умирает молча | `lib/antiabuse.sh` | [limits](LIMITS.md) | 🔴 |
 | [P-13](CLUSTER.md#p-13) | Удаление профиля на одной ноде не удаляет его в кластере | `lib/users.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-15](PROTOCOLS.md#p-15) | Онлайн Xray-протоколов всегда пуст (нет `statsUserOnline`) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
-| [P-16](LIMITS.md#p-16) | Кик только у Hysteria: лимиты не действуют на доп. протоколы | `lib/devlimits.sh` | [limits](LIMITS.md) | 🔴 |
+| [P-16](LIMITS.md#p-16) | Кик только у Hysteria: лимиты не действуют на доп. протоколы | `lib/protocols.sh` | [limits](LIMITS.md) | 🟡 |
 | [P-26](WEBAPP.md#p-26) | Неавторизованный запрос к `/api/*` отдаёт 500 и стек вместо 401 | `bootstrap/app.php` | [webapp](WEBAPP.md) | ✅ |
 | [P-27](WEBAPP.md#p-27) | Прод работает как `APP_ENV=local` с `APP_DEBUG=true` | `.env` | [webapp](WEBAPP.md) | ✅ |
 | [P-02](PROTOCOLS.md#p-02) | Трафик TUIC не считается вообще (проверено) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
@@ -77,8 +77,10 @@
 | [P-30](WEBAPP.md#p-30) | `laravel.log` без ротации, туда же пишут прогоны тестов | `.env` | [webapp](WEBAPP.md) | ✅ |
 | [P-40](WEBAPP.md#p-40) | Caddy резал PUT и DELETE: админка не сохранялась | `/etc/caddy/extra/00-common.caddy` | [webapp](WEBAPP.md) | ✅ |
 | [P-31](CLUSTER.md#p-31) | Недоступный пир никак себя не проявлял в менеджере | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
-| [P-41](LIMITS.md#p-41) | Жёсткая проверка снимает лимит устройств внутри ноды | `lib/devlimits.sh` | [limits](LIMITS.md) | 🔴 |
-| [P-42](LIMITS.md#p-42) | Оплата тарифа в боте затирает докупленные устройства | `lib/tgbot_client.sh` | [limits](LIMITS.md) | 🟡 |
+| [P-41](LIMITS.md#p-41) | Жёсткая проверка снимает лимит устройств внутри ноды | `lib/devlimits.sh` | [limits](LIMITS.md) | ✅ |
+| [P-42](LIMITS.md#p-42) | Оплата тарифа в боте затирает докупленные устройства | `lib/tgbot_client.sh` | [limits](LIMITS.md) | ✅ |
 | [P-43](OPS.md#p-43) | Спидометр залипал на сотнях Мбит/с: mawk обрезал кумулятив до 2^31-1 | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
+| [P-44](LIMITS.md#p-44) | При превышении по кластеру кикали все ноды сразу | `lib/devlimits.sh` | [limits](LIMITS.md) | ✅ |
+| [P-45](LIMITS.md#p-45) | Одно устройство считалось за столько, на скольких нодах видно | `lib/publish.sh` | [limits](LIMITS.md) | ✅ |
 
-Следующий свободный номер — **P-44**.
+Следующий свободный номер — **P-46**.

@@ -95,7 +95,8 @@ user_devices_menu() {
                 pause ;;
             5)
                 api_post "/kick" "[\"$user\"]" &>/dev/null
-                echo "  ✅ Сессии $user на этой ноде сброшены (кик)."
+                proto_kick_user "$user" 2>/dev/null
+                echo "  ✅ Сессии $user на этой ноде сброшены (кик, все протоколы)."
                 pause ;;
             6)
                 if sub_enabled; then

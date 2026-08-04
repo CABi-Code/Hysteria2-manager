@@ -41,6 +41,46 @@ node_cap() {   # user -> число (0 = ∞)
     [ "$nl" -lt "$pc" ] && echo "$nl" || echo "$pc"
 }
 
+# Хост ноды по имени её файла в PEERS_DIR. Имена пиров у каждой ноды свои
+# (в своём cluster.conf нода записана под NODE_NAME, а пиры — под хостом),
+# поэтому сравнивать ноды между собой можно только по ХОСТУ: он общий.
+_peer_host() {   # имя файла -> хост
+    local h; h=$(awk -F'|' -v n="$1" '$1==n{print $2; exit}' "$CLUSTER_CONF" 2>/dev/null)
+    printf '%s' "${h:-$1}"
+}
+
+# Наша ли очередь кикать. Раньше вопрос не задавался вовсе, и когда лимит был
+# превышен ПО КЛАСТЕРУ, а каждая нода в свой node_cap укладывалась, кикали ВСЕ
+# ноды сразу: у юзера с pool_cap=1 и одной сессией на каждой из двух нод обе
+# рвали свою единственную сессию каждую минуту, суммарное число при этом не
+# менялось (клиент переподключался туда же) — бесконечная тряска вместо лимита.
+# Теперь ноды выстраиваются в один и тот же порядок (больше сессий → раньше,
+# тай-брейк по хосту), место в пределах pool_cap занимают первые, а кикает
+# только тот, кому места не хватило. Данные у всех нод одни (свой онлайн +
+# кол. 2 из stats-кэшей пиров), поэтому решение совпадает без переговоров.
+node_yields() {   # user localn -> 0 = кикаем мы
+    local user="$1" localn="$2" pc nc self f
+    nc=$(node_cap "$user")
+    # Нода превысила свой собственный лимит — режем без всякого арбитража.
+    { [ "${nc:-0}" -gt 0 ] && [ "${localn:-0}" -gt "$nc" ]; } 2>/dev/null && return 0
+    pc=$(pool_cap "$user")
+    [ "${pc:-0}" -gt 0 ] 2>/dev/null || return 1
+    self=$(node_host); [ -n "$self" ] || self=$(node_name)
+    {
+        printf '%s\t%s\n' "${localn:-0}" "$self"
+        if [ -d "$PEERS_DIR" ]; then
+            for f in "$PEERS_DIR"/*.stats; do
+                [ -f "$f" ] || continue
+                awk -F'\t' -v u="$user" -v n="$(_peer_host "$(basename "$f" .stats)")" \
+                    'NF>=2 && $1==u && ($2+0)>0 {print $2"\t"n}' "$f"
+            done
+        fi
+    } | LC_ALL=C sort -t$'\t' -k1,1nr -k2,2 \
+      | awk -F'\t' -v cap="$pc" -v me="$self" '
+            { if (used < cap && $2 == me) keep = 1; used += $1 }
+            END { exit(keep ? 1 : 0) }'
+}
+
 # Превышен ли у юзера лимит подключений (для ⚠️ в списке и решений о кике).
 # cluster_conn/local_conn можно передать (снимок), иначе считаем сами.
 user_over_limit() {   # user [cluster_conn] [local_conn]
@@ -80,10 +120,10 @@ write_authlimits() {
 # сессии на ЭТОЙ ноде (api /kick). Так делает КАЖДАЯ нода независимо по одним и
 # тем же данным. Кик включается ТОЛЬКО когда задан хотя бы один ГЛОБАЛЬНЫЙ лимит
 # (POOL_LIMIT/NODE_LIMIT); при этом действует эффективный per-user cap
-# (персональное кол-во устройств приоритетнее). Юзеров с ВКЛючённой жёсткой
-# проверкой этот счётчиковый кик НЕ трогает — их ведёт traffic-based
-# enforce_active_node_limit (кик по реальному трафику, а не по числу сессий),
-# иначе счёт «залипших»/переключающихся коннектов ломал бы смену ноды.
+# (персональное кол-во устройств приоритетнее). Жёсткая проверка от этого кика
+# больше НЕ освобождает (P-41): она ограничивает число активных НОД, а адреса
+# внутри ноды держит только этот кик — раньше у таких юзеров лимит устройств не
+# работал вовсе. Оба ограничения складываются.
 # Снимок для auth пишем всегда.
 enforce_device_limits() {
     sub_enabled || return 0
@@ -97,15 +137,30 @@ enforce_device_limits() {
     # нулях ничего не находит. С гейтом же обнуление POOL_LIMIT молча снимало
     # лимит и с персональных тарифов, и с демо (у них devices=1) — а именно на
     # него они и рассчитаны.
+    # Починка состава Xray ДО киков: вернуть тех, кого сняла оборвавшаяся
+    # заморозка прошлого прогона (см. proto_xray_kick).
+    declare -F proto_xray_repair >/dev/null && proto_xray_repair
+
     local user localn total
     while IFS= read -r user; do
         [ -n "$user" ] || continue
-        [ "$(get_user_hardcheck_effective "$user")" = "1" ] && continue   # ведёт traffic-based энфорсер
+        # Юзеров с жёсткой проверкой этот кик тоже касается (P-41). Раньше их
+        # пропускали, отдавая traffic-based энфорсеру, — но тот считает НОДЫ, а
+        # не адреса, и внутри одной ноды лимит устройств у них не действовал
+        # вовсе. А попасть под жёсткую проверку можно и автоматически (окно
+        # анти-абуза), то есть чем активнее шаринг, тем слабее становился лимит.
+        # Теперь ограничения складываются: адреса держит этот кик, ноды —
+        # enforce_active_node_limit ниже.
         localn=$(get_user_online_count "$user")
         [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
         total=$(cluster_user_connections "$user")
-        if user_over_limit "$user" "$total" "$localn"; then
+        # node_yields: при превышении ПО КЛАСТЕРУ кикает одна нода, а не все
+        # сразу — иначе юзера рвало на каждой, а суммарно не убывало ничего.
+        if user_over_limit "$user" "$total" "$localn" && node_yields "$user" "$localn"; then
             api_post "/kick" "[\"$user\"]" &>/dev/null
+            # Доп. протоколы рвутся своими способами: без этого лимит держался
+            # только на Hysteria, а протокол выбирает клиент (P-16).
+            declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
             echo "$(date '+%F %T') $user: cluster=$total local=$localn pool_cap=$(pool_cap "$user") node_cap=$(node_cap "$user") — кик на $(node_name)" \
                 >> "$DATA_DIR/limit.log" 2>/dev/null
         fi
@@ -161,6 +216,7 @@ enforce_active_node_limit() {
         keep=$(printf '%s\n' "$active_list" | sort -t'|' -k1,1n -k2,2 | head -n "$cap")
         if ! printf '%s\n' "$keep" | grep -qx "${my_since}|${self}"; then
             api_post "/kick" "[\"$user\"]" &>/dev/null
+            declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
             echo "$(date '+%F %T') $user: активных нод=$total > cap=$cap — обрезаю $self (active_since=$my_since), оставляю ранние" \
                 >> "$DATA_DIR/limit.log" 2>/dev/null
         fi
