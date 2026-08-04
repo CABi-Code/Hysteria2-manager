@@ -46,3 +46,19 @@ api_post() {
         -H "Content-Type: application/json" -d "$2" \
         "http://127.0.0.1:${API_PORT}${1}" 2>/dev/null
 }
+
+# Кик ВСЕХ сессий юзера. Отдельная функция, потому что с появлением слотов
+# «юзер» — это уже не один id: доп. ссылки подписки живут под своими id
+# («юзер.<8 hex>», sub_token_slotid), и кик по одному имени оставил бы их
+# работать. Список id берём из slotpass.db — его пишет write_slotpass_db.
+# Зовите ЭТО везде, где раньше был api_post "/kick" "[\"$user\"]".
+hy_kick_user() {   # user
+    local user="$1" ids
+    [ -n "$user" ] || return 0
+    ids=$(
+        printf '"%s"' "$user"
+        [ -r "$SLOTPASS_DB" ] && awk -F'|' -v u="$user" \
+            'NF>=4 && $1==u && $4!="" && !seen[$4]++ { printf ",\"%s\"", $4 }' "$SLOTPASS_DB" 2>/dev/null
+    )
+    api_post "/kick" "[${ids}]"
+}

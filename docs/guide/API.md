@@ -228,6 +228,33 @@ curl -H "$H" "$BASE/v1/users/alice"
 Поле `free` — `null` у того, кто не на бесплатном тарифе. Состояние демо-ключа
 живёт отдельно, см. `GET /v1/demo/{name}`.
 
+### GET /v1/users/{name}/devices — устройства (scope: read)
+
+Устройство = ссылка подписки со своим паролем и своим слотом в движке
+([SLOTS.md](SLOTS.md)). Основная ссылка помечена `primary` и снятию не подлежит.
+`last_ip`/`last_seen` — с какого адреса и когда слот занимали в последний раз
+(пишет сам скрипт аутентификации).
+
+```json
+{"username":"alice",
+ "devices":[{"token":"tok…","url":"https://vpn.example.com/sub/tok…",
+             "primary":true,"last_ip":"203.0.113.7","last_seen":1785823993}],
+ "used":1,"allowed":3,"can_add":true}
+```
+
+`allowed` — сколько устройств оплачено (`0` = без персонального лимита),
+`can_add` — влезет ли ещё одно.
+
+### POST /v1/users/{name}/devices — новая ссылка-устройство (scope: users)
+
+Тела нет. Ответ: `token`, `devices` (тот же payload, что у GET).
+`409 links_exhausted` — лимит устройств исчерпан.
+
+### DELETE /v1/users/{name}/devices/{token} — снять ссылку (scope: users)
+
+Ответ: `removed`, `devices`. `409 link_primary` — основную снять нельзя,
+`404 link_not_found` — такой ссылки у юзера нет.
+
 ### GET /v1/users/{name}/subscription — ссылки доступа (scope: read)
 
 `subscription_url` — основная ссылка-подписка (все серверы кластера,

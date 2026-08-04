@@ -85,6 +85,10 @@ _stats_add_cum() {
 # дельту к базе. Звать можно сколько угодно часто — счётчики движков общие с
 # минутной активностью и 5-секундным спидометром, и обнулять их под ними нельзя
 # (P-37). TUIC считается отдельно: кумулятива per-user у sing-box нет.
+# ВАЖНО: ключи /traffic — это id, которые вернул auth-скрипт, а он для доп.
+# ссылок подписки возвращает id СЛОТА («юзер.<8 hex>», sub_token_slotid).
+# Поэтому все три читателя /traffic срезают суффикс: наружу слотов нет, учёт
+# ведётся по юзеру, а awk ниже и так складывает совпавшие ключи.
 collect_traffic() {
     local now last_ts elapsed have_baseline=1 hy merged deltas
     hy=$(api_get "/traffic")
@@ -95,7 +99,7 @@ collect_traffic() {
     # (downlink = клиенту = tx, как и было в старом сборщике).
     merged=$(
         {
-            echo "$hy" | jq -r 'to_entries[] | "\(.key)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null
+            echo "$hy" | jq -r 'to_entries[] | (.key | sub("\\.[0-9a-f]{8}$"; "")) as $u | "\($u)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null
             declare -F proto_xray_split_lines >/dev/null 2>&1 && proto_xray_split_lines 2>/dev/null
         } | awk -F'|' 'NF>=3 && $1!="" {
                 if (!($1 in tx)) { ord[++n] = $1; tx[$1] = 0; rx[$1] = 0 }
@@ -149,7 +153,7 @@ collect_activity() {
     # пусто — мы уже вышли выше и НЕ трогаем activity.dat (без ложных обрезаний).
     merged=$(
         {
-            echo "$response" | jq -r 'to_entries[] | "\(.key)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
+            echo "$response" | jq -r 'to_entries[] | (.key | sub("\\.[0-9a-f]{8}$"; "")) as $u | "\($u)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
             declare -F proto_activity_cum_lines >/dev/null 2>&1 && proto_activity_cum_lines 2>/dev/null
         } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%.0f\n", u, s[u]}'   # %.0f: mawk иначе пишет 2^31+ как «1.42856e+09»
     )
@@ -234,7 +238,7 @@ collect_rates() {
     # down = сервер→клиент (↓, скачивание), up = клиент→сервер (↑).
     merged=$(
         {
-            echo "$hy" | jq -r 'to_entries[] | "\(.key)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null
+            echo "$hy" | jq -r 'to_entries[] | (.key | sub("\\.[0-9a-f]{8}$"; "")) as $u | "\($u)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null
             declare -F proto_xray_split_lines >/dev/null 2>&1 && proto_xray_split_lines 2>/dev/null
         } | awk -F'|' 'NF>=3 && $1!="" {d[$1]+=$2; u[$1]+=$3} END{for(x in d) printf "%s|%.0f|%.0f\n", x, d[x], u[x]}'   # %.0f: mawk иначе пишет 2^31+ научной нотацией
     )

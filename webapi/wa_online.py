@@ -25,6 +25,10 @@ from wa_users import *  # noqa: F403
 
 
 
+# «юзер.<8 hex>» — id слота подписки (см. lib/sub_links.sh).
+_SLOT_ID = re.compile(r".+\.[0-9a-f]{8}")
+
+
 def hysteria_online(user):
     """Онлайн ЭТОЙ ноды из локального API Hysteria (см. lib/api.sh). None = недоступен."""
     secret_file = data_path("api_secret")
@@ -48,7 +52,17 @@ def hysteria_online(user):
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode())
-        return int(data.get(user, 0))
+        # Ключи — id, которые вернул auth-скрипт. У доп. ссылок подписки это id
+        # слота «юзер.<8 hex>» (lib/sub_links.sh: sub_token_slotid), поэтому
+        # берём не только точное имя: слотов снаружи нет, онлайн — по юзеру.
+        total = 0
+        for key, val in data.items():
+            if key == user or _SLOT_ID.fullmatch(key) and key[:-9] == user:
+                try:
+                    total += int(val)
+                except (TypeError, ValueError):
+                    pass
+        return total
     except Exception:
         return None
 

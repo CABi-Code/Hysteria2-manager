@@ -62,7 +62,7 @@ build_user_stats_snapshot() {
                              p = index(L[i], "|"); if (p < 2) continue
                              u = substr(L[i], 1, p - 1); ip = substr(L[i], p + 1)
                              if (ip == "" ) continue
-                             if (ip == "?") ip = "self#?"
+                             if (ip == "?") { unk[u] = 1; continue }   # см. _online_count_tokens
                              if (!seen[u "|" ip]++) on[u]++
                          }
                      }
@@ -71,12 +71,13 @@ build_user_stats_snapshot() {
                            m = split($9, A, ",")
                            for (j = 1; j <= m; j++) {
                                ip = A[j]; if (ip == "") continue
-                               if (ip == "?") ip = FILENAME "#?"
+                               if (ip == "?") { unk[$1] = 1; continue }
                                if (!seen[$1 "|" ip]++) on[$1]++
                            }
                        } else on[$1] += $2
                        have[$1] = 1 }
-                     END { for (k in have) printf "%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n",
+                     END { for (k in unk) if (!(k in on)) on[k] = 1   # только неизвестные = одно устройство
+                           for (k in have) printf "%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n",
                                               k, on[k], tx[k], rx[k], stx[k], srx[k]
                            for (k in on) if (!(k in have)) printf "%s\t%.0f\t0\t0\t0\t0\n", k, on[k] }' \
                      "$PEERS_DIR"/*.stats 2>/dev/null)

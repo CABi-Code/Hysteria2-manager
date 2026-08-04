@@ -260,6 +260,39 @@ case "$verb" in
         done < <(build_user_all_links "$1")
         ;;
 
+    link-add)  # <user> → token=… (новая ссылка-устройство; лимит = кол-во устройств)
+        [ $# -eq 1 ] || fail 64 bad_args "link-add <user>"
+        valid_user "$1"
+        db_user_exists "$1" || fail 2 user_not_found "пользователь не найден"
+        sub_enabled || fail 3 sub_disabled "подписка на ноде не настроена"
+        take_lock
+        tok=$(sub_link_add "$1") || fail 3 links_exhausted "лимит ссылок исчерпан (по числу устройств)"
+        [ -n "$tok" ] || fail 3 links_exhausted "лимит ссылок исчерпан (по числу устройств)"
+        # Только этот юзер: полный sub_refresh перебирает всех и занимает
+        # десятки секунд, а кнопке в мини-аппе надо ответить сразу.
+        regen_user_subscription "$1" >/dev/null 2>&1 || true
+        publish_subtokens >/dev/null 2>&1 || true
+        write_sub_titles >/dev/null 2>&1 && systemctl reload caddy >/dev/null 2>&1 || true
+        printf 'token=%s\n' "$tok"
+        ;;
+
+    link-del)  # <user> <token> (основную ссылку снять нельзя)
+        [ $# -eq 2 ] || fail 64 bad_args "link-del <user> <token>"
+        valid_user "$1"
+        db_user_exists "$1" || fail 2 user_not_found "пользователь не найден"
+        take_lock
+        sub_link_remove "$1" "$2"
+        case $? in
+            0) : ;;
+            2) fail 3 link_primary "основную ссылку снять нельзя" ;;
+            *) fail 2 link_not_found "ссылка не найдена" ;;
+        esac
+        regen_user_subscription "$1" >/dev/null 2>&1 || true
+        publish_subtokens >/dev/null 2>&1 || true
+        write_sub_titles >/dev/null 2>&1 && systemctl reload caddy >/dev/null 2>&1 || true
+        printf 'removed=%s\n' "$2"
+        ;;
+
     tariff-set)  # <code> <title> <days> <devices> <prices> <currencies> <options>
                  # Upsert: существующий правим НА МЕСТЕ (позиция в витрине —
                  # часть каталога), новый дописываем в конец. Бота не

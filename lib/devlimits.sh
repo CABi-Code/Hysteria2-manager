@@ -157,7 +157,7 @@ enforce_device_limits() {
         # node_yields: при превышении ПО КЛАСТЕРУ кикает одна нода, а не все
         # сразу — иначе юзера рвало на каждой, а суммарно не убывало ничего.
         if user_over_limit "$user" "$total" "$localn" && node_yields "$user" "$localn"; then
-            api_post "/kick" "[\"$user\"]" &>/dev/null
+            hy_kick_user "$user" &>/dev/null
             # Доп. протоколы рвутся своими способами: без этого лимит держался
             # только на Hysteria, а протокол выбирает клиент (P-16).
             declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
@@ -167,8 +167,6 @@ enforce_device_limits() {
     done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
     enforce_active_node_limit
     write_authlimits
-    # Живые адреса — скрипту аутентификации, чтобы он видел, занят ли слот.
-    declare -F write_online_ips >/dev/null && write_online_ips
 }
 
 # Traffic-based ЖЁСТКАЯ ПРОВЕРКА: держим АКТИВНЫЙ трафик подписки не более чем на
@@ -217,7 +215,7 @@ enforce_active_node_limit() {
         # Если МЫ не среди «оставленных» — кикаем свои сессии на этой ноде.
         keep=$(printf '%s\n' "$active_list" | sort -t'|' -k1,1n -k2,2 | head -n "$cap")
         if ! printf '%s\n' "$keep" | grep -qx "${my_since}|${self}"; then
-            api_post "/kick" "[\"$user\"]" &>/dev/null
+            hy_kick_user "$user" &>/dev/null
             declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
             echo "$(date '+%F %T') $user: активных нод=$total > cap=$cap — обрезаю $self (active_since=$my_since), оставляю ранние" \
                 >> "$DATA_DIR/limit.log" 2>/dev/null
