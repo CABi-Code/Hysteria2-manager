@@ -167,6 +167,8 @@ enforce_device_limits() {
     done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
     enforce_active_node_limit
     write_authlimits
+    # Живые адреса — скрипту аутентификации, чтобы он видел, занят ли слот.
+    declare -F write_online_ips >/dev/null && write_online_ips
 }
 
 # Traffic-based ЖЁСТКАЯ ПРОВЕРКА: держим АКТИВНЫЙ трафик подписки не более чем на
