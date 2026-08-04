@@ -11,7 +11,7 @@ expiry_set_ts() {   # user [ts]
     echo "${user}|${ts}" >> "$EXPIRY_TS_FILE"
 }
 expiry_get_ts() {   # user -> ts (0 если нет)
-    local t; t=$(grep "^${1}|" "$EXPIRY_TS_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    local t; t=$(fld_by_key "$EXPIRY_TS_FILE" "$1" 2)
     [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0
 }
 
@@ -26,7 +26,7 @@ set_user_expiry() {
 }
 
 get_user_expiry() {
-    grep "^${1}|" "$EXPIRY_FILE" 2>/dev/null | head -1 | cut -d'|' -f2
+    fld_by_key "$EXPIRY_FILE" "$1" 2
 }
 
 # Дата (ГГГГ-ММ-ДД) через N дней от сегодня. Пустой вывод = ошибка.

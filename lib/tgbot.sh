@@ -40,7 +40,7 @@ BOT_LOG="$LOG_DIR/bot.log"
 BOT_UNIT="/etc/systemd/system/hy2-bot.service"
 
 # ---------- конфиг бота (KEY=VALUE, как node.conf) ----------
-bot_get() { [ -f "$BOT_CONF" ] && grep "^${1}=" "$BOT_CONF" 2>/dev/null | head -1 | cut -d= -f2-; }
+bot_get() { conf_get "$BOT_CONF" "$1"; }
 bot_set() {   # key value
     local key="$1" val="$2" tmp
     mkdir -p "$DATA_DIR"; touch "$BOT_CONF"; chmod 600 "$BOT_CONF" 2>/dev/null

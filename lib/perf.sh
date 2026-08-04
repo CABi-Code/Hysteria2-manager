@@ -188,9 +188,7 @@ apply_quic_profile() {   # weak|normal
 # Работает для ЛЮБЫХ клиентов (в т.ч. BBR), сразу, без рестарта Hysteria.
 # ================================================================
 
-klimit_get() {   # key -> value
-    [ -f "$KLIMIT_CONF" ] && grep "^${1}=" "$KLIMIT_CONF" 2>/dev/null | head -1 | cut -d= -f2-
-}
+klimit_get() { conf_get "$KLIMIT_CONF" "$1"; }
 klimit_down() { local v; v=$(klimit_get DOWN_MBIT); [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 klimit_up()   { local v; v=$(klimit_get UP_MBIT);   [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 
@@ -616,12 +614,16 @@ klimit_reconcile() {
 
     # 1) desired: ip -> rate (только юзеры с тарифом, чей rate есть среди классов).
     declare -A DES=()
+    # Тариф юзера запоминаем: в authmap десятки строк на одного человека (по
+    # строке на IP), а тик спидометра зовёт reconcile каждые 5 секунд.
+    declare -A URATE=()
     local u ip ts rate now cutoff
     now=$(date +%s); cutoff=$(( now - 3600 ))     # маппинги свежее часа
     while IFS='|' read -r u ip ts _; do
         [ -n "$u" ] && [ -n "$ip" ] || continue
         [[ "$ts" =~ ^[0-9]+$ ]] && [ "$ts" -lt "$cutoff" ] && continue
-        rate=$(get_user_rate "$u")
+        [ -n "${URATE[$u]:-}" ] || URATE[$u]=$(get_user_rate "$u")
+        rate="${URATE[$u]}"
         [ "$rate" -gt 0 ] 2>/dev/null || continue
         _tariff_has_class "$rate" "$tariffs" || continue
         # Несколько юзеров за одним IP с разным тарифом — берём максимум (не режем сильнее).

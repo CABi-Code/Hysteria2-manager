@@ -14,7 +14,7 @@ TRAFFIC_PREV_FILE="$DATA_DIR/traffic_prev.dat"
 
 # Блокировка вокруг stats.dat: read-modify-write делают три сборщика + TUI, и
 # пересечение теряло дельту целиком (P-21).
-_stats_lock()   { exec 9>"${DATA_DIR}/.stats.lock" 2>/dev/null || return 1; flock 9 2>/dev/null || { exec 9>&-; return 1; }; }
+_stats_lock()   { { exec 9>"${DATA_DIR}/.stats.lock"; } 2>/dev/null || return 1; flock 9 2>/dev/null || { exec 9>&-; return 1; }; }
 _stats_unlock() { exec 9>&-; }
 
 # Прибавить дельты «user|tx|rx» со stdin к stats.dat. БЕЗ блокировки — зовётся
@@ -208,12 +208,12 @@ collect_activity() {
 
 # Активен ли юзер на ЭТОЙ ноде прямо сейчас (0/1) — по трафику за последнюю минуту.
 get_user_active() {
-    local v; v=$(grep "^${1}|" "$ACTIVITY_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    local v; v=$(fld_by_key "$ACTIVITY_FILE" "$1" 2)
     [ "$v" = "1" ] && echo 1 || echo 0
 }
 # С какого момента идёт текущая активная серия (unix ts; 0 — не активен).
 get_user_active_since() {
-    local v; v=$(grep "^${1}|" "$ACTIVITY_FILE" 2>/dev/null | head -1 | cut -d'|' -f3)
+    local v; v=$(fld_by_key "$ACTIVITY_FILE" "$1" 3)
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 
@@ -325,7 +325,7 @@ EOF
 # Текущая скорость пользователя: "user|tx_rate|rx_rate" в байт/сек
 get_user_speed() {
     local line
-    line=$(grep "^${1}|" "$SPEED_FILE" 2>/dev/null | head -1)
+    line=$(row_by_key "$SPEED_FILE" "$1")
     if [ -n "$line" ]; then
         echo "$line"
     else
@@ -335,7 +335,7 @@ get_user_speed() {
 
 get_user_traffic() {
     local line
-    line=$(grep "^${1}|" "$STATS_FILE" 2>/dev/null | head -1)
+    line=$(row_by_key "$STATS_FILE" "$1")
     if [ -n "$line" ]; then
         echo "$line"
     else

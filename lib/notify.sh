@@ -56,7 +56,7 @@ period_days_set() {   # user days
     printf '%s|%s\n' "$1" "$2" >> "$PERIOD_FILE"
 }
 period_days_get() {   # user -> days (0 если нет)
-    local d; d=$(grep "^${1}|" "$PERIOD_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    local d; d=$(fld_by_key "$PERIOD_FILE" "$1" 2)
     [[ "$d" =~ ^[0-9]+$ ]] && printf '%s' "$d" || printf '0'
 }
 
@@ -137,7 +137,7 @@ bot_notify_sweep() {
     # перезаписывает файл целиком. Два параллельных прохода без блокировки слали
     # напоминание дважды и затирали метки друг друга. flock -n: если проход уже
     # идёт, молча выходим — он всех обойдёт.
-    exec 8>"$DATA_DIR/.notify_sweep.lock" 2>/dev/null || true
+    { exec 8>"$DATA_DIR/.notify_sweep.lock"; } 2>/dev/null || true
     flock -n 8 2>/dev/null || return 0
     local now user exp end_ts left pdays label secs bu
     now=$(date +%s)
@@ -192,5 +192,5 @@ bot_notify_sweep() {
 
     # Отпускаем лок сразу (а не с завершением процесса): иначе в одном
     # долгоживущем шелле — демон, тесты — второй проход навсегда бы блокировался.
-    flock -u 8 2>/dev/null; exec 8>&- 2>/dev/null
+    flock -u 8 2>/dev/null; { exec 8>&-; } 2>/dev/null
 }

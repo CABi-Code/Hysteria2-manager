@@ -45,9 +45,7 @@ XRAY_APPLIED_USERS="$PROTO_DIR/.xray.users"
 XRAY_STRUCT_HASH="$PROTO_DIR/.xray.struct"
 
 # ---------------- Параметры узла (protocols.conf) ----------------
-proto_get() {   # key -> value
-    [ -f "$PROTO_CONF" ] && grep "^${1}=" "$PROTO_CONF" 2>/dev/null | head -1 | cut -d= -f2-
-}
+proto_get() { conf_get "$PROTO_CONF" "$1"; }
 # Пишем одно поле без sed (значения могут содержать спецсимволы sed).
 proto_set() {   # key value
     local key="$1" val="$2" tmp
@@ -92,14 +90,16 @@ proto_secret() {
             head -c 36 /dev/urandom | base64 | tr -d '/+=' | head -c 48 > "$PROTO_SECRET_FILE"
         chmod 600 "$PROTO_SECRET_FILE"
     fi
-    cat "$PROTO_SECRET_FILE"
+    # read, а не cat: секрет читается на каждый ключ каждого юзера.
+    local _s; IFS= read -r _s < "$PROTO_SECRET_FILE"; printf '%s\n' "$_s"
 }
 
 # Детерминированный UUIDv5-подобный из (secret|user|pass) — для VLESS и TUIC.
 # Одинаков на любой ноде с тем же секретом → подписка и конфиг всегда сходятся.
 proto_uuid() {   # user pass
     local h
-    h=$(printf '%s' "$(proto_secret)|$1|$2" | sha1sum | cut -c1-32)
+    h=$(printf '%s' "$(proto_secret)|$1|$2" | sha1sum)
+    h=${h:0:32}
     printf '%s-%s-5%s-8%s-%s' \
         "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
 }
@@ -694,7 +694,11 @@ _proto_urlenc() {
         c="${s:$i:1}"
         case "$c" in
             [a-zA-Z0-9._~-]) out+="$c" ;;
-            *) out+=$(printf '%%%02X' "'$c") ;;
+            # printf -v, а не $(printf ...): подстановка форкала подоболочку НА
+            # КАЖДЫЙ байт подписи. Подпись с кириллицей и эмодзи — это 30-40
+            # байт, четыре протокола, полтора десятка юзеров: тысячи форков за
+            # один прогон regen_subscriptions.
+            *) printf -v c '%%%02X' "'$c"; out+="$c" ;;
         esac
     done
     printf '%s' "$out"
