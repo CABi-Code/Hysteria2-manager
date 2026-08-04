@@ -65,4 +65,31 @@ set_local '' '{}'
 n=$(cluster_user_connections ann)
 [ "$n" = "0" ] || fail "офлайн-юзер посчитан как $n"
 
+# ---------- тот же счёт в снимке TUI (главный список) ----------
+# Список рисуется из build_user_stats_snapshot, а не через
+# cluster_user_connections, поэтому дедупликацию проверяем и там: раньше он
+# складывал счётчики и рисовал ⚠️ тем, кто лимит не превышал.
+source "$SCRIPT_DIR/lib/ui.sh"
+get_device_limit() { echo 0; }
+get_node_limit()   { echo 0; }
+for f in "$USERLIMITS_FILE" "$DISABLED_FILE" "$STATS_FILE" "$SPEED_FILE" "$EXPIRY_FILE" "$IPS_FILE"; do : > "$f"; done
+
+rm -f "$PEERS_DIR"/*.stats
+set_local $'ann|1.2.3.4' '{"ann":1}'
+peer_row peer1 ann 1 '1.2.3.4'
+peer_row peer2 ann 1 '5.5.5.5'
+build_user_stats_snapshot
+n=$(snap_conn ann)
+[ "$n" = "2" ] || fail "снимок TUI: телефон на трёх нодах с двумя адресами показан как $n"
+
+printf 'ann|1|0|0\n' > "$USERLIMITS_FILE"           # лимит 1 устройство
+snap_over_limit ann "$(snap_conn ann)" "$(snap_online ann)" || fail "снимок TUI: 2 адреса на лимите 1 не помечены превышением"
+
+rm -f "$PEERS_DIR"/*.stats
+peer_row peer1 ann 1 '1.2.3.4'                      # тот же адрес, что локально
+build_user_stats_snapshot
+n=$(snap_conn ann)
+[ "$n" = "1" ] || fail "снимок TUI: одно устройство на двух нодах показано как $n"
+snap_over_limit ann "$(snap_conn ann)" "$(snap_online ann)" && fail "снимок TUI: ⚠️ у юзера с одним устройством на лимите 1"
+
 echo "✅ test-cluster-devices: ok"
