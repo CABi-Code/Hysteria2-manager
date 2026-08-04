@@ -33,7 +33,9 @@ publish_stats() {
         # не считали одно устройство за несколько (P-45): клиент замеряет пинг по
         # всем серверам подписки, и его сессия появляется на каждой ноде.
         # Старые ноды колонку не публикуют — читатели это переживают.
-        ips=$(get_user_online_ips "$u" | paste -sd, - 2>/dev/null)
+        ips=""
+        declare -F get_user_online_ips >/dev/null 2>&1 \
+            && ips=$(get_user_online_ips "$u" | paste -sd, - 2>/dev/null)
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}" "${ac:-0}" "${asince:-0}" "${ips}" >> "$tmp"
     done < "$USERS_DB"
     mv "$tmp" "$WEBROOT/cluster/stats"
