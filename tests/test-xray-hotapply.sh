@@ -269,8 +269,15 @@ printf 'u1|10.0.0.1|1\nu1|10.0.0.7|2\nu2|10.0.0.2|3\n' > "$AUTHMAP_FILE"
 refresh_online
 is "адрес, общий для протоколов, считается один раз" "$(echo "$CACHED_ONLINE" | jq -Sc .)" \
    '{"u1":4,"u2":1,"u3":1}'
+# force: подряд в одном процессе refresh_online отдаёт кэш (ONLINE_TTL_SEC),
+# а здесь заглушка сменилась и нужен настоящий опрос.
 is "  и без Hysteria-сессий счёт тот же"  \
-   "$(api_get() { echo '{}'; }; refresh_online; echo "$CACHED_ONLINE" | jq -Sc .)" '{"u1":3,"u2":1}'
+   "$(api_get() { echo '{}'; }; refresh_online force; echo "$CACHED_ONLINE" | jq -Sc .)" '{"u1":3,"u2":1}'
+
+# Кэш в пределах процесса: повторный вызов без force не переспрашивает протоколы.
+is "  повторный вызов берёт кэш" \
+   "$(api_get() { echo '{"zzz":9}'; }; refresh_online; echo "$CACHED_ONLINE" | jq -Sc .)" \
+   "$(echo "$CACHED_ONLINE" | jq -Sc .)"
 
 echo
 [ "$FAIL" = 0 ] && echo "✅ Все проверки прошли" || echo "❌ Есть падения"
