@@ -46,3 +46,10 @@ cluster_health_banner | grep -q 'Пиров с проблемой: 2' || { echo 
 [ -z "$(cluster_health_banner)" ]  || { echo "FAIL: здоровый кластер дал баннер"; exit 1; }
 
 echo "OK: test-cluster-health"
+
+# Имя пира по хосту: из реестра, иначе безопасное из самого хоста.
+printf 'deu1|deu1.example\nfin1|fin1.example\n' > "$CLUSTER_CONF"
+[ "$(cluster_peer_name deu1.example)" = "deu1" ] || fail "имя пира не взято из реестра"
+[ "$(cluster_peer_name unknown.example)" = "unknown.example" ] || fail "неизвестный хост"
+[ "$(cluster_peer_name 'ho st/../x')" = "ho_st_.._x" ] || fail "имя не обеззаражено"
+echo "  ✅ cluster_peer_name: реестр, неизвестный хост, обеззараживание"
