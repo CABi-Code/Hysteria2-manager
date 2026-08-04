@@ -126,6 +126,9 @@ FREEPLAN_FILE="$DATA_DIR/freeplan.dat"
 # Демо-профили (см. lib/demo.sh): «user|state|created|expires|cap|base|used».
 # Локальные для ЭТОЙ ноды — по кластеру не публикуются (демо принимает одна нода).
 DEMOS_DB="$DATA_DIR/demos.db"
+# Подпись входов манифеста/подписок: перевыпускать их каждую минуту незачем,
+# если ничего не менялось (см. _subs_inputs_changed в lib/sub_links.sh).
+SUBS_SIG_FILE="$DATA_DIR/.subs.sig"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
