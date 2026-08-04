@@ -35,7 +35,7 @@ user_action_menu() {
                     disable_user "$user"
                     cstate_mark "$user" disabled   # точка правды: разнести «отключён»
                 fi
-                refresh_online
+                refresh_online force   # сессии только что изменились — кэш не годится
                 offer_sync
                 pause
                 need_clear=1
@@ -543,7 +543,7 @@ repair_data() {
     echo "  ✅ Скрипт аутентификации и права восстановлены, API-секрет проверен"
 
     # 2. Принудительный свежий сбор статистики и IP.
-    refresh_online
+    refresh_online force
     collect_traffic
     collect_ips
     echo "  ✅ Онлайн, трафик и IP пересобраны"
