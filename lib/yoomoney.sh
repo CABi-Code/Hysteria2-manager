@@ -138,10 +138,10 @@ ym_find_operation() {   # label
 # fd 7: 8 занят подметанием уведомлений, 9 — тиком скоростей.
 ym_settle() {   # label
     local rc
-    exec 7>"$DATA_DIR/.yoomoney.lock" 2>/dev/null || return 1
-    flock -w 60 7 2>/dev/null || { exec 7>&- 2>/dev/null; return 1; }
+    { exec 7>"$DATA_DIR/.yoomoney.lock"; } 2>/dev/null || return 1
+    flock -w 60 7 2>/dev/null || { { exec 7>&-; } 2>/dev/null; return 1; }
     _ym_settle "$1"; rc=$?
-    flock -u 7 2>/dev/null; exec 7>&- 2>/dev/null
+    flock -u 7 2>/dev/null; { exec 7>&-; } 2>/dev/null
     return $rc
 }
 

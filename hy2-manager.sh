@@ -62,6 +62,7 @@ fi
 # === CLI АРГУМЕНТЫ ===
 
 if [ "$1" = "--check-expiry" ]; then
+    cron_lock check-expiry
     migrate_auth
     migrate_to_command_auth
     setup_stats_api
@@ -76,11 +77,13 @@ fi
 # Частый прогон только напоминаний (cron каждые ~5 мин): чтобы ловить пороги
 # 30 мин / 1 час, недостижимые при 6-часовом --check-expiry.
 if [ "$1" = "--notify-sweep" ]; then
+    cron_lock notify-sweep
     bot_notify_sweep
     exit 0
 fi
 
 if [ "$1" = "--collect" ]; then
+    cron_lock collect
     setup_stats_api
     collect_traffic          # Hysteria + Xray (VLESS/SS2022/Trojan) в общий учёт
     collect_ips
@@ -100,8 +103,7 @@ if [ "$1" = "--rates-tick" ]; then
     # Тик спидометра (systemd-таймер hy2-rates, раз в RATES_TICK_SEC): пересчёт
     # своей скорости + обмен с пирами. flock -n: если предыдущий тик ещё жив
     # (тормозящий API протокола), пропускаем — очередь тиков нам не нужна.
-    exec 9>"$DATA_DIR/.rates.lock"
-    flock -n 9 || exit 0
+    cron_lock rates
     collect_rates
     # Межнодовый обмен скоростью реже сбора: локальный спидометр частит (5 с),
     # а тянуть rates у пиров каждые 5 с ради этого — лишний кластерный трафик.
@@ -121,12 +123,14 @@ if [ "$1" = "--rates-tick" ]; then
 fi
 
 if [ "$1" = "--cluster-sync" ]; then
+    cron_lock cluster-sync
     # Периодический обмен ключами с пирами + пересборка подписок (cron).
     cluster_sync
     exit 0
 fi
 
 if [ "$1" = "--ym-poll" ]; then
+    cron_lock ym-poll
     # Оплаты ЮMoney: опрос истории операций по меткам ждущих счетов.
     # Клиент может не ждать — в счёте есть кнопка «Проверить оплату» (тот же код).
     ym_poll
@@ -134,6 +138,7 @@ if [ "$1" = "--ym-poll" ]; then
 fi
 
 if [ "$1" = "--online-sync" ]; then
+    cron_lock online-sync
     # Частый обмен онлайном + применение лимита устройств по кластеру (cron, 1 мин).
     setup_stats_api
     migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
@@ -157,6 +162,7 @@ if [ "$1" = "--online-sync" ]; then
 fi
 
 if [ "$1" = "--antiabuse" ]; then
+    cron_lock antiabuse
     # Часовая коррекция балла анти-абуза + авто-жёсткая проверка (cron, 1 час).
     setup_stats_api
     abuse_correct
