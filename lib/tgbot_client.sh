@@ -172,7 +172,7 @@ bot_client_status() {   # chat_id
     else
         exps="бессрочно"
     fi
-    tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+    IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$user")"
     dev=$(get_user_devices "$user")
     oc=$(api_get "/online" | jq -r --arg u "$user" '.[$u] // 0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
     tg_send "$chat" "📊 <b>$(tg_esc "$user")</b>

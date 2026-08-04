@@ -56,7 +56,7 @@ period_days_set() {   # user days
     printf '%s|%s\n' "$1" "$2" >> "$PERIOD_FILE"
 }
 period_days_get() {   # user -> days (0 если нет)
-    local d; d=$(grep "^${1}|" "$PERIOD_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    local d; d=$(fld_by_key "$PERIOD_FILE" "$1" 2)
     [[ "$d" =~ ^[0-9]+$ ]] && printf '%s' "$d" || printf '0'
 }
 

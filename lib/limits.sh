@@ -21,47 +21,29 @@ userlimits_set_ts() {   # user [ts]
     echo "${user}|${ts}" >> "$USERLIMITS_TS_FILE"
 }
 userlimits_get_ts() {   # user -> ts (0 если нет)
-    local t; t=$(grep "^${1}|" "$USERLIMITS_TS_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    local t; t=$(fld_by_key "$USERLIMITS_TS_FILE" "$1" 2)
     [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0
 }
 
 # Сырая строка «devices|hardcheck|rate» пользователя (пусто, если записи нет).
-# Чистый bash вместо `grep|head`: строку юзера читают get_user_devices/
-# hardcheck/rate, а их дёргают в циклах по всем юзерам и по всем активным IP
-# (klimit_reconcile, enforce_device_limits) — два процесса на чтение выливались
-# в сотни форков за тик.
-_userlimits_row() {
-    local line
-    [ -f "$USERLIMITS_FILE" ] || return 0
-    while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in "$1|"*) printf '%s\n' "$line"; return 0 ;; esac
-    done < "$USERLIMITS_FILE"
-    return 0
-}
-# Поле row по номеру, без cut.
-_userlimits_fld() {   # user n
-    local row _f; row=$(_userlimits_row "$1")
-    [ -n "$row" ] || return 0
-    IFS='|' read -r -a _f <<< "$row"
-    printf '%s\n' "${_f[$2]:-}"
-}
+_userlimits_row() { row_by_key "$USERLIMITS_FILE" "$1"; }
 
 # Кол-во устройств пользователя (по умолчанию DEFAULT_DEVICES=1).
 get_user_devices() {
-    local v; v=$(_userlimits_fld "$1" 1)
+    local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 2)
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo "$DEFAULT_DEVICES"
 }
 
 # Включена ли жёсткая проверка (0/1, по умолчанию 0).
 get_user_hardcheck() {
-    local v; v=$(_userlimits_fld "$1" 2)
+    local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 3)
     [ "$v" = "1" ] && echo 1 || echo 0
 }
 
 # Тариф скорости пользователя в Мбит/с (0 = нет тарифа → глобальный лимит).
 # Поле опциональное: старые записи без 4-го поля → 0 (обратная совместимость).
 get_user_rate() {
-    local v; v=$(_userlimits_fld "$1" 3)
+    local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 4)
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 
