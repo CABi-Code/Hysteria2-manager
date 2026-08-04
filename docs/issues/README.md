@@ -45,7 +45,7 @@
 | [P-07](LIMITS.md#p-07) | Детект шаринга имеет потолок и умирает молча | `lib/antiabuse.sh` | [limits](LIMITS.md) | 🔴 |
 | [P-13](CLUSTER.md#p-13) | Удаление профиля на одной ноде не удаляет его в кластере | `lib/users.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-15](PROTOCOLS.md#p-15) | Онлайн Xray-протоколов всегда пуст (нет `statsUserOnline`) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
-| [P-16](LIMITS.md#p-16) | Кик только у Hysteria: лимиты не действуют на доп. протоколы | `lib/devlimits.sh` | [limits](LIMITS.md) | 🔴 |
+| [P-16](LIMITS.md#p-16) | Кик только у Hysteria: лимиты не действуют на доп. протоколы | `lib/protocols.sh` | [limits](LIMITS.md) | 🟡 |
 | [P-26](WEBAPP.md#p-26) | Неавторизованный запрос к `/api/*` отдаёт 500 и стек вместо 401 | `bootstrap/app.php` | [webapp](WEBAPP.md) | ✅ |
 | [P-27](WEBAPP.md#p-27) | Прод работает как `APP_ENV=local` с `APP_DEBUG=true` | `.env` | [webapp](WEBAPP.md) | ✅ |
 | [P-02](PROTOCOLS.md#p-02) | Трафик TUIC не считается вообще (проверено) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
