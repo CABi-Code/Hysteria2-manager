@@ -21,6 +21,27 @@ AUTHMAP_RETENTION_DAYS="${AUTHMAP_RETENTION_DAYS:-2}"
 # мала (вернётся со следующим подключением, а раскладка тарифов подстрахована
 # ips.dat), поэтому чистим редко — из 30-минутного --collect — и только когда
 # резать реально есть что.
+# Карта занятых слотов растёт так же, как authmap (строка на подключение), и
+# чинится тем же способом. Держим короче: для решения «слот занят» нужна только
+# последняя запись, а история тут ни на что не влияет.
+SLOTMAP_RETENTION_HOURS="${SLOTMAP_RETENTION_HOURS:-6}"
+slotmap_trim() {
+    [ -s "$SLOTMAP_FILE" ] || return 0
+    local cut tmp owner group
+    cut=$(( $(date +%s) - SLOTMAP_RETENTION_HOURS * 3600 ))
+    awk -F'|' -v cut="$cut" 'NF>=4 && $4+0 < cut { found=1; exit } END { exit(found?0:1) }' \
+        "$SLOTMAP_FILE" || return 0
+    tmp="${SLOTMAP_FILE}.tmp.$BASHPID"
+    awk -F'|' -v cut="$cut" 'NF>=4 && $1!="" && $4+0 >= cut' "$SLOTMAP_FILE" > "$tmp" \
+        && mv "$tmp" "$SLOTMAP_FILE" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    # Дописывает файл процесс hysteria — после mv вернуть владельца обязательно.
+    if declare -F service_identity >/dev/null 2>&1; then
+        read -r owner group < <(service_identity)
+        [ -n "$owner" ] && chown "${owner}:${group}" "$SLOTMAP_FILE" 2>/dev/null
+    fi
+    chmod 644 "$SLOTMAP_FILE" 2>/dev/null
+}
+
 authmap_trim() {
     [ -s "$AUTHMAP_FILE" ] || return 0
     local cut tmp owner group

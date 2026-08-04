@@ -88,3 +88,36 @@ decode "$peertok" | grep -q "hysteria2://ann:basepass123@" || fail "чужой �
 grep -qF "ann|$(sub_token_password ann "$peertok")|$peertok" "$SLOTPASS_DB" || fail "пароль чужого токена не принимается этой нодой"
 
 echo "✅ test-slots: ok"
+
+# ---------- фаза B: занятый слот не пускает второго ----------
+# Рубильник: без SLOT_REJECT=1 отказа нет вообще.
+: > "$SLOTMAP_FILE"; : > "$ONLINEIPS_FILE"; : > "$NODE_CONF"
+install_auth_script
+
+A="10.0.0.1"; B="10.0.0.2"
+"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "первое устройство не пустили"
+printf 'ann|%s\n' "$A" > "$ONLINEIPS_FILE"          # A теперь в сети
+"$AUTH_SCRIPT" "$B:100" "ann:$p1" 0 >/dev/null || fail "рубильник выключен, а отказ уже случился"
+
+# Пока рубильник выключен, слот всё равно записывается за последним пришедшим —
+# возвращаем владение A, чтобы проверять именно отказ.
+printf 'SLOT_REJECT=1\n' > "$NODE_CONF"
+"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "A не смог вернуть свой слот"
+"$AUTH_SCRIPT" "$B:100" "ann:$p1" 0 >/dev/null 2>&1 && fail "занятый слот пустил второе устройство"
+"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "занявший слот перестал переподключаться"
+"$AUTH_SCRIPT" "$B:100" "ann:$p2" 0 >/dev/null || fail "второй слот (другая ссылка) не пустил второе устройство"
+"$AUTH_SCRIPT" "$B:100" "ann:basepass123" 0 >/dev/null || fail "базовый пароль — отдельный слот, он свободен"
+
+# Устройство ушло из сети — слот освободился.
+: > "$ONLINEIPS_FILE"
+"$AUTH_SCRIPT" "$B:100" "ann:$p1" 0 >/dev/null || fail "слот не освободился после ухода занявшего"
+
+# Занявший слот сменился: теперь держит B, и уже A получает отказ.
+printf 'ann|%s\n' "$B" > "$ONLINEIPS_FILE"
+"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null 2>&1 && fail "слот держат двое сразу"
+
+# Чужой юзер онлайн на том же адресе слот не занимает.
+: > "$SLOTMAP_FILE"; printf 'bob|%s\n' "$A" > "$ONLINEIPS_FILE"
+"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "чужой онлайн занял наш слот"
+
+echo "✅ test-slots (фаза B): ok"
