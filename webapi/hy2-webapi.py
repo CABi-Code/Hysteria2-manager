@@ -56,6 +56,7 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/online$"), "read", "h_online"),
     ("GET", re.compile(r"^/v1/users/([^/]+)$"), "read", "h_user"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/subscription$"), "read", "h_user_sub"),
+    ("GET", re.compile(r"^/v1/users/([^/]+)/devices$"), "read", "h_devices"),
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
     ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
     ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
@@ -71,6 +72,8 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/disable$"), "users", "h_disable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/reset-subscription$"), "users", "h_reset_sub"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/devices$"), "users", "h_device_add"),
+    ("DELETE", re.compile(r"^/v1/users/([^/]+)/devices/([^/]+)$"), "users", "h_device_del"),
     ("POST", re.compile(r"^/v1/demo$"), "users", "h_demo"),
     # Состояние выданного демо: живёт в demos.db и ПЕРЕЖИВАЕТ удаление юзера
     # (доступ отбирают по лимиту, а строка остаётся) — поэтому отдельно от
@@ -261,6 +264,27 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             raise ApiError(404, "user_not_found", "пользователь не найден")
         return payload
+
+    def h_devices(self, name):
+        payload = devices_payload(need_username(name))
+        if payload is None:
+            raise ApiError(404, "user_not_found", "пользователь не найден")
+        return payload
+
+    def h_device_add(self, name):
+        # Новая ссылка-устройство: свой пароль и свой слот в движке
+        # (hy2-manager/docs/guide/SLOTS.md). Лимит — по числу устройств юзера,
+        # его держит сам менеджер (sub_link_add), здесь не дублируем.
+        user = need_username(name)
+        res = self.dispatch("link-add", user)
+        return {"username": user, "token": res.get("token"),
+                "devices": devices_payload(user)}
+
+    def h_device_del(self, name, token):
+        user = need_username(name)
+        self.dispatch("link-del", user, token)
+        return {"username": user, "removed": token,
+                "devices": devices_payload(user)}
 
     def h_user_by_tg(self, tg_id):
         user = tg_username(need_tg_id(tg_id))
