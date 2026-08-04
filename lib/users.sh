@@ -43,6 +43,11 @@ secure_auth_files() {
     chown "${owner}:${group}" "$DATA_DIR" "$USERS_DB" 2>/dev/null || true
     chmod 750 "$DATA_DIR" 2>/dev/null || true
     chmod 640 "$USERS_DB" 2>/dev/null || true
+    # Справочник паролей слотов читает тот же скрипт аутентификации.
+    if [ -f "$SLOTPASS_DB" ]; then
+        chown "${owner}:${group}" "$SLOTPASS_DB" 2>/dev/null || true
+        chmod 640 "$SLOTPASS_DB" 2>/dev/null || true
+    fi
     if [ -f "$AUTH_SCRIPT" ]; then
         chown "${owner}:${group}" "$AUTH_SCRIPT" 2>/dev/null || true
         chmod 750 "$AUTH_SCRIPT" 2>/dev/null || true
