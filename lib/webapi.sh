@@ -19,7 +19,7 @@ WEBAPI_KEYS="$DATA_DIR/webapi.keys"
 WEBAPI_UNIT="/etc/systemd/system/hy2-webapi.service"
 WEBAPI_DEFAULT_PORT=8787
 
-webapi_get() { [ -f "$WEBAPI_CONF" ] && grep "^${1}=" "$WEBAPI_CONF" 2>/dev/null | head -1 | cut -d= -f2-; }
+webapi_get() { conf_get "$WEBAPI_CONF" "$1"; }
 webapi_set() {   # key value  (та же схема, что node_set/bot_set — без sed по значению)
     local key="$1" val="$2" tmp
     mkdir -p "$DATA_DIR"; touch "$WEBAPI_CONF"; chmod 600 "$WEBAPI_CONF" 2>/dev/null

@@ -45,16 +45,7 @@ XRAY_APPLIED_USERS="$PROTO_DIR/.xray.users"
 XRAY_STRUCT_HASH="$PROTO_DIR/.xray.struct"
 
 # ---------------- Параметры узла (protocols.conf) ----------------
-# Чистый bash вместо `grep|head|cut` — по той же причине, что и node_get:
-# сборка одной ссылки VLESS дёргает proto_get с десяток раз.
-proto_get() {   # key -> value
-    local k v
-    [ -f "$PROTO_CONF" ] || return 0
-    while IFS='=' read -r k v || [ -n "$k" ]; do
-        [ "$k" = "$1" ] && { printf '%s\n' "$v"; return 0; }
-    done < "$PROTO_CONF"
-    return 0
-}
+proto_get() { conf_get "$PROTO_CONF" "$1"; }
 # Пишем одно поле без sed (значения могут содержать спецсимволы sed).
 proto_set() {   # key value
     local key="$1" val="$2" tmp
