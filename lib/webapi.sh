@@ -148,7 +148,7 @@ webapi_menu() {
                 ask name "  Имя ключа (латиница/цифры, например надстройка): "
                 [[ "$name" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "  ❌ Недопустимое имя"; pause "  Enter..."; continue; }
                 echo "  Scopes: read (чтение) · users (управление) · payments (журнал оплат)"
-                echo "          telegram (привязки/коды) · * (все)"
+                echo "          telegram (привязки/коды) · tariffs (правка каталога и цен) · * (все)"
                 ask scopes "  Scopes через запятую [read]: "
                 [ -z "$scopes" ] && scopes="read"
                 [[ "$scopes" =~ ^[a-z*,]+$ ]] || { echo "  ❌ Недопустимые scopes"; pause "  Enter..."; continue; }

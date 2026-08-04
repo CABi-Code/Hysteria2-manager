@@ -21,7 +21,14 @@ bot_handle_update() {   # json
             return 0
         fi
         code=$(printf '%s' "$payload" | cut -d: -f2)
-        if [ -n "$(tariff_get "$code")" ]; then
+        # Продажа выключена (модуль sales) — счёт из старого сообщения не
+        # проводим: отказ на pre_checkout деньги не списывает, в отличие от
+        # отказа после оплаты.
+        if ! bot_mod_on sales; then
+            tg_api answerPreCheckoutQuery --data-urlencode "pre_checkout_query_id=$pcq_id" \
+                --data-urlencode "ok=false" \
+                --data-urlencode "error_message=Покупка через бота отключена." >/dev/null
+        elif [ -n "$(tariff_get "$code")" ]; then
             tg_api answerPreCheckoutQuery --data-urlencode "pre_checkout_query_id=$pcq_id" \
                 --data-urlencode "ok=true" >/dev/null
         else
@@ -62,6 +69,7 @@ bot_handle_update() {   # json
             ymchk:*)
                 # Проверка оплаты ЮMoney по кнопке. Успех сам пришлёт карточку
                 # доступа (bot_fulfill_payment) — здесь только исходы «нет/мало».
+                bot_mod_on sales || return 0
                 local ym_rc=0
                 ym_settle "${data#ymchk:}" >/dev/null 2>&1 || ym_rc=$?
                 case "$ym_rc" in
@@ -69,6 +77,7 @@ bot_handle_update() {   # json
                     2) tg_send "$chat" "Сумма перевода меньше цены тарифа — администратор уведомлён и свяжется с вами." ;;
                 esac ;;
             a:*)
+                bot_mod_on admin || return 0
                 bot_is_admin "$from" || { tg_send "$chat" "⛔ Только для администратора."; return 0; }
                 case "$data" in
                     a:menu)     tg_edit "$chat" "$mid" "🛠 <b>Админ-панель</b>" "$KB_ADMIN" ;;
@@ -81,6 +90,7 @@ bot_handle_update() {   # json
                     a:tariffs)
                         local tl
                         tl=$(tariff_list | while IFS='|' read -r c t d dv p cur _opts; do
+                            read -r p cur <<< "$(tariff_prices_effective "$p" "$cur")"
                             [ -n "$c" ] && echo "• <code>$c</code> — $(tg_esc "$t"): ${d} дн., устройств ${dv}, $(tariff_price_str "$p" "$cur")"
                         done)
                         tg_send "$chat" "💰 <b>Тарифы</b>
@@ -192,7 +202,7 @@ ${tl:-нет тарифов}
             u=$(bot_code_lookup "$code")
             if [ -n "$u" ]; then
                 tg_bind "$from" "$u"
-                tg_send "$chat" "✅ Аккаунт <b>$(tg_esc "$u")</b> привязан к вашему Telegram!" "$KB_CLIENT"
+                tg_send "$chat" "✅ Аккаунт <b>$(tg_esc "$u")</b> привязан к вашему Telegram!" "$(bot_kb_client)"
                 bot_notify_admins "🔗 tg:$from привязал аккаунт $(tg_esc "$u")"
             else
                 tg_send "$chat" "❌ Код неверен или истёк. Запросите новый у администратора."
@@ -215,7 +225,11 @@ ${tl:-нет тарифов}
                     || tg_send "$chat" "Не получилось проверить код — попробуйте ещё раз через минуту."
             fi ;;
         /web|/веб|/сайт)
-            tg_send "$chat" "🌐 Вход на сайт: откройте <b>домен-надстройки</b>, возьмите код со страницы и пришлите его сюда командой <code>/web КОД</code>." ;;
+            # Адрес сайта — из bot.conf (MINIAPP_WEB_URL), а не константой: у
+            # каждого, кто поднял менеджер, он свой. Не задан — объясняем схему
+            # без адреса.
+            local wurl; wurl=$(bot_get MINIAPP_WEB_URL)
+            tg_send "$chat" "🌐 Вход на сайт: ${wurl:+откройте <b>$(tg_esc "$wurl")</b>, }возьмите код со страницы входа и пришлите его сюда командой <code>/web КОД</code>." ;;
         /menu|/help)
             if bot_is_admin "$from"; then
                 tg_send "$chat" "🛠 <b>Команды администратора</b>
@@ -348,6 +362,7 @@ tgbot_daemon() {
 # Клиентам с привязанным Telegram — за 3 дня и в день истечения (раз в день).
 bot_expiry_reminders() {
     bot_enabled || return 0
+    bot_mod_on notify || return 0
     BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
     touch "$BOT_NOTIFY_FILE"
     local today user exp dl chats c
@@ -362,7 +377,7 @@ bot_expiry_reminders() {
         chats=$(tg_user_chats "$user")
         [ -n "$chats" ] || continue
         for c in $chats; do
-            tg_send "$c" "⏰ Ваш доступ (<b>$(tg_esc "$user")</b>) истекает <b>$exp</b> (осталось: $(format_remaining "$exp")).$( [ "$(tariff_count)" -gt 0 ] && echo "
+            tg_send "$c" "⏰ Ваш доступ (<b>$(tg_esc "$user")</b>) истекает <b>$exp</b> (осталось: $(format_remaining "$exp")).$( bot_sales_on && echo "
 Продлить: /buy" )"
         done
         echo "${user}|${today}" >> "$BOT_NOTIFY_FILE"
@@ -376,10 +391,11 @@ bot_expiry_reminders() {
 # Уведомление об автоотключении (зовётся из check_expired_users через хук).
 bot_notify_expired() {   # user
     bot_enabled || return 0
+    bot_mod_on notify || return 0
     BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
     local user="$1" c
     for c in $(tg_user_chats "$user"); do
-        tg_send "$c" "⛔ Срок действия вашего доступа (<b>$(tg_esc "$user")</b>) истёк — доступ отключён.$( [ "$(tariff_count)" -gt 0 ] && echo "
+        tg_send "$c" "⛔ Срок действия вашего доступа (<b>$(tg_esc "$user")</b>) истёк — доступ отключён.$( bot_sales_on && echo "
 Продлить и включить снова: /buy" )"
     done
     bot_notify_admins "⏰ Автоотключение по сроку: $(tg_esc "$user")"
@@ -390,6 +406,7 @@ bot_notify_expired() {   # user
 # «осталось немного» (три порога), исчерпание и обновление лимита.
 _bot_free_send() {   # user html
     bot_enabled || return 0
+    bot_mod_on notify || return 0
     BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
     local c
     for c in $(tg_user_chats "$1"); do tg_send "$c" "$2"; done

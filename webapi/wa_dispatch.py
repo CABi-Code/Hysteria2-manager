@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import subprocess
@@ -138,6 +139,36 @@ def node_info():
     }
 
 
+def pricing():
+    """Режим звёздной цены (bot.conf) — тот же, по которому считает бот.
+
+    Наружу отдаём и режим, и курс: надстройке они нужны только для админки,
+    саму цену она получает уже посчитанной (см. tariffs()).
+    """
+    b = read_kv(data_path("bot.conf"))
+    mode = "rate" if b.get("STARS_MODE") == "rate" else "fixed"
+    try:
+        rate = float(str(b.get("STARS_RUB_PER_STAR", "")).replace(",", "."))
+    except ValueError:
+        rate = 0.0
+    return {"stars_mode": mode, "rub_per_star": rate if rate > 0 else 1.0}
+
+
+def _apply_stars_mode(prices):
+    """Цена в звёздах из рублёвой, если включён режим rate (lib/tariffs.sh:
+    tariff_prices_effective — здесь та же формула, включая округление ВВЕРХ)."""
+    p = pricing()
+    if p["stars_mode"] != "rate":
+        return prices
+    rub = next((e["price"] for e in prices if e["currency"] == "RUB"), None)
+    if rub is None:
+        return prices
+    stars = math.ceil(float(rub.replace(",", ".")) / p["rub_per_star"])
+    out = [e for e in prices if e["currency"] != "XTR"]
+    out.append({"currency": "XTR", "price": str(stars)})
+    return out
+
+
 def tariffs():
     out = []
     for r in pipe_rows(data_path("tariffs.conf"), 6):
@@ -156,6 +187,9 @@ def tariffs():
                 prices.append({"currency": c, "price": p})
         if not prices:
             continue
+        # Режим звёздной цены — свойство каталога, а не клиента: наружу уходит
+        # уже посчитанная цена, чтобы её не пересчитывала каждая надстройка.
+        prices = _apply_stars_mode(prices)
         # Конструктор (7-е поле): бесплатность и лимиты трафика. Для обычных
         # тарифов free=false и лимитов нет — клиенты, не знающие про поля,
         # продолжают работать как раньше.

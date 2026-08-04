@@ -67,6 +67,9 @@ period_days_get() {   # user -> days (0 если нет)
 notify_user() {   # user  html_text
     local user="$1" text="$2" c
     bot_enabled || return 0
+    # Модуль notify (lib/tgbot.sh): выключается отдельно от продажи — надстройка
+    # со своими уведомлениями глушит бота, не теряя привязку и фулфилмент.
+    bot_mod_on notify || return 0
     BOT_TOKEN=${BOT_TOKEN:-$(bot_token)}; [ -n "$BOT_TOKEN" ] || return 0
     for c in $(tg_user_chats "$user"); do
         [ -n "$c" ] || continue
