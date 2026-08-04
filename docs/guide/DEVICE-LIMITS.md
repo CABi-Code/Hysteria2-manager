@@ -103,7 +103,9 @@ node_cap(user) = min(NODE_LIMIT, pool_cap)                   # NODE_LIMIT=0 → 
 `cluster_online_sync` по крону `* * * * * --online-sync`:
 
 1. считает уникальные адреса юзера на этой ноде и по кластеру
-   (`cluster_user_connections` = свои + сумма из `*.stats` пиров);
+   (`cluster_user_connections` = объединение своих адресов и адресов из кол. 9
+   `*.stats` пиров, уникальные; до 4.15.55 складывались счётчики нод, и одно
+   устройство считалось за несколько — [P-45](../issues/LIMITS.md#p-45));
 2. если по кластеру больше `pool_cap` **или** локально больше `node_cap` —
    спрашивает `node_yields`, наша ли очередь кикать, и только тогда шлёт
    `POST /kick` на API Hysteria и пишет строку в `limit.log`;
@@ -248,6 +250,7 @@ Hysteria (отказ по слоту). На Xray и TUIC два устройст
 | `lib/limits.sh` | Хранение `user\|devices\|hardcheck\|rate`, метки времени, сеттеры |
 | `lib/devlimits.sh` | `pool_cap`/`node_cap`, `node_yields`, `enforce_device_limits`, `enforce_active_node_limit`, `write_authlimits` |
 | `lib/protocols.sh` | `proto_kick_user`, `proto_xray_kick` (заморозка), `proto_xray_repair`, `proto_tuic_kick` |
+| `tests/test-cluster-devices.sh` | Устройства по кластеру считаются по разным адресам, а не сложением счётчиков |
 | `tests/test-device-limits.sh` | Тариф не опускает лимит, жёсткая проверка не освобождает, арбитраж `node_yields`, выбор соединений TUIC-кика |
 | `lib/online.sh` | Уникальные адреса «сейчас в сети» — то, с чем сравнивается лимит |
 | `lib/antiabuse.sh` | Баллы шаринга, окно авто-жёсткой проверки, `get_user_hardcheck_effective` |

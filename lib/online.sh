@@ -12,11 +12,19 @@ refresh_online() {
     local hy
     hy=$(api_get "/online")
     { [ -n "$hy" ] && echo "$hy" | jq empty 2>/dev/null; } || hy='{}'
-    CACHED_ONLINE=$(
+    # Уникальные пары «user|ip» держим отдельно: их публикует publish_stats, чтобы
+    # соседние ноды могли отличить ОДНО устройство, засветившееся у нескольких
+    # нод, от нескольких разных (cluster_user_connections). Раньше наружу уходил
+    # только счётчик, и такое устройство считалось за столько, на скольких нодах
+    # его видели (P-45).
+    CACHED_ONLINE_IPS=$(
         {
             _online_hysteria_ip_lines "$hy"
             declare -F proto_online_ip_lines >/dev/null 2>&1 && proto_online_ip_lines 2>/dev/null
-        } | awk -F'|' '
+        } | awk -F'|' 'NF>=2 && $1!="" && $2!="" && !seen[$1"|"$2]++ {print $1"|"$2}'
+    )
+    CACHED_ONLINE=$(
+        printf '%s\n' "$CACHED_ONLINE_IPS" | awk -F'|' '
             NF>=2 && $1!="" && $2!="" {
                 if ($2 == "?") { ph[$1]=1; next }          # адрес неизвестен — см. ниже
                 if (!seen[$1"|"$2]++) c[$1]++
@@ -29,6 +37,13 @@ refresh_online() {
                         | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null
     )
     [ -n "$CACHED_ONLINE" ] || CACHED_ONLINE='{}'
+}
+
+# Адреса, с которых юзер сейчас в сети НА ЭТОЙ ноде (по строке на адрес).
+# «?» означает «сессия есть, адрес не определён» — такую нельзя схлопывать с
+# чужими, см. _online_tokens.
+get_user_online_ips() {   # user
+    printf '%s\n' "${CACHED_ONLINE_IPS:-}" | awk -F'|' -v u="$1" '$1==u && $2!=""{print $2}'
 }
 
 # Адреса Hysteria-сессий: своего API с IP у Hysteria нет, но auth-скрипт пишет
