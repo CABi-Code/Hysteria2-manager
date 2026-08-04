@@ -50,6 +50,7 @@ install_auth_script() {
         echo '#!/bin/bash'
         echo "DB=\"${USERS_DB}\""
         echo "MAP=\"${AUTHMAP_FILE}\""
+        echo "SLOTS=\"${SLOTPASS_DB}\""
         cat <<'AUTHEOF'
 # Внешняя аутентификация Hysteria 2 (auth.type: command).
 # Вызывается на КАЖДОЕ подключение: $1=addr, $2="user:pass", $3=tx.
@@ -67,7 +68,17 @@ pass="${auth#*:}"
 awk -F: -v u="$user" -v p="$pass" '
     $1==u { rest=substr($0, length($1)+2); if (rest==p) { found=1; exit } }
     END { exit (found?0:1) }
-' "$DB" || exit 1
+' "$DB" || {
+    # Пароль слота: у каждой доп. ссылки подписки свой (docs/design/SLOTS).
+    # Второй awk идёт только когда базовый пароль не подошёл, то есть на
+    # обычном подключении лишней работы нет. id наружу — по-прежнему имя
+    # юзера: на нём держится весь учёт (трафик, онлайн, кик, tc-классы).
+    [ -r "$SLOTS" ] || exit 1
+    awk -F'|' -v u="$user" -v p="$pass" '
+        $1==u && $2==p { found=1; exit }
+        END { exit (found?0:1) }
+    ' "$SLOTS" || exit 1
+}
 
 # Живой маппинг user→IP для тарифного шейпинга скорости (klimit_reconcile в perf.sh).
 # Один короткий append на подключение (строка < PIPE_BUF → атомарна), файл создаётся
