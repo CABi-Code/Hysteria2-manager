@@ -66,7 +66,7 @@ LOG_DIR="/var/log/hy2-manager"
 SERVICE="hysteria-server.service"
 # ВАЖНО: держать список в синхроне с _required_libs в hy2-manager.sh — иначе после
 # обновления менеджер упадёт с «Модуль не найден» (файл не скачался).
-MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish protocols antiabuse perf cluster update tgbot tariffs tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
+MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
 
 # === УТИЛИТА: скачивание файлов менеджера ===
 download_file() {
@@ -89,13 +89,28 @@ install_manager_files() {
     # Список модулей берём ИЗ скачанного hy2-manager.sh (единый источник правды),
     # чтобы install.sh не рассинхронился при добавлении новых модулей. Fallback —
     # MANAGER_LIBS (если парсинг не удался).
-    local libs
+    local libs parsed=1
     libs=$(grep -oP '_required_libs=\(\K[^)]*' "$INSTALL_DIR/hy2-manager.sh" 2>/dev/null)
-    [ -n "$libs" ] || libs="${MANAGER_LIBS[*]}"
+    [ -n "$libs" ] || { libs="${MANAGER_LIBS[*]}"; parsed=0; }
     local f
     for f in $libs; do
         download_file "$REPO_URL/lib/${f}.sh" "$INSTALL_DIR/lib/${f}.sh"
     done
+    # Модуль, выпавший из списка (разбит на части, удалён при рефакторинге),
+    # на ноде оставался НАВСЕГДА: качаем только то, что в списке, и ничего не
+    # удаляем. Такой мёртвый двойник потом дорого стоит — правки в него не дают
+    # эффекта, он ведь даже не подключается. Чистим только когда список реально
+    # разобран из скачанного hy2-manager.sh: fallback-список может отстать.
+    if [ "$parsed" = 1 ]; then
+        local base
+        for f in "$INSTALL_DIR/lib"/*.sh; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f" .sh)
+            case " $libs " in *" $base "*) continue ;; esac
+            info "Удаляю модуль, выбывший из состава: lib/${base}.sh"
+            rm -f "$f"
+        done
+    fi
     chmod +x "$INSTALL_DIR/hy2-manager.sh"
     ln -sf "$INSTALL_DIR/hy2-manager.sh" /usr/local/bin/hy2-manager
 }
