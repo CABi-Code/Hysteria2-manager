@@ -39,21 +39,6 @@ refresh_online() {
     [ -n "$CACHED_ONLINE" ] || CACHED_ONLINE='{}'
 }
 
-# Снимок живых адресов для скрипта аутентификации: он зовётся на подключение и
-# сам опросить протоколы не может, а решить «слот ещё занят или уже свободен»
-# без этого нельзя (docs/guide/SLOTS.md). Пишется раз в минуту оттуда же, откуда
-# применяются лимиты. Отсюда и точность: до минуты.
-write_online_ips() {
-    local tmp="${ONLINEIPS_FILE}.tmp.$BASHPID" owner group
-    printf '%s\n' "${CACHED_ONLINE_IPS:-}" | grep -v '^$' > "$tmp" 2>/dev/null || return 0
-    mv "$tmp" "$ONLINEIPS_FILE" 2>/dev/null || { rm -f "$tmp"; return 0; }
-    if declare -F service_identity >/dev/null 2>&1; then
-        read -r owner group < <(service_identity)
-        [ -n "$owner" ] && chown "${owner}:${group}" "$ONLINEIPS_FILE" 2>/dev/null
-    fi
-    chmod 640 "$ONLINEIPS_FILE" 2>/dev/null || true
-}
-
 # Адреса, с которых юзер сейчас в сети НА ЭТОЙ ноде (по строке на адрес).
 # «?» означает «сессия есть, адрес не определён» — такую нельзя схлопывать с
 # чужими, см. _online_tokens.
@@ -77,7 +62,13 @@ _online_hysteria_ip_lines() {   # json {user: conns}
                 END { for (i=total; i>0 && k<lim; i--) if (!s[a[i]]++) { print u "|" a[i]; k++ } }
               ' "$AUTHMAP_FILE" 2>/dev/null)
         [ -n "$ips" ] && echo "$ips" || printf '%s|?\n' "$user"
-    done < <(echo "$1" | jq -r 'to_entries[] | select(.value > 0) | "\(.key)|\(.value)"' 2>/dev/null)
+    done < <(echo "$1" | jq -r '
+                to_entries[] | select(.value > 0)
+                # id слота — «юзер.<8 hex>» (sub_token_slotid). Схлопываем в юзера:
+                # снаружи слоты не существуют, весь учёт ведётся по имени.
+                | (.key | sub("\\.[0-9a-f]{8}$"; "")) as $u
+                | "\($u)|\(.value)"' 2>/dev/null \
+             | awk -F'|' '{n[$1]+=$2} END{for(u in n) print u"|"n[u]}')
 }
 
 get_user_online_count() {

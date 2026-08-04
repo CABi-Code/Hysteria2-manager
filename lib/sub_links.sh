@@ -186,7 +186,22 @@ sub_token_password() {   # user token -> пароль слота ("" если н
     printf '%s|%s' "$base" "$token" | sha256sum 2>/dev/null | cut -c1-32
 }
 
-# Справочник паролей слотов для скрипта аутентификации: «user|пароль|токен».
+# id слота для API Hysteria: «user.<8 hex>». Именно его печатает auth-скрипт, и
+# по нему движок ведёт СЕССИИ отдельно для каждой ссылки — это единственный
+# способ отличить два устройства за одним адресом (guide/SLOTS.md §6).
+# Суффикс — хеш токена, а не сам токен: 8 hex-символов однозначно опознаются
+# регуляркой при сворачивании id обратно в юзера, а имена юзеров точек не
+# содержат вовсе. Базовый пароль слот-id НЕ получает — он остаётся просто
+# именем юзера, поэтому накопленный трафик и история не рвутся.
+sub_token_slotid() {   # user token -> «user.xxxxxxxx»
+    local user="$1" token="$2" h
+    [ -n "$token" ] || return 1
+    h=$(printf '%s' "$token" | sha256sum 2>/dev/null | cut -c1-8)
+    [ -n "$h" ] || return 1
+    printf '%s.%s' "$user" "$h"
+}
+
+# Справочник паролей слотов для скрипта аутентификации: «user|пароль|токен|id».
 # Берём ВСЕ токены юзера по кластеру, включая свой основной: пароль слота обязан
 # приниматься на ЛЮБОЙ ноде. В подписке слота лежат ключи всех нод, и если бы
 # нода принимала только «свои» токены, устройство подключилось бы к одной ноде и
@@ -199,7 +214,8 @@ write_slotpass_db() {
         [ -n "$user" ] || continue
         while IFS= read -r token; do
             [ -n "$token" ] || continue
-            printf '%s|%s|%s\n' "$user" "$(sub_token_password "$user" "$token")" "$token" >> "$tmp"
+            printf '%s|%s|%s|%s\n' "$user" "$(sub_token_password "$user" "$token")" \
+                "$token" "$(sub_token_slotid "$user" "$token")" >> "$tmp"
         done < <(sub_tokens_cluster "$user")
     done < <(cut -d: -f1 "$USERS_DB" 2>/dev/null | grep -v '^$' | sort -u)
     mv "$tmp" "$SLOTPASS_DB" 2>/dev/null || { rm -f "$tmp"; return 0; }

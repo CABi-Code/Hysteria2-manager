@@ -478,7 +478,7 @@ cluster_delete_local() {   # user
     sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" 2>/dev/null
     roster_remove "$user"
     declare -F remove_user_abuse >/dev/null && remove_user_abuse "$user"
-    api_post "/kick" "[\"$user\"]" &>/dev/null
+    hy_kick_user "$user" &>/dev/null
 }
 
 # Применяет состояния с других нод: для каждого юзера берём запись с наибольшим
@@ -517,7 +517,7 @@ cluster_apply_state() {
                     pw=$(get_user_password "$u")
                     grep -q "^${u}|" "$DISABLED_FILE" 2>/dev/null || echo "${u}|${pw}" >> "$DISABLED_FILE"
                     db_remove_user "$u"
-                    api_post "/kick" "[\"$u\"]" &>/dev/null
+                    hy_kick_user "$u" &>/dev/null
                 fi
                 ;;
             deleted)

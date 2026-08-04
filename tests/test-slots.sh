@@ -41,6 +41,13 @@ p2=$(sub_token_password ann "$extra2")
 # ---------- справочник для auth ----------
 write_slotpass_db
 grep -qF "ann|$p1|$extra1" "$SLOTPASS_DB" || fail "пароля слота нет в справочнике"
+
+# id слота: «юзер.<8 hex>», стабилен и различает ссылки
+sid1=$(sub_token_slotid ann "$extra1"); sid2=$(sub_token_slotid ann "$extra2")
+[[ "$sid1" =~ ^ann\.[0-9a-f]{8}$ ]] || fail "id слота не той формы: [$sid1]"
+[ "$sid1" != "$sid2" ] || fail "две ссылки дали один id слота"
+[ "$sid1" = "$(sub_token_slotid ann "$extra1")" ] || fail "id слота не стабилен"
+grep -qF "|$sid1" "$SLOTPASS_DB" || fail "id слота нет в справочнике"
 grep -qF "|$primary" "$SLOTPASS_DB" || fail "основного токена нет в справочнике — на другой ноде его пароль не примут"
 
 # ---------- скрипт аутентификации ----------
@@ -50,7 +57,9 @@ chmod +x "$AUTH_SCRIPT"
 
 "$AUTH_SCRIPT" "1.2.3.4:100" "ann:basepass123" 0 >/dev/null || fail "базовый пароль перестал пускать"
 out=$("$AUTH_SCRIPT" "1.2.3.4:100" "ann:$p1" 0) || fail "пароль слота не пустили"
-[ "$out" = "ann" ] || fail "auth вернул id [$out] вместо имени юзера — учёт развалится"
+[ "$out" = "$sid1" ] || fail "auth вернул [$out], а должен id слота $sid1 — иначе сессии слотов не различить"
+out=$("$AUTH_SCRIPT" "1.2.3.4:100" "ann:basepass123" 0)
+[ "$out" = "ann" ] || fail "базовый пароль должен остаться под именем юзера (иначе порвётся история трафика)"
 "$AUTH_SCRIPT" "1.2.3.4:100" "ann:$p2" 0 >/dev/null || fail "вторая ссылка не пустила"
 "$AUTH_SCRIPT" "1.2.3.4:100" "ann:нетакой" 0 >/dev/null 2>&1 && fail "пустили с мусорным паролем"
 "$AUTH_SCRIPT" "1.2.3.4:100" "bob:$p1" 0 >/dev/null 2>&1 && fail "чужой пароль слота пустил другого юзера"
@@ -89,35 +98,78 @@ grep -qF "ann|$(sub_token_password ann "$peertok")|$peertok" "$SLOTPASS_DB" || f
 
 echo "✅ test-slots: ok"
 
-# ---------- фаза B: занятый слот не пускает второго ----------
-# Рубильник: без SLOT_REJECT=1 отказа нет вообще.
-: > "$SLOTMAP_FILE"; : > "$ONLINEIPS_FILE"; : > "$NODE_CONF"
+# ---------- кик юзера рвёт и слоты ----------
+# Слоты живут под своими id, поэтому кик по одному имени оставил бы их работать.
+source "$SCRIPT_DIR/lib/api.sh"
+API_PORT=1; KICKED=""
+api_post() { KICKED="$2"; }
+hy_kick_user ann
+for want in "\"ann\"" "\"$sid1\"" "\"$sid2\""; do
+    case "$KICKED" in *"$want"*) : ;; *) fail "кик не задел $want (отправлено: $KICKED)" ;; esac
+done
+hy_kick_user bob
+case "$KICKED" in *"$sid1"*) fail "кик bob задел слоты ann: $KICKED" ;; esac
+
+# ---------- фаза D: отказ по числу СЕССИЙ слота ----------
+# Поднимаем заглушку API Hysteria: /online отдаёт заданный JSON, /kick пишет в файл.
+API_STATE="$HY2M_DATA_DIR/online.json"; KICKLOG="$HY2M_DATA_DIR/kicks.log"
+echo '{}' > "$API_STATE"; : > "$KICKLOG"
+export API_PORT=25599
+python3 - "$API_STATE" "$KICKLOG" "$API_PORT" <<'PYEOF' &
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+state, kicklog, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        body = open(state, "rb").read()
+        self.send_response(200); self.send_header("Content-Type","application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        with open(kicklog, "a") as f: f.write(self.rfile.read(n).decode() + "\n")
+        self.send_response(200); self.send_header("Content-Length","2"); self.end_headers(); self.wfile.write(b"{}")
+HTTPServer(("127.0.0.1", port), H).serve_forever()
+PYEOF
+STUB=$!
+trap 'kill $STUB 2>/dev/null; rm -rf "$HY2M_DATA_DIR"' EXIT
+for _ in $(seq 1 40); do curl -s --max-time 1 "http://127.0.0.1:$API_PORT/online" >/dev/null 2>&1 && break; sleep 0.1; done
+
+echo "secret" > "$API_SECRET_FILE"
+: > "$SLOTMAP_FILE"; : > "$NODE_CONF"
 install_auth_script
 
-A="10.0.0.1"; B="10.0.0.2"
-"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "первое устройство не пустили"
-printf 'ann|%s\n' "$A" > "$ONLINEIPS_FILE"          # A теперь в сети
-"$AUTH_SCRIPT" "$B:100" "ann:$p1" 0 >/dev/null || fail "рубильник выключен, а отказ уже случился"
+# Рубильник выключен — сессии никого не волнуют.
+printf '{"%s":5}\n' "$sid1" > "$API_STATE"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null || fail "рубильник выключен, а отказ уже случился"
 
-# Пока рубильник выключен, слот всё равно записывается за последним пришедшим —
-# возвращаем владение A, чтобы проверять именно отказ.
 printf 'SLOT_REJECT=1\n' > "$NODE_CONF"
-"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "A не смог вернуть свой слот"
-"$AUTH_SCRIPT" "$B:100" "ann:$p1" 0 >/dev/null 2>&1 && fail "занятый слот пустил второе устройство"
-"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "занявший слот перестал переподключаться"
-"$AUTH_SCRIPT" "$B:100" "ann:$p2" 0 >/dev/null || fail "второй слот (другая ссылка) не пустил второе устройство"
-"$AUTH_SCRIPT" "$B:100" "ann:basepass123" 0 >/dev/null || fail "базовый пароль — отдельный слот, он свободен"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null 2>&1 && fail "занятый слот пустил второе устройство"
+[ -s "$KICKLOG" ] && fail "занявшего слот трогать нельзя: иначе проверка пинга у клиента рвёт его же туннель"
 
-# Устройство ушло из сети — слот освободился.
-: > "$ONLINEIPS_FILE"
-"$AUTH_SCRIPT" "$B:100" "ann:$p1" 0 >/dev/null || fail "слот не освободился после ухода занявшего"
+# Второе устройство с ТОГО ЖЕ адреса — тоже отказ: ради этого и делались слоты,
+# за домашним NAT адрес один, различает только счётчик сессий слота.
+: > "$KICKLOG"
+"$AUTH_SCRIPT" "10.0.0.1:100" "ann:$p1" 0 >/dev/null 2>&1 && fail "второе устройство с того же адреса прошло — слоты бессмысленны"
 
-# Занявший слот сменился: теперь держит B, и уже A получает отказ.
-printf 'ann|%s\n' "$B" > "$ONLINEIPS_FILE"
-"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null 2>&1 && fail "слот держат двое сразу"
+# Слот пуст — пускаем.
+printf '{"%s":0,"ann":3}\n' "$sid1" > "$API_STATE"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null || fail "пустой слот не пустил"
 
-# Чужой юзер онлайн на том же адресе слот не занимает.
-: > "$SLOTMAP_FILE"; printf 'bob|%s\n' "$A" > "$ONLINEIPS_FILE"
-"$AUTH_SCRIPT" "$A:100" "ann:$p1" 0 >/dev/null || fail "чужой онлайн занял наш слот"
+# Соседний слот занят — нам всё равно.
+printf '{"%s":9}\n' "$sid2" > "$API_STATE"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null || fail "чужой занятый слот перекрыл наш"
 
-echo "✅ test-slots (фаза B): ok"
+# Порог настраивается: с SLOT_MAX_SESSIONS=2 одна сессия ещё не занятость.
+printf 'SLOT_REJECT=1\nSLOT_MAX_SESSIONS=2\n' > "$NODE_CONF"
+printf '{"%s":1}\n' "$sid1" > "$API_STATE"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null || fail "порог 2 не даёт пройти при одной сессии"
+printf '{"%s":2}\n' "$sid1" > "$API_STATE"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null 2>&1 && fail "порог 2 не сработал на двух сессиях"
+
+# API недоступен — пускаем (fail-open): аутентификация не падает из-за него.
+printf 'SLOT_REJECT=1\n' > "$NODE_CONF"
+kill $STUB 2>/dev/null; wait $STUB 2>/dev/null
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null || fail "API молчит, а вход закрылся"
+
+echo "✅ test-slots (фаза D): ok"

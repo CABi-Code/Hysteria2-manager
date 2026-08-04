@@ -53,6 +53,13 @@ secure_auth_files() {
     touch "$SLOTMAP_FILE" 2>/dev/null || true
     chown "${owner}:${group}" "$SLOTMAP_FILE" 2>/dev/null || true
     chmod 644 "$SLOTMAP_FILE" 2>/dev/null || true
+    # Секрет API читает скрипт аутентификации: он спрашивает у движка живые
+    # сессии слота (guide/SLOTS.md §5). Процесс hysteria и так владелец этого
+    # API, так что доступ его же группе ничего нового не открывает.
+    if [ -f "$API_SECRET_FILE" ]; then
+        chown "root:${group}" "$API_SECRET_FILE" 2>/dev/null || true
+        chmod 640 "$API_SECRET_FILE" 2>/dev/null || true
+    fi
     if [ -f "$AUTH_SCRIPT" ]; then
         chown "${owner}:${group}" "$AUTH_SCRIPT" 2>/dev/null || true
         chmod 750 "$AUTH_SCRIPT" 2>/dev/null || true
@@ -103,7 +110,7 @@ disable_user() {
     fi
     grep -q "^${user}|" "$DISABLED_FILE" || echo "${user}|${password}" >> "$DISABLED_FILE"
     db_remove_user "$user"
-    api_post "/kick" "[\"$user\"]" &>/dev/null
+    hy_kick_user "$user" &>/dev/null
     sub_refresh
     [ "$silent" != "silent" ] && echo "  ✅ Пользователь $user отключён (применено сразу)"
 }
@@ -145,7 +152,7 @@ delete_user() {
     db_remove_user "$user"
     sed -i "/^${user}|/d" "$DISABLED_FILE" "$STATS_FILE" "$IPS_FILE" "$EXPIRY_FILE" "$SPEED_FILE" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" "$ACTIVITY_FILE" "$ACTIVITY_PREV_FILE" "$ABUSE_FILE" "$ABUSE_OBS_FILE" 2>/dev/null
     declare -F roster_remove >/dev/null && roster_remove "$user"   # снять метку «кластерный»
-    api_post "/kick" "[\"$user\"]" &>/dev/null
+    hy_kick_user "$user" &>/dev/null
     # Точка правды: ставим tombstone и публикуем — удаление кластерного юзера
     # САМО разнесётся по нодам (а старый roster/манифест пира его не воскресит).
     # СТРОГО ДО sub_refresh: пересборка подписок видит юзера в манифестах пиров и
@@ -330,7 +337,7 @@ change_user_password() {
             return 1
         fi
         # Кикаем — со старым паролем доступ сразу пропадёт, переподключится по новой ссылке.
-        api_post "/kick" "[\"$user\"]" &>/dev/null
+        hy_kick_user "$user" &>/dev/null
     fi
     sub_refresh
     echo "  ✅ Пароль $user обновлён (применено сразу)"
