@@ -70,6 +70,33 @@ enforce_device_limits
 [ -z "${KICKED// /}" ] || fail "кикнули тех, кто в пределах лимита: $KICKED"
 
 
+# ---------- Арбитраж между нодами: кикает одна, а не все сразу ----------
+# Юзер с лимитом 1 держит по одной сессии на двух нодах: локально каждая нода в
+# своём node_cap, превышение видно только по кластеру. Кикать должна ровно одна.
+export CLUSTER_CONF="$HY2M_DATA_DIR/cluster.conf"
+printf 'peer-node|zzz.example\n' > "$CLUSTER_CONF"
+printf 'two\t1\t0\t0\t0\t0\t0\t0\n' > "$HY2M_DATA_DIR/peers/peer-node.stats"
+
+set_user_limits two 1 0 "" 0
+get_user_online_count()    { echo 1; }
+cluster_user_connections() { echo 2; }
+get_active_users()         { printf 'two\n'; }
+refresh_online()           { CACHED_ONLINE='{"two":1}'; }
+
+node_host() { echo aaa.example; }        # мы раньше пира по хосту — место наше
+KICKED=""; unset CACHED_ONLINE; enforce_device_limits
+[ -z "${KICKED// /}" ] || fail "кикнули на ноде, которая заняла место в лимите: $KICKED"
+
+node_host() { echo zzzz.example; }       # мы позже пира — уступаем и кикаем
+KICKED=""; unset CACHED_ONLINE; enforce_device_limits
+case "$KICKED" in *two*) : ;; *) fail "уступившая нода не кикнула — лимит не применён" ;; esac
+
+# Своё превышение режется без арбитража, даже если по хосту мы первые.
+node_host() { echo aaa.example; }
+get_user_online_count() { echo 3; }
+KICKED=""; unset CACHED_ONLINE; enforce_device_limits
+case "$KICKED" in *two*) : ;; *) fail "нода не срезала собственное превышение" ;; esac
+
 # ---------- Кик доп. протоколов (P-16) ----------
 # Резолвинг соединений TUIC в юзера идёт по адресу и ТОЛЬКО по однозначным
 # адресам: за общим CGNAT-адресом сидит чужой, рвать его нельзя.
