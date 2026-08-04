@@ -1125,6 +1125,14 @@ proto_tuic_kick() {   # user -> 0 если что-то закрыли
 # протоколах. Hysteria кикается отдельно (api_post "/kick") — у неё свой API.
 proto_kick_user() {   # user
     proto_any_enabled || return 0
+    # Рубильник оператора: PROTO_KICK=0 в node.conf оставляет кик только на
+    # Hysteria (как было до 4.15.52). Нужен потому, что включение сразу меняет
+    # жизнь тех, кто годами сидел над лимитом и не замечал этого: на боевой
+    # ноде счётчиковый кик срабатывает ~2000 раз в сутки у горстки юзеров, и
+    # до сих пор он уходил в пустоту у всех, кто не на Hysteria.
+    if declare -F node_get >/dev/null && [ "$(node_get PROTO_KICK 2>/dev/null)" = "0" ]; then
+        return 0
+    fi
     proto_xray_kick "$1" || true
     proto_tuic_kick "$1" || true
 
