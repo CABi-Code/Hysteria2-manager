@@ -276,6 +276,48 @@ def parse_direct_link(uri):
     }
 
 
+def devices_payload(user):
+    """Устройства = ссылки подписки: у каждой свой пароль и свой слот в движке
+    (см. hy2-manager/docs/guide/SLOTS.md). Основную ссылку снять нельзя —
+    она всегда остаётся рабочей подпиской юзера."""
+    active, disabled = user_exists(user)
+    if not active and not disabled:
+        return None
+    node = read_kv(data_path("node.conf"))
+    host = node.get("NODE_HOST")
+    tokens = sub_tokens(user)
+    primary = tokens[0] if tokens else None
+    # Последний адрес и время по слоту — их пишет сам auth-скрипт (slotmap.dat).
+    seen = {}
+    try:
+        with open(data_path("slotmap.dat"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                p = line.rstrip("\n").split("|")
+                if len(p) >= 4 and p[0] == user:
+                    seen[p[1]] = {"ip": p[2], "ts": int(p[3]) if p[3].isdigit() else 0}
+    except OSError:
+        pass
+    limits = user_limits(user)
+    devices = []
+    for t in tokens:
+        last = seen.get(t) or (seen.get("-") if t == primary else None) or {}
+        devices.append({
+            "token": t,
+            "url": f"https://{host}/sub/{t}" if host else None,
+            "primary": t == primary,
+            "last_ip": last.get("ip"),
+            "last_seen": last.get("ts") or None,
+        })
+    allowed = limits.get("devices") or 0
+    return {
+        "username": user,
+        "devices": devices,
+        "used": len(devices),
+        "allowed": allowed,          # 0 = без персонального лимита
+        "can_add": bool(allowed <= 0 or len(devices) < allowed),
+    }
+
+
 def subscription_payload(user):
     active, disabled = user_exists(user)
     if not active and not disabled:

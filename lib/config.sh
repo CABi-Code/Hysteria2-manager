@@ -108,7 +108,6 @@ CLUSTER_SECRET_FILE="$DATA_DIR/cluster.secret"  # общий секрет кла
 SUBTOKENS_DB="$DATA_DIR/subtokens.db"      # «user:token» — секрет подписки юзера
 SLOTPASS_DB="$DATA_DIR/slotpass.db"        # «user|пароль|токен» — пароль слота (ссылки подписки)
 SLOTMAP_FILE="$DATA_DIR/slotmap.dat"       # «user|слот|ip|ts» — кто занял слот (пишет auth-скрипт)
-ONLINEIPS_FILE="$DATA_DIR/onlineips.dat"   # «user|ip» — живые адреса, снимок для auth-скрипта
 CLUSTER_USERS_FILE="$DATA_DIR/cluster_users"    # имена «кластерных» юзеров
 # Жизненный цикл кластерного юзера как ТОЧКА ПРАВДЫ (last-write-wins по ts):
 # строки «user|state|ts», state ∈ active|disabled|deleted. Нода, на которой

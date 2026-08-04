@@ -43,6 +43,7 @@ cluster_user_connections()    { echo 3; }
 get_active_users()            { printf 'hard\nsoft\n'; }
 get_user_active()             { echo 0; }              # traffic-based энфорсер молчит
 write_authlimits()            { return 0; }
+hy_kick_user()                { KICKED="$KICKED $1"; }        # реальная точка кика (lib/api.sh)
 api_post()                    { KICKED="$KICKED $(echo "$2" | tr -d '[]"')"; }
 node_get()                    { echo 0; }              # глобальных лимитов нет
 node_name()                   { echo testnode; }
