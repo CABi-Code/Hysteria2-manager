@@ -80,10 +80,10 @@ write_authlimits() {
 # сессии на ЭТОЙ ноде (api /kick). Так делает КАЖДАЯ нода независимо по одним и
 # тем же данным. Кик включается ТОЛЬКО когда задан хотя бы один ГЛОБАЛЬНЫЙ лимит
 # (POOL_LIMIT/NODE_LIMIT); при этом действует эффективный per-user cap
-# (персональное кол-во устройств приоритетнее). Юзеров с ВКЛючённой жёсткой
-# проверкой этот счётчиковый кик НЕ трогает — их ведёт traffic-based
-# enforce_active_node_limit (кик по реальному трафику, а не по числу сессий),
-# иначе счёт «залипших»/переключающихся коннектов ломал бы смену ноды.
+# (персональное кол-во устройств приоритетнее). Жёсткая проверка от этого кика
+# больше НЕ освобождает (P-41): она ограничивает число активных НОД, а адреса
+# внутри ноды держит только этот кик — раньше у таких юзеров лимит устройств не
+# работал вовсе. Оба ограничения складываются.
 # Снимок для auth пишем всегда.
 enforce_device_limits() {
     sub_enabled || return 0
@@ -97,6 +97,10 @@ enforce_device_limits() {
     # нулях ничего не находит. С гейтом же обнуление POOL_LIMIT молча снимало
     # лимит и с персональных тарифов, и с демо (у них devices=1) — а именно на
     # него они и рассчитаны.
+    # Починка состава Xray ДО киков: вернуть тех, кого сняла оборвавшаяся
+    # заморозка прошлого прогона (см. proto_xray_kick).
+    declare -F proto_xray_repair >/dev/null && proto_xray_repair
+
     local user localn total
     while IFS= read -r user; do
         [ -n "$user" ] || continue
@@ -112,6 +116,9 @@ enforce_device_limits() {
         total=$(cluster_user_connections "$user")
         if user_over_limit "$user" "$total" "$localn"; then
             api_post "/kick" "[\"$user\"]" &>/dev/null
+            # Доп. протоколы рвутся своими способами: без этого лимит держался
+            # только на Hysteria, а протокол выбирает клиент (P-16).
+            declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
             echo "$(date '+%F %T') $user: cluster=$total local=$localn pool_cap=$(pool_cap "$user") node_cap=$(node_cap "$user") — кик на $(node_name)" \
                 >> "$DATA_DIR/limit.log" 2>/dev/null
         fi
@@ -167,6 +174,7 @@ enforce_active_node_limit() {
         keep=$(printf '%s\n' "$active_list" | sort -t'|' -k1,1n -k2,2 | head -n "$cap")
         if ! printf '%s\n' "$keep" | grep -qx "${my_since}|${self}"; then
             api_post "/kick" "[\"$user\"]" &>/dev/null
+            declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
             echo "$(date '+%F %T') $user: активных нод=$total > cap=$cap — обрезаю $self (active_since=$my_since), оставляю ранние" \
                 >> "$DATA_DIR/limit.log" 2>/dev/null
         fi

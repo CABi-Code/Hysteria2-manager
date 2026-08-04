@@ -1020,12 +1020,116 @@ proto_online_ip_lines() {
 }
 
 # ---------------- Кик сессий доп. протоколов ----------------
-# Отдельного кика для VLESS/SS/Trojan нет: он был написан, никогда не вызывался
-# и не работал (`xray api rmu` принимает email позиционно, а не флагом -email —
-# команда падала в /dev/null). Сессия юзера и так рвётся, когда он выпадает из
-# конфига. Если кик понадобится по-настоящему — это rmu по тегам из
-# _proto_xray_tags плюс возврат через _proto_xray_adu_json, три строки.
-# sing-box per-user кика не имеет вовсе.
+# Лимит устройств держится киком, а кикать умела только Hysteria (P-16): юзер,
+# чей клиент выбрал VLESS/Trojan/SS или TUIC, лимита не замечал вовсе.
+# Ни у Xray, ни у sing-box нет «разорвать сессию юзера» одной командой, поэтому
+# каждый протокол кикается своим способом (см. guide/DEVICE-LIMITS.md).
+
+# Xray: разорвать УЖЕ УСТАНОВЛЕННОЕ соединение нечем. Проверено на 26.3.27:
+# после `api rmu` открытая загрузка продолжалась как ни в чём не бывало, а вот
+# НОВОЕ соединение с теми же кредами получало отказ. Значит кик здесь — это
+# «заморозка»: снимаем юзера из инбаундов на несколько секунд и возвращаем.
+# Текущие потоки доживают, любой новый запрос (а их у браузера непрерывный
+# поток) в это окно не проходит — превышение лимита ощущается сразу.
+XRAY_KICK_FREEZE_SEC="${XRAY_KICK_FREEZE_SEC:-10}"
+
+_proto_xray_add_user() {   # user uuid upsk -> 0 если добавлен
+    local j="$PROTO_DIR/.xray.add.$BASHPID.$RANDOM" rc=1
+    ( umask 077; _proto_xray_adu_json "$1" "$2" "$3" > "$j" )
+    [ -s "$j" ] && "$XRAY_BIN" api adu --server="127.0.0.1:${XRAY_API_PORT}" "$j" >/dev/null 2>&1 && rc=0
+    rm -f "$j"
+
+    return $rc
+}
+
+proto_xray_kick() {   # user -> 0 если сняли
+    proto_xray_needed || return 1
+    { [ -x "$XRAY_BIN" ] && command -v jq >/dev/null 2>&1; } || return 1
+    systemctl is-active --quiet "$XRAY_SERVICE" 2>/dev/null || return 1
+
+    local user="$1" row uid psk t
+    row=$(_proto_xray_desired_users | awk -F'\t' -v u="$user" '$1==u{print; exit}')
+    [ -n "$row" ] || return 1
+    IFS=$'\t' read -r _ uid psk <<< "$row"
+
+    while IFS= read -r t; do
+        "$XRAY_BIN" api rmu --server="127.0.0.1:${XRAY_API_PORT}" -tag="$t" "$user" >/dev/null 2>&1
+    done < <(_proto_xray_tags)
+
+    # Возврат — отдельным процессом: крон не должен ждать конца заморозки.
+    # Если этот процесс не доживёт (перезагрузка, kill), юзера вернёт
+    # proto_xray_repair на ближайшем прогоне энфорсера.
+    ( sleep "$XRAY_KICK_FREEZE_SEC"; _proto_xray_add_user "$user" "$uid" "$psk" ) >/dev/null 2>&1 &
+    disown 2>/dev/null
+
+    return 0
+}
+
+# Починка состава инбаундов: вернуть тех, кого в живом Xray нет, а по users.db
+# должен быть. Страхует оборванную заморозку (см. выше) и любой сбой hot-apply —
+# без неё юзер остался бы без доступа до следующего proto_sync_users.
+# Зовётся раз в минуту из enforce_device_limits, ДО киков — иначе починка
+# отменяла бы только что начатую заморозку.
+proto_xray_repair() {
+    proto_xray_needed || return 0
+    { [ -x "$XRAY_BIN" ] && command -v jq >/dev/null 2>&1; } || return 0
+    systemctl is-active --quiet "$XRAY_SERVICE" 2>/dev/null || return 0
+
+    local t live want u uid psk
+    t=$(_proto_xray_tags | head -1); [ -n "$t" ] || return 0
+    live=$("$XRAY_BIN" api inbounduser --server="127.0.0.1:${XRAY_API_PORT}" -tag="$t" 2>/dev/null \
+        | jq -r '(.users // [])[].email' 2>/dev/null | LC_ALL=C sort -u)
+    want=$(_proto_xray_desired_users)
+    [ -n "$want" ] || return 0
+
+    while IFS=$'\t' read -r u uid psk; do
+        [ -n "$u" ] || continue
+        printf '%s\n' "$live" | grep -qxF "$u" && continue
+        _proto_xray_add_user "$u" "$uid" "$psk" \
+            && echo "$(date '+%F %T') xray: вернул пропавшего $u" >> "$DATA_DIR/limit.log" 2>/dev/null
+    done <<< "$want"
+
+    return 0
+}
+
+# TUIC: sing-box не отдаёт юзера в API (`metadata.user` всегда null, P-17),
+# поэтому соединения резолвим по адресу — и только по тем адресам, что
+# принадлежат ЭТОМУ юзеру однозначно (_proto_ip_sole_owner_lines): за общим
+# CGNAT-адресом может сидеть чужой, рвать его нельзя. Закрываем поштучно,
+# DELETE /connections/{id} — соседние соединения не страдают.
+proto_tuic_kick() {   # user -> 0 если что-то закрыли
+    proto_tuic_enabled || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+
+    local user="$1" secret conns ips id n=0
+    secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
+    conns=$(curl -s --max-time 3 -H "Authorization: Bearer ${secret}" \
+        "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
+    { [ -n "$conns" ] && echo "$conns" | jq empty 2>/dev/null; } || return 1
+
+    ips=$(_proto_ip_sole_owner_lines | awk -F'\t' -v u="$user" '$2==u{print $1}')
+    [ -n "$ips" ] || return 1
+
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        curl -s --max-time 3 -X DELETE -H "Authorization: Bearer ${secret}" \
+            "http://127.0.0.1:${SINGBOX_API_PORT}/connections/${id}" >/dev/null 2>&1 \
+            && n=$((n + 1))
+    done < <(echo "$conns" | jq -r --argjson ips "$(printf '%s\n' "$ips" | jq -R . | jq -sc .)" \
+        '(.connections // [])[] | (.metadata.sourceIP // "") as $s | select($ips | index($s)) | .id' 2>/dev/null)
+
+    [ "$n" -gt 0 ]
+}
+
+# Единая точка для энфорсеров и TUI: разорвать сессии юзера во ВСЕХ доп.
+# протоколах. Hysteria кикается отдельно (api_post "/kick") — у неё свой API.
+proto_kick_user() {   # user
+    proto_any_enabled || return 0
+    proto_xray_kick "$1" || true
+    proto_tuic_kick "$1" || true
+
+    return 0
+}
 
 # Статус для меню/диагностики: строка «vless:💚 ss:🔴 tuic:💚».
 proto_status_line() {

@@ -69,4 +69,17 @@ set_user_limits soft 5 0 "" 0
 enforce_device_limits
 [ -z "${KICKED// /}" ] || fail "кикнули тех, кто в пределах лимита: $KICKED"
 
+
+# ---------- Кик доп. протоколов (P-16) ----------
+# Резолвинг соединений TUIC в юзера идёт по адресу и ТОЛЬКО по однозначным
+# адресам: за общим CGNAT-адресом сидит чужой, рвать его нельзя.
+ips=$'1.2.3.4\n5.6.7.8'
+conns='{"connections":[{"id":"aaa","metadata":{"sourceIP":"1.2.3.4"}},
+        {"id":"bbb","metadata":{"sourceIP":"9.9.9.9"}},
+        {"id":"ccc","metadata":{"sourceIP":"5.6.7.8"}},
+        {"id":"ddd","metadata":{}}]}'
+picked=$(echo "$conns" | jq -r --argjson ips "$(printf '%s\n' "$ips" | jq -R . | jq -sc .)" \
+    '(.connections // [])[] | (.metadata.sourceIP // "") as $s | select($ips | index($s)) | .id' | tr '\n' ',')
+[ "$picked" = "aaa,ccc," ] || fail "TUIC-кик выбрал не те соединения: $picked"
+
 echo "✅ test-device-limits: ok"
