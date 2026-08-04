@@ -166,6 +166,51 @@ sub_tokens_cluster() {
 # Сколько ссылок разрешено юзеру = его кол-во устройств (0/∞ → без ограничения).
 sub_links_allowed() { local d; d=$(get_user_devices "$1"); echo "${d:-1}"; }
 
+# ---- Слоты: у каждой доп. ссылки свой пароль (docs/design/SLOTS) ----
+# Устройство опознаётся по КРЕДУ, а не по адресу: за домашним NAT адрес один на
+# всех, и продавать по нему устройства нельзя. Слот = токен подписки, пароль
+# слота выводится из пароля юзера и самого токена.
+#
+# Почему так, а не «слот N по номеру»: номер пришлось бы хранить и держать
+# одинаковым на всех нодах, а при добавлении ссылки — не сдвигать чужие. Токен
+# уже уникален, уже синхронизируется по кластеру и не меняется, поэтому любая
+# нода получает тот же пароль без единого нового поля в обмене.
+#
+# Основной (первый) токен остаётся на БАЗОВОМ пароле юзера: ровно его печатает
+# меню «получить ссылку», и уже розданные ключи не должны протухнуть.
+sub_token_password() {   # user token -> пароль слота ("" если нет базового)
+    local user="$1" token="$2" base
+    [ -n "$token" ] || return 1
+    base=$(get_user_password "$user")
+    [ -n "$base" ] || return 1
+    printf '%s|%s' "$base" "$token" | sha256sum 2>/dev/null | cut -c1-32
+}
+
+# Справочник паролей слотов для скрипта аутентификации: «user|пароль|токен».
+# Берём ВСЕ токены юзера по кластеру, включая свой основной: пароль слота обязан
+# приниматься на ЛЮБОЙ ноде. В подписке слота лежат ключи всех нод, и если бы
+# нода принимала только «свои» токены, устройство подключилось бы к одной ноде и
+# получило отказ на остальных. Все ноды считают пароль из одних и тех же данных
+# (пароль юзера + токен, оба синхронны), поэтому таблицы совпадают без обмена.
+write_slotpass_db() {
+    local tmp="${SLOTPASS_DB}.tmp.$BASHPID" user token owner group
+    : > "$tmp" 2>/dev/null || return 0
+    while IFS= read -r user; do
+        [ -n "$user" ] || continue
+        while IFS= read -r token; do
+            [ -n "$token" ] || continue
+            printf '%s|%s|%s\n' "$user" "$(sub_token_password "$user" "$token")" "$token" >> "$tmp"
+        done < <(sub_tokens_cluster "$user")
+    done < <(cut -d: -f1 "$USERS_DB" 2>/dev/null | grep -v '^$' | sort -u)
+    mv "$tmp" "$SLOTPASS_DB" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    # Читает файл процесс hysteria (скрипт аутентификации) — права как у users.db.
+    if declare -F service_identity >/dev/null 2>&1; then
+        read -r owner group < <(service_identity)
+        [ -n "$owner" ] && chown "${owner}:${group}" "$SLOTPASS_DB" 2>/dev/null
+    fi
+    chmod 640 "$SLOTPASS_DB" 2>/dev/null || true
+}
+
 # Создать новую доп. ссылку (токен). Печатает новый токен или пусто при отказе.
 # Соблюдает лимит: число ссылок по кластеру не должно превышать кол-во устройств.
 sub_link_add() {   # user -> token | ""
@@ -179,6 +224,7 @@ sub_link_add() {   # user -> token | ""
     token=$(pwgen -s 40 1)
     printf '%s:%s\n' "$user" "$token" >> "$SUBTOKENS_DB"
     secure_sub_files
+    write_slotpass_db      # пароль новой ссылки должен работать сразу
     printf '%s' "$token"
 }
 
@@ -335,7 +381,7 @@ regen_subscriptions() {
                       sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
                       n=split(s,p,"@"); hp=p[n]  # host:port = после ПОСЛЕДНЕГО @ (пароль может содержать @)
                       if (!seen[hp]++) print $0
-                    }' | base64 -w0
+                    }'
             )
         fi
         # ВАЖНО: пишем подписку под ВСЕ токены юзера (наш + токены пиров). Так
@@ -353,11 +399,43 @@ regen_subscriptions() {
             )
         fi
         toks=$(printf '%s\n' "$toks" | grep -v '^$' | sort -u)
+        # Каждая ссылка — свой слот со своим паролем Hysteria (docs/design/SLOTS).
+        # Основной токен отдаёт базовый пароль (см. sub_token_password), остальные —
+        # производный: подменяем userinfo в hysteria2:// уже готовых строк, включая
+        # ключи ПИРОВ из манифестов. Пиры считают тот же пароль из тех же данных,
+        # поэтому менять формат обмена не понадобилось.
+        # Доп. протоколы (Xray/TUIC) слотов не получают: их движки всё равно не
+        # умеют отказать на занятом слоте (guide/DEVICE-LIMITS.md §5), а
+        # пер-слотовые креды размножили бы юзеров в конфигах и сломали бы учёт
+        # трафика, который ведётся по имени.
+        # Пароль слота подставляем ТОЛЬКО в свои доп. токены (их заводит
+        # sub_link_add — это и есть «ссылка на устройство»). Основной токен и
+        # токены, выданные другими нодами, отдают базовый пароль как раньше:
+        # чужой токен у нас «доп.», а у той ноды — основной, и подсунь мы туда
+        # свой пароль слота, устройство пришло бы к ней с кредом, которого она
+        # для этого токена не ждёт. Слот живёт на ноде, которая его выдала.
+        local primary locals tokpass tokcontent
+        primary=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$SUBTOKENS_DB" 2>/dev/null)
+        locals=$(sub_tokens_all "$user")
         while IFS= read -r tok; do
             [ -n "$tok" ] || continue
-            printf '%s' "$content" > "$WEBROOT/sub/$tok"
+            tokpass=""
+            [ -n "$content" ] && [ "$tok" != "$primary" ] \
+                && printf '%s\n' "$locals" | grep -qxF "$tok" \
+                && tokpass=$(sub_token_password "$user" "$tok")
+            if [ -n "$tokpass" ]; then
+                tokcontent=$(printf '%s\n' "$content" | awk -v u="$user" -v p="$tokpass" \
+                    '/^hysteria2:\/\// { sub(/^hysteria2:\/\/[^@]*@/, "hysteria2://" u ":" p "@") } {print}' | base64 -w0)
+            else
+                tokcontent=$(printf '%s\n' "$content" | grep -v '^$' | base64 -w0)
+            fi
+            printf '%s' "$tokcontent" > "$WEBROOT/sub/$tok"
         done <<< "$toks"
     done <<< "$users"
+
+    # Справочник паролей слотов — рядом с подписками: скрипт аутентификации
+    # обязан принимать ровно то, что мы только что раздали.
+    write_slotpass_db
 
     # Чистим ТОЛЬКО действительно осиротевшие токены: которых нет ни в нашей базе,
     # ни в кэше токенов пиров (т.е. юзер удалён везде). Иначе бы ломали чужие ссылки.
