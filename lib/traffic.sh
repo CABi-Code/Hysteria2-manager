@@ -14,7 +14,7 @@ TRAFFIC_PREV_FILE="$DATA_DIR/traffic_prev.dat"
 
 # Блокировка вокруг stats.dat: read-modify-write делают три сборщика + TUI, и
 # пересечение теряло дельту целиком (P-21).
-_stats_lock()   { exec 9>"${DATA_DIR}/.stats.lock" 2>/dev/null || return 1; flock 9 2>/dev/null || { exec 9>&-; return 1; }; }
+_stats_lock()   { { exec 9>"${DATA_DIR}/.stats.lock"; } 2>/dev/null || return 1; flock 9 2>/dev/null || { exec 9>&-; return 1; }; }
 _stats_unlock() { exec 9>&-; }
 
 # Прибавить дельты «user|tx|rx» со stdin к stats.dat. БЕЗ блокировки — зовётся
