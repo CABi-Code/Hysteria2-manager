@@ -341,6 +341,108 @@ sub_all_users() {
     } | grep -v '^$' | sort -u
 }
 
+# Пересобрать подписку ОДНОГО юзера. Вынесено из regen_subscriptions: полный
+# проход по всем юзерам стоит десятки секунд (на 15 юзерах замерено 44 с), а
+# добавление или снятие ссылки-устройства из мини-аппа должно отвечать сразу.
+# ip/port/obfs/sni можно передать (общий проход их уже посчитал), иначе берём из
+# конфига сами.
+regen_user_subscription() {   # user [ip port obfs sni]
+    local user="$1"
+    local ip="${2:-$(link_host)}" port="${3:-$(get_port)}"
+    local obfs="${4:-$(get_obfs_pass)}" sni="${5:-$(get_sni)}"
+    local lp content tok toks cst primary locals tokpass tokcontent
+    [ -n "$user" ] || return 0
+    # Точка правды: для удалённого/отключённого по кластеру отдаём ПУСТУЮ
+    # подписку (клиент остаётся без серверов), даже если он ещё «висит» в кэше
+    # манифеста пира. Так отключение/удаление действует сразу, не дожидаясь
+    # пиров. Важно перезаписать токены пустым, а не пропустить — иначе остался
+    # бы старый файл подписки с рабочими ключами.
+    cst=""
+    declare -F cstate_get >/dev/null 2>&1 && cst=$(cstate_get "$user")
+    if [ "$cst" = "deleted" ] || [ "$cst" = "disabled" ]; then
+        content=""
+    else
+        lp=$(get_user_password "$user")
+        content=$(
+            {
+                [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
+                # Локальные ссылки доп. протоколов этого юзера (VLESS/SS2022/TUIC).
+                [ -n "$lp" ] && declare -F proto_user_uris >/dev/null 2>&1 && \
+                    proto_user_uris "$user" "$lp" "$ip" "$(render_tag "$user")"
+                [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
+                    | awk -F'\t' -v u="$user" '$1==u{print $2}'
+            } | sub_filter_protocols "$user" | grep -v '^$' | awk '
+                {
+                  # Санитайз: старые ноды кластера не умеют подставлять
+                  # {protocol} и присылают его литералом. Символы {} в
+                  # #фрагменте ломают парсер клиента, и такие ключи (а с
+                  # ними и вся нода) пропадают из подписки. Заменяем на метку
+                  # по схеме URI, пока пиры не обновятся.
+                  if (index($0,"{protocol}")>0) {
+                    lbl="KEY"
+                    if      ($0 ~ /^hysteria2:\/\//) lbl="HY2"
+                    else if ($0 ~ /^vless:\/\//)     lbl="VLESS"
+                    else if ($0 ~ /^ss:\/\//)        lbl="SS22"
+                    else if ($0 ~ /^tuic:\/\//)      lbl="TUIC"
+                    else if ($0 ~ /^trojan:\/\//)    lbl="TROJAN"
+                    gsub(/\{protocol\}/, lbl)
+                  }
+                  s=$0
+                  sub(/^[^/]*\/\//,"",s)   # убрать схему hysteria2://
+                  sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
+                  n=split(s,p,"@"); hp=p[n]  # host:port = после ПОСЛЕДНЕГО @ (пароль может содержать @)
+                  if (!seen[hp]++) print $0
+                }'
+        )
+    fi
+    # ВАЖНО: пишем подписку под ВСЕ токены юзера (наш + токены пиров). Так
+    # уже розданная ссылка НИКОГДА не ломается, даже если на другой ноде у
+    # юзера свой токен. Свой токен обязателен — создаём, если нет. Для
+    # УДАЛЁННОГО свой токен НЕ создаём (иначе воскреснет) — только перезапишем
+    # пустым уже существующие токены пиров.
+    if [ "$cst" = "deleted" ]; then
+        toks=$( [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null )
+    else
+        toks=$(
+            sub_token_for "$user" >/dev/null    # гарантируем основной токен
+            sub_tokens_all "$user"              # ВСЕ локальные токены (доп. ссылки)
+            [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null
+        )
+    fi
+    toks=$(printf '%s\n' "$toks" | grep -v '^$' | sort -u)
+    # Каждая ссылка — свой слот со своим паролем Hysteria (docs/design/SLOTS).
+    # Основной токен отдаёт базовый пароль (см. sub_token_password), остальные —
+    # производный: подменяем userinfo в hysteria2:// уже готовых строк, включая
+    # ключи ПИРОВ из манифестов. Пиры считают тот же пароль из тех же данных,
+    # поэтому менять формат обмена не понадобилось.
+    # Доп. протоколы (Xray/TUIC) слотов не получают: их движки всё равно не
+    # умеют отказать на занятом слоте (guide/DEVICE-LIMITS.md §5), а
+    # пер-слотовые креды размножили бы юзеров в конфигах и сломали бы учёт
+    # трафика, который ведётся по имени.
+    # Пароль слота подставляем ТОЛЬКО в свои доп. токены (их заводит
+    # sub_link_add — это и есть «ссылка на устройство»). Основной токен и
+    # токены, выданные другими нодами, отдают базовый пароль как раньше:
+    # чужой токен у нас «доп.», а у той ноды — основной, и подсунь мы туда
+    # свой пароль слота, устройство пришло бы к ней с кредом, которого она
+    # для этого токена не ждёт. Слот живёт на ноде, которая его выдала.
+    primary=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$SUBTOKENS_DB" 2>/dev/null)
+    locals=$(sub_tokens_all "$user")
+    while IFS= read -r tok; do
+        [ -n "$tok" ] || continue
+        tokpass=""
+        [ -n "$content" ] && [ "$tok" != "$primary" ] \
+            && printf '%s\n' "$locals" | grep -qxF "$tok" \
+            && tokpass=$(sub_token_password "$user" "$tok")
+        if [ -n "$tokpass" ]; then
+            tokcontent=$(printf '%s\n' "$content" | awk -v u="$user" -v p="$tokpass" \
+                '/^hysteria2:\/\// { sub(/^hysteria2:\/\/[^@]*@/, "hysteria2://" u ":" p "@") } {print}' | base64 -w0)
+        else
+            tokcontent=$(printf '%s\n' "$content" | grep -v '^$' | base64 -w0)
+        fi
+        printf '%s' "$tokcontent" > "$WEBROOT/sub/$tok"
+    done <<< "$toks"
+}
+
 regen_subscriptions() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/sub"
@@ -357,96 +459,7 @@ regen_subscriptions() {
     ip=$(link_host); port=$(get_port); obfs=$(get_obfs_pass); sni=$(get_sni)
     while IFS= read -r user; do
         [ -n "$user" ] || continue
-        # Точка правды: для удалённого/отключённого по кластеру отдаём ПУСТУЮ
-        # подписку (клиент остаётся без серверов), даже если он ещё «висит» в кэше
-        # манифеста пира. Так отключение/удаление действует сразу, не дожидаясь
-        # пиров. Важно перезаписать токены пустым, а не пропустить — иначе остался
-        # бы старый файл подписки с рабочими ключами.
-        cst=""
-        declare -F cstate_get >/dev/null 2>&1 && cst=$(cstate_get "$user")
-        if [ "$cst" = "deleted" ] || [ "$cst" = "disabled" ]; then
-            content=""
-        else
-            lp=$(get_user_password "$user")
-            content=$(
-                {
-                    [ -n "$lp" ] && { build_user_link "$user" "$lp" "$ip" "$port" "$obfs" "$sni" "$(render_tag "$user")"; echo; }
-                    # Локальные ссылки доп. протоколов этого юзера (VLESS/SS2022/TUIC).
-                    [ -n "$lp" ] && declare -F proto_user_uris >/dev/null 2>&1 && \
-                        proto_user_uris "$user" "$lp" "$ip" "$(render_tag "$user")"
-                    [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.manifest 2>/dev/null \
-                        | awk -F'\t' -v u="$user" '$1==u{print $2}'
-                } | sub_filter_protocols "$user" | grep -v '^$' | awk '
-                    {
-                      # Санитайз: старые ноды кластера не умеют подставлять
-                      # {protocol} и присылают его литералом. Символы {} в
-                      # #фрагменте ломают парсер клиента, и такие ключи (а с
-                      # ними и вся нода) пропадают из подписки. Заменяем на метку
-                      # по схеме URI, пока пиры не обновятся.
-                      if (index($0,"{protocol}")>0) {
-                        lbl="KEY"
-                        if      ($0 ~ /^hysteria2:\/\//) lbl="HY2"
-                        else if ($0 ~ /^vless:\/\//)     lbl="VLESS"
-                        else if ($0 ~ /^ss:\/\//)        lbl="SS22"
-                        else if ($0 ~ /^tuic:\/\//)      lbl="TUIC"
-                        else if ($0 ~ /^trojan:\/\//)    lbl="TROJAN"
-                        gsub(/\{protocol\}/, lbl)
-                      }
-                      s=$0
-                      sub(/^[^/]*\/\//,"",s)   # убрать схему hysteria2://
-                      sub(/\/.*/,"",s)          # убрать путь/квери/фрагмент -> user:pass@host:port
-                      n=split(s,p,"@"); hp=p[n]  # host:port = после ПОСЛЕДНЕГО @ (пароль может содержать @)
-                      if (!seen[hp]++) print $0
-                    }'
-            )
-        fi
-        # ВАЖНО: пишем подписку под ВСЕ токены юзера (наш + токены пиров). Так
-        # уже розданная ссылка НИКОГДА не ломается, даже если на другой ноде у
-        # юзера свой токен. Свой токен обязателен — создаём, если нет. Для
-        # УДАЛЁННОГО свой токен НЕ создаём (иначе воскреснет) — только перезапишем
-        # пустым уже существующие токены пиров.
-        if [ "$cst" = "deleted" ]; then
-            toks=$( [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null )
-        else
-            toks=$(
-                sub_token_for "$user" >/dev/null    # гарантируем основной токен
-                sub_tokens_all "$user"              # ВСЕ локальные токены (доп. ссылки)
-                [ -d "$PEERS_DIR" ] && awk -F: -v u="$user" '$1==u{print $2}' "$PEERS_DIR"/*.subtokens 2>/dev/null
-            )
-        fi
-        toks=$(printf '%s\n' "$toks" | grep -v '^$' | sort -u)
-        # Каждая ссылка — свой слот со своим паролем Hysteria (docs/design/SLOTS).
-        # Основной токен отдаёт базовый пароль (см. sub_token_password), остальные —
-        # производный: подменяем userinfo в hysteria2:// уже готовых строк, включая
-        # ключи ПИРОВ из манифестов. Пиры считают тот же пароль из тех же данных,
-        # поэтому менять формат обмена не понадобилось.
-        # Доп. протоколы (Xray/TUIC) слотов не получают: их движки всё равно не
-        # умеют отказать на занятом слоте (guide/DEVICE-LIMITS.md §5), а
-        # пер-слотовые креды размножили бы юзеров в конфигах и сломали бы учёт
-        # трафика, который ведётся по имени.
-        # Пароль слота подставляем ТОЛЬКО в свои доп. токены (их заводит
-        # sub_link_add — это и есть «ссылка на устройство»). Основной токен и
-        # токены, выданные другими нодами, отдают базовый пароль как раньше:
-        # чужой токен у нас «доп.», а у той ноды — основной, и подсунь мы туда
-        # свой пароль слота, устройство пришло бы к ней с кредом, которого она
-        # для этого токена не ждёт. Слот живёт на ноде, которая его выдала.
-        local primary locals tokpass tokcontent
-        primary=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$SUBTOKENS_DB" 2>/dev/null)
-        locals=$(sub_tokens_all "$user")
-        while IFS= read -r tok; do
-            [ -n "$tok" ] || continue
-            tokpass=""
-            [ -n "$content" ] && [ "$tok" != "$primary" ] \
-                && printf '%s\n' "$locals" | grep -qxF "$tok" \
-                && tokpass=$(sub_token_password "$user" "$tok")
-            if [ -n "$tokpass" ]; then
-                tokcontent=$(printf '%s\n' "$content" | awk -v u="$user" -v p="$tokpass" \
-                    '/^hysteria2:\/\// { sub(/^hysteria2:\/\/[^@]*@/, "hysteria2://" u ":" p "@") } {print}' | base64 -w0)
-            else
-                tokcontent=$(printf '%s\n' "$content" | grep -v '^$' | base64 -w0)
-            fi
-            printf '%s' "$tokcontent" > "$WEBROOT/sub/$tok"
-        done <<< "$toks"
+        regen_user_subscription "$user" "$ip" "$port" "$obfs" "$sni"
     done <<< "$users"
 
     # Справочник паролей слотов — рядом с подписками: скрипт аутентификации
