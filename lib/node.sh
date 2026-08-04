@@ -11,9 +11,7 @@ sub_enabled() {
 }
 
 # Значение поля из node.conf (NODE_NAME / NODE_HOST / WEBROOT).
-node_get() {
-    [ -f "$NODE_CONF" ] && grep "^${1}=" "$NODE_CONF" 2>/dev/null | head -1 | cut -d= -f2-
-}
+node_get() { conf_get "$NODE_CONF" "$1"; }
 node_host() { node_get NODE_HOST; }
 node_name() { local n; n=$(node_get NODE_NAME); echo "${n:-node}"; }
 

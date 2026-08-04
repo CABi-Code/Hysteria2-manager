@@ -26,8 +26,8 @@ publish_stats() {
     while IFS=: read -r u _; do
         [ -n "$u" ] || continue
         oc=$(get_user_online_count "$u"); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
-        tl=$(get_user_traffic "$u"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
-        sp=$(get_user_speed "$u");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
+        IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$u")"
+        IFS='|' read -r _ sptx sprx <<< "$(get_user_speed "$u")"
         ac=$(get_user_active "$u");  asince=$(get_user_active_since "$u")
         # Кол. 9 — адреса юзера на этой ноде через запятую. Нужна, чтобы соседи
         # не считали одно устройство за несколько (P-45): клиент замеряет пинг по
@@ -188,14 +188,14 @@ cluster_user_connections() {
 # Суммарный трафик по кластеру: печатает «tx rx».
 cluster_user_traffic() {
     local user="$1" l ltx lrx
-    l=$(get_user_traffic "$user"); ltx=$(echo "$l" | cut -d'|' -f2); lrx=$(echo "$l" | cut -d'|' -f3)
+    IFS='|' read -r _ ltx lrx <<< "$(get_user_traffic "$user")"
     echo "$(( ${ltx:-0} + $(_peer_stat_sum "$user" 3) )) $(( ${lrx:-0} + $(_peer_stat_sum "$user" 4) ))"
 }
 
 # Суммарная скорость по кластеру: печатает «tx rx» (B/s).
 cluster_user_speed() {
     local user="$1" l ltx lrx
-    l=$(get_user_speed "$user"); ltx=$(echo "$l" | cut -d'|' -f2); lrx=$(echo "$l" | cut -d'|' -f3)
+    IFS='|' read -r _ ltx lrx <<< "$(get_user_speed "$user")"
     echo "$(( ${ltx:-0} + $(_peer_stat_sum "$user" 5) )) $(( ${lrx:-0} + $(_peer_stat_sum "$user" 6) ))"
 }
 
@@ -209,8 +209,8 @@ cluster_user_online_any() {
 cluster_user_breakdown() {
     local user="$1" oc tl tx rx sp sptx sprx f name
     oc=$(get_user_online_count "$user")
-    tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
-    sp=$(get_user_speed "$user");   sptx=$(echo "$sp" | cut -d'|' -f2); sprx=$(echo "$sp" | cut -d'|' -f3)
+    IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$user")"
+    IFS='|' read -r _ sptx sprx <<< "$(get_user_speed "$user")"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(node_name)" "$oc" "${tx:-0}" "${rx:-0}" "${sptx:-0}" "${sprx:-0}"
     [ -d "$PEERS_DIR" ] || return 0
     for f in "$PEERS_DIR"/*.stats; do

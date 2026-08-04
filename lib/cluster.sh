@@ -58,6 +58,19 @@ publish_peers_list() {
     secure_web_files
 }
 
+# Имя пира по его хосту (реестр CLUSTER_CONF, строки «name|host»). Пира нет в
+# реестре — безопасное имя из самого хоста. Без awk/tr: зовётся в цикле по пирам
+# на каждой синхронизации.
+cluster_peer_name() {   # host -> name
+    local n h
+    if [ -f "$CLUSTER_CONF" ]; then
+        while IFS='|' read -r n h || [ -n "$n" ]; do
+            [ "$h" = "$1" ] && { printf '%s\n' "$n"; return 0; }
+        done < "$CLUSTER_CONF"
+    fi
+    printf '%s\n' "${1//[^a-zA-Z0-9_.-]/_}"
+}
+
 # Запрос к пиру с кластерной аутентификацией.
 cluster_call() {   # host path [timeout] -> stdout
     local host="$1" path="$2" to="${3:-8}" secret
@@ -155,8 +168,7 @@ cluster_stats_live() {
     local host name data
     while IFS= read -r host; do
         [ -n "$host" ] || continue
-        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
-        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        name=$(cluster_peer_name "$host")
         data=$(cluster_call "$host" "/cluster/stats" 3)
         [ -n "$data" ] && printf '%s' "$data" > "$PEERS_DIR/${name}.stats"
     done < <(cluster_peers)
@@ -261,8 +273,7 @@ cluster_sync() {
     while IFS= read -r host; do
         [ -n "$host" ] || continue
         total=$((total + 1))
-        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
-        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        name=$(cluster_peer_name "$host")
 
         _vp ""
         _vp "  🔗 Нода «$name» ($host)"
@@ -628,8 +639,7 @@ cluster_pull_settings() {
     local host name data
     while IFS= read -r host; do
         [ -n "$host" ] || continue
-        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
-        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        name=$(cluster_peer_name "$host")
         data=$(cluster_call "$host" "/cluster/settings" 5)
         [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.settings"
     done < <(cluster_peers)
@@ -847,8 +857,7 @@ cluster_rates_sync() {
     local host name
     while IFS= read -r host; do
         [ -n "$host" ] || continue
-        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
-        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
+        name=$(cluster_peer_name "$host")
         { cluster_call "$host" "/cluster/rates" 5 > "$PEERS_DIR/${name}.rates.tmp.$BASHPID" 2>/dev/null
           mv "$PEERS_DIR/${name}.rates.tmp.$BASHPID" "$PEERS_DIR/${name}.rates" 2>/dev/null; } &
     done < <(cluster_peers)
@@ -875,28 +884,34 @@ cluster_online_sync() {
     # манифест, мы лишь подставляем их ключи в общую подписку.
     local need_online=""; _tag_needs_online && need_online=1
 
-    local host name data
+    # Пиры опрашиваются ПАРАЛЛЕЛЬНО (как в cluster_rates_sync). Последовательно
+    # это до 4 × 8 с таймаута НА КАЖДОГО пира: один затупивший пир съедал минуту
+    # и тик не успевал закончиться до следующего. Теперь худший случай — один
+    # таймаут на всех.
+    local host name d
     while IFS= read -r host; do
         [ -n "$host" ] || continue
-        name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
-        [ -z "$name" ] && name=$(printf '%s' "$host" | tr -c 'a-zA-Z0-9_.-' '_')
-        # Свежая статистика пира; недоступен -> пусто (= 0), не залипаем на старом.
-        data=$(cluster_call "$host" "/cluster/stats")
-        printf '%s' "$data" > "$PEERS_DIR/${name}.stats"
-        # Персональные лимиты пира -> кэш (быстрое распространение жёсткой проверки).
-        data=$(cluster_call "$host" "/cluster/userlimits")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.userlimits"
-        # Состояние анти-абуза пира -> кэш (быстрое распространение окна авто-жёсткой
-        # проверки и балла шаринга).
-        data=$(cluster_call "$host" "/cluster/abuse")
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.abuse"
-        # Свежий манифест пира (в нём испечён онлайн той ноды). Недоступного пира
-        # НЕ трогаем — оставляем прошлый манифест, чтобы не терять его ключи.
-        if [ -n "$need_online" ]; then
-            data=$(cluster_call "$host" "/cluster/manifest")
-            [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.manifest"
-        fi
+        name=$(cluster_peer_name "$host")
+        {
+            # Свежая статистика пира; недоступен -> пусто (= 0), не залипаем на старом.
+            cluster_call "$host" "/cluster/stats" > "$PEERS_DIR/${name}.stats.tmp.$BASHPID" 2>/dev/null
+            mv "$PEERS_DIR/${name}.stats.tmp.$BASHPID" "$PEERS_DIR/${name}.stats" 2>/dev/null
+            # Персональные лимиты и анти-абуз пира -> кэш (быстрое распространение
+            # жёсткой проверки, окна авто-HC и балла шаринга). Пустой ответ
+            # (пир недоступен) прошлый кэш НЕ затирает.
+            d=$(cluster_call "$host" "/cluster/userlimits")
+            [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.userlimits"
+            d=$(cluster_call "$host" "/cluster/abuse")
+            [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.abuse"
+            # Свежий манифест пира (в нём испечён онлайн той ноды). Недоступного пира
+            # НЕ трогаем — оставляем прошлый манифест, чтобы не терять его ключи.
+            if [ -n "$need_online" ]; then
+                d=$(cluster_call "$host" "/cluster/manifest")
+                [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.manifest"
+            fi
+        } &
     done < <(cluster_peers)
+    wait
 
     cluster_apply_userlimits   # применить лимиты, пришедшие с пиров
     abuse_apply                # слить состояние анти-абуза с пирами (окно авто-HC)
@@ -905,7 +920,11 @@ cluster_online_sync() {
     # Если в подписи используется {online} — держим счётчик свежим (раз в минуту):
     # перегенерируем свой манифест (для пиров) и локальные файлы подписки (в них
     # попадут свежие манифесты пиров, стянутые выше).
-    if [ -n "$need_online" ]; then
+    # Только если входы реально изменились: {online} в подписи ключа — это
+    # единственное, что меняется от минуты к минуте, а перевыпуск манифеста и
+    # всех файлов подписки стоит около 13 с на одном ядре. Безусловный
+    # перевыпуск остаётся в cluster_sync (раз в 5 минут).
+    if [ -n "$need_online" ] && _subs_inputs_changed; then
         publish_manifest
         regen_subscriptions
     fi

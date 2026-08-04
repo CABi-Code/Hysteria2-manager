@@ -21,29 +21,29 @@ userlimits_set_ts() {   # user [ts]
     echo "${user}|${ts}" >> "$USERLIMITS_TS_FILE"
 }
 userlimits_get_ts() {   # user -> ts (0 если нет)
-    local t; t=$(grep "^${1}|" "$USERLIMITS_TS_FILE" 2>/dev/null | head -1 | cut -d'|' -f2)
+    local t; t=$(fld_by_key "$USERLIMITS_TS_FILE" "$1" 2)
     [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0
 }
 
 # Сырая строка «devices|hardcheck|rate» пользователя (пусто, если записи нет).
-_userlimits_row() { grep "^${1}|" "$USERLIMITS_FILE" 2>/dev/null | head -1; }
+_userlimits_row() { row_by_key "$USERLIMITS_FILE" "$1"; }
 
 # Кол-во устройств пользователя (по умолчанию DEFAULT_DEVICES=1).
 get_user_devices() {
-    local v; v=$(_userlimits_row "$1" | cut -d'|' -f2)
+    local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 2)
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo "$DEFAULT_DEVICES"
 }
 
 # Включена ли жёсткая проверка (0/1, по умолчанию 0).
 get_user_hardcheck() {
-    local v; v=$(_userlimits_row "$1" | cut -d'|' -f3)
+    local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 3)
     [ "$v" = "1" ] && echo 1 || echo 0
 }
 
 # Тариф скорости пользователя в Мбит/с (0 = нет тарифа → глобальный лимит).
 # Поле опциональное: старые записи без 4-го поля → 0 (обратная совместимость).
 get_user_rate() {
-    local v; v=$(_userlimits_row "$1" | cut -d'|' -f4)
+    local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 4)
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 

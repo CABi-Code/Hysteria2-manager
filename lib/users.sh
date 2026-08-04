@@ -95,7 +95,7 @@ is_user_disabled() {
 }
 
 get_disabled_password() {
-    grep "^${1}|" "$DISABLED_FILE" 2>/dev/null | head -1 | cut -d'|' -f2
+    fld_by_key "$DISABLED_FILE" "$1" 2
 }
 
 # Отключение пользователя: убираем из базы + кикаем активные сессии.

@@ -35,7 +35,7 @@ user_action_menu() {
                     disable_user "$user"
                     cstate_mark "$user" disabled   # точка правды: разнести «отключён»
                 fi
-                refresh_online
+                refresh_online force   # сессии только что изменились — кэш не годится
                 offer_sync
                 pause
                 need_clear=1
@@ -377,10 +377,10 @@ _render_user_action() {
         done < <(cluster_user_breakdown "$user")
     else
         local tl tx rx
-        tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+        IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$user")"
         echo "  Трафик:        ↑$(format_bytes "$tx") / ↓$(format_bytes "$rx")"
         local sp sp_tx sp_rx
-        sp=$(get_user_speed "$user"); sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        IFS='|' read -r _ sp_tx sp_rx <<< "$(get_user_speed "$user")"
         echo "  Скорость:      ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
         local dev nc hc warn=""
         dev=$(get_user_devices "$user"); nc=$(node_cap "$user"); hc=$(get_user_hardcheck "$user")
@@ -543,7 +543,7 @@ repair_data() {
     echo "  ✅ Скрипт аутентификации и права восстановлены, API-секрет проверен"
 
     # 2. Принудительный свежий сбор статистики и IP.
-    refresh_online
+    refresh_online force
     collect_traffic
     collect_ips
     echo "  ✅ Онлайн, трафик и IP пересобраны"

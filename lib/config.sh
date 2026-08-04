@@ -126,6 +126,9 @@ FREEPLAN_FILE="$DATA_DIR/freeplan.dat"
 # Демо-профили (см. lib/demo.sh): «user|state|created|expires|cap|base|used».
 # Локальные для ЭТОЙ ноды — по кластеру не публикуются (демо принимает одна нода).
 DEMOS_DB="$DATA_DIR/demos.db"
+# Подпись входов манифеста/подписок: перевыпускать их каждую минуту незачем,
+# если ничего не менялось (см. _subs_inputs_changed в lib/sub_links.sh).
+SUBS_SIG_FILE="$DATA_DIR/.subs.sig"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
@@ -174,6 +177,41 @@ AUTHMAP_FILE="$DATA_DIR/authmap.dat"
 # collect_sub_ips читает его через journalctl -u caddy. SUBLOG_TS — метка «since».
 SUBIPS_FILE="$DATA_DIR/subips.dat"
 SUBLOG_TS="$DATA_DIR/sublog_ts"
+
+# Значение поля «КЛЮЧ=значение» из конфига-файла (node.conf, protocols.conf,
+# klimit.conf, webapi.conf, bot.conf — формат у всех один). Первое совпадение,
+# как раньше делал `grep|head -1|cut`. Чистый bash: эти геттеры зовутся сотнями
+# за прогон крона, а три процесса на чтение одной строки — это и был основной
+# источник 400-500 форков в секунду на боевой ноде.
+conf_get() {   # file key -> value
+    local k v
+    [ -f "$1" ] || return 0
+    while IFS='=' read -r k v || [ -n "$k" ]; do
+        [ "$k" = "$2" ] && { printf '%s\n' "$v"; return 0; }
+    done < "$1"
+    return 0
+}
+
+# Первая строка файла, начинающаяся с «ключ|» (форматы user|... во всех наших
+# .dat), и её отдельное поле. Тот же результат, что у `grep "^ключ|" | head -1`
+# (+ cut), но без процессов: такие чтения идут в циклах по всем юзерам и по всем
+# активным IP, и два-три форка на строку — это и есть та нагрузка, из-за которой
+# нода уходила в 100% sy.
+row_by_key() {   # file key -> строка
+    local line
+    [ -f "$1" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in "$2|"*) printf '%s\n' "$line"; return 0 ;; esac
+    done < "$1"
+    return 0
+}
+fld_by_key() {   # file key n (нумерация с 1, как у cut -fN) -> поле
+    local row f
+    row=$(row_by_key "$1" "$2")
+    [ -n "$row" ] || return 0
+    IFS='|' read -r -a f <<< "$row"
+    printf '%s\n' "${f[$(($3 - 1))]:-}"
+}
 
 API_PORT=25580
 PAGE_SIZE=10

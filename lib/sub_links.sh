@@ -443,6 +443,27 @@ regen_user_subscription() {   # user [ip port obfs sni]
     done <<< "$toks"
 }
 
+# Изменилось ли хоть что-то, из чего собираются манифест и подписки?
+# Полный перевыпуск на полутора десятках юзеров стоит около 13 с CPU, а крон
+# --online-sync зовёт его КАЖДУЮ минуту — только ради плейсхолдера {online} в
+# подписи ключа. В остальном входы статичны: пароли, токены, порты, ключи
+# протоколов. Считаем дешёвую подпись входов (один md5sum) и, если она та же,
+# пропускаем перевыпуск. Страховка от «вход забыли внести в подпись» —
+# безусловный перевыпуск в cluster_sync (раз в 5 минут).
+_subs_inputs_changed() {
+    local sig prev=""
+    sig=$( { node_online_count
+             cat "$USERS_DB" "$DISABLED_FILE" "$NODE_CONF" "${PROTO_CONF:-/dev/null}" \
+                 "$SUBTOKENS_DB" "$CLUSTER_STATE_FILE" "$DEMOS_DB" 2>/dev/null
+             cat "$PEERS_DIR"/*.manifest "$PEERS_DIR"/*.subtokens 2>/dev/null
+           } | md5sum 2>/dev/null | cut -d' ' -f1 )
+    [ -n "$sig" ] || return 0                  # не смогли посчитать — не рискуем
+    [ -f "$SUBS_SIG_FILE" ] && IFS= read -r prev < "$SUBS_SIG_FILE"
+    [ "$sig" = "$prev" ] && return 1
+    printf '%s\n' "$sig" > "$SUBS_SIG_FILE"
+    return 0
+}
+
 regen_subscriptions() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/sub"
