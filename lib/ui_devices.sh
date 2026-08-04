@@ -94,7 +94,7 @@ user_devices_menu() {
                 write_authlimits; sub_enabled && { publish_cluster_userlimits; offer_sync; }
                 pause ;;
             5)
-                api_post "/kick" "[\"$user\"]" &>/dev/null
+                hy_kick_user "$user" &>/dev/null
                 proto_kick_user "$user" 2>/dev/null
                 echo "  ✅ Сессии $user на этой ноде сброшены (кик, все протоколы)."
                 pause ;;

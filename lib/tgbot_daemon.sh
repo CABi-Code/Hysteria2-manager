@@ -103,7 +103,7 @@ ${tl:-нет тарифов}
                         declare -F cstate_mark >/dev/null && { is_user_disabled "$u" && cstate_mark "$u" disabled || cstate_mark "$u" active; }
                         bot_admin_user_card "$chat" "$u" "$mid" ;;
                     a:kick:*)
-                        api_post "/kick" "[\"${data#a:kick:}\"]" &>/dev/null
+                        hy_kick_user "${data#a:kick:}" &>/dev/null
                         tg_send "$chat" "✂ Сессии сброшены." ;;
                     a:link:*)
                         local u="${data#a:link:}"

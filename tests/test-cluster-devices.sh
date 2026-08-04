@@ -52,12 +52,25 @@ peer_row_legacy old ann 2
 n=$(cluster_user_connections ann)
 [ "$n" = "3" ] || fail "старая нода без адресов: ожидали 1+2=3, получили $n"
 
-# ---------- «?» с разных нод не схлопывается ----------
+# ---------- «?» (адрес не определён) не плодит устройства ----------
+# Так бывает, когда сессия висит дольше записи в authmap: раньше каждый такой
+# токен считался отдельным устройством на каждой ноде и приносил лишний кик.
 rm -f "$PEERS_DIR"/*.stats
 set_local $'ann|?' '{"ann":1}'
 peer_row peer1 ann 1 '?'
 n=$(cluster_user_connections ann)
-[ "$n" = "2" ] || fail "неизвестные адреса разных нод схлопнулись в $n"
+[ "$n" = "1" ] || fail "два неизвестных адреса дали $n устройств вместо одного"
+
+set_local $'ann|1.2.3.4' '{"ann":1}'
+peer_row peer1 ann 1 '?'
+n=$(cluster_user_connections ann)
+[ "$n" = "1" ] || fail "неизвестный адрес добавил устройство к известному ($n)"
+
+set_local $'ann|1.2.3.4' '{"ann":1}'
+peer_row peer1 ann 1 '9.9.9.9'
+peer_row peer2 ann 1 '?'
+n=$(cluster_user_connections ann)
+[ "$n" = "2" ] || fail "известные адреса перестали считаться из-за неизвестного ($n)"
 
 # ---------- юзера нет в сети нигде ----------
 rm -f "$PEERS_DIR"/*.stats
@@ -86,6 +99,7 @@ printf 'ann|1|0|0\n' > "$USERLIMITS_FILE"           # лимит 1 устрой�
 snap_over_limit ann "$(snap_conn ann)" "$(snap_online ann)" || fail "снимок TUI: 2 адреса на лимите 1 не помечены превышением"
 
 rm -f "$PEERS_DIR"/*.stats
+set_local $'ann|1.2.3.4' '{"ann":1}'
 peer_row peer1 ann 1 '1.2.3.4'                      # тот же адрес, что локально
 build_user_stats_snapshot
 n=$(snap_conn ann)
