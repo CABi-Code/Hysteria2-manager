@@ -46,7 +46,7 @@ bot_admin_user_card() {   # chat_id username [message_id]
     else
         [ -n "$exp" ] && exps="$exp ($(format_remaining "$exp" 2>/dev/null || echo '—'))" || exps="бессрочно"
     fi
-    tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+    IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$user")"
     dev=$(get_user_devices "$user")
     oc=$(api_get "/online" | jq -r --arg u "$user" '.[$u] // 0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
     ipc=$(get_user_ip_count "$user")

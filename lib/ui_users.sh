@@ -377,10 +377,10 @@ _render_user_action() {
         done < <(cluster_user_breakdown "$user")
     else
         local tl tx rx
-        tl=$(get_user_traffic "$user"); tx=$(echo "$tl" | cut -d'|' -f2); rx=$(echo "$tl" | cut -d'|' -f3)
+        IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$user")"
         echo "  Трафик:        ↑$(format_bytes "$tx") / ↓$(format_bytes "$rx")"
         local sp sp_tx sp_rx
-        sp=$(get_user_speed "$user"); sp_tx=$(echo "$sp" | cut -d'|' -f2); sp_rx=$(echo "$sp" | cut -d'|' -f3)
+        IFS='|' read -r _ sp_tx sp_rx <<< "$(get_user_speed "$user")"
         echo "  Скорость:      ↑$(format_speed "$sp_tx") / ↓$(format_speed "$sp_rx")"
         local dev nc hc warn=""
         dev=$(get_user_devices "$user"); nc=$(node_cap "$user"); hc=$(get_user_hardcheck "$user")

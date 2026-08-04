@@ -192,6 +192,27 @@ conf_get() {   # file key -> value
     return 0
 }
 
+# Первая строка файла, начинающаяся с «ключ|» (форматы user|... во всех наших
+# .dat), и её отдельное поле. Тот же результат, что у `grep "^ключ|" | head -1`
+# (+ cut), но без процессов: такие чтения идут в циклах по всем юзерам и по всем
+# активным IP, и два-три форка на строку — это и есть та нагрузка, из-за которой
+# нода уходила в 100% sy.
+row_by_key() {   # file key -> строка
+    local line
+    [ -f "$1" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in "$2|"*) printf '%s\n' "$line"; return 0 ;; esac
+    done < "$1"
+    return 0
+}
+fld_by_key() {   # file key n (нумерация с 1, как у cut -fN) -> поле
+    local row f
+    row=$(row_by_key "$1" "$2")
+    [ -n "$row" ] || return 0
+    IFS='|' read -r -a f <<< "$row"
+    printf '%s\n' "${f[$(($3 - 1))]:-}"
+}
+
 API_PORT=25580
 PAGE_SIZE=10
 # Интервал автообновления интерактивных меню (секунды)

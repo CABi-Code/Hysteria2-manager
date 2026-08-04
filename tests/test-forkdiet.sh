@@ -42,6 +42,27 @@ for k in PROTO_VLESS_ENABLED PROTO_SS_METHOD MISSING; do
         || fail "proto_get $k разошёлся со старой реализацией"
 done
 
+# --- row_by_key/fld_by_key: то же, что grep "^ключ|" | head -1 (+ cut) -----
+old_row() { grep "^${2}|" "$1" 2>/dev/null | head -1; }
+old_fld() { grep "^${2}|" "$1" 2>/dev/null | head -1 | cut -d'|' -f"$3"; }
+rows="$HY2M_DATA_DIR/rows.dat"
+cat > "$rows" <<'EOF'
+alice|2|1|50
+bob|0|0|
+alice|9|9|9
+короткая
+EOF
+printf 'zeta|7|1|10' >> "$rows"          # последняя строка без перевода
+for k in alice bob zeta нет короткая; do
+    [ "$(row_by_key "$rows" "$k")" = "$(old_row "$rows" "$k")" ] || fail "row_by_key $k разошёлся"
+    for n in 1 2 3 4 9; do
+        [ "$(fld_by_key "$rows" "$k" "$n")" = "$(old_fld "$rows" "$k" "$n")" ] \
+            || fail "fld_by_key $k поле $n разошлось"
+    done
+done
+[ "$(row_by_key "$rows" alice)" = "alice|2|1|50" ] || fail "row_by_key взял не первую строку дубля"
+[ "$(row_by_key "$HY2M_DATA_DIR/нет-файла" alice)" = "" ] || fail "row_by_key на несуществующем файле"
+
 # --- _proto_urlenc: байт в байт как посимвольный $(printf) -----------------
 old_urlenc() {
     local s="$1" out="" c i
