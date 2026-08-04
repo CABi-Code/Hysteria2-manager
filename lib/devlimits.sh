@@ -100,7 +100,13 @@ enforce_device_limits() {
     local user localn total
     while IFS= read -r user; do
         [ -n "$user" ] || continue
-        [ "$(get_user_hardcheck_effective "$user")" = "1" ] && continue   # ведёт traffic-based энфорсер
+        # Юзеров с жёсткой проверкой этот кик тоже касается (P-41). Раньше их
+        # пропускали, отдавая traffic-based энфорсеру, — но тот считает НОДЫ, а
+        # не адреса, и внутри одной ноды лимит устройств у них не действовал
+        # вовсе. А попасть под жёсткую проверку можно и автоматически (окно
+        # анти-абуза), то есть чем активнее шаринг, тем слабее становился лимит.
+        # Теперь ограничения складываются: адреса держит этот кик, ноды —
+        # enforce_active_node_limit ниже.
         localn=$(get_user_online_count "$user")
         [ "${localn:-0}" -gt 0 ] 2>/dev/null || continue   # кикать можем только свои сессии
         total=$(cluster_user_connections "$user")
