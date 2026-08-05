@@ -206,7 +206,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state pwreset freeplan ips expiry settings userlimits subips abuse tgbind version"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state pwreset freeplan ips expiry settings userlimits subips abuse tgbind version protocols"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -223,6 +223,7 @@ _section_label() {
         abuse)      echo "анти-абуз (балл/окно)" ;;
         tgbind)     echo "привязки Telegram" ;;
         version)    echo "версия менеджера" ;;
+        protocols)  echo "состояние протоколов" ;;
         *)          echo "$1" ;;
     esac
 }
@@ -255,6 +256,7 @@ cluster_sync() {
     publish_subips
     publish_cluster_tgbind
     publish_cluster_version
+    publish_cluster_protocols
 
     # Жёсткая проверка НАШЕГО эндпоинта: без валидного HTTPS пиры физически не
     # смогут забрать наши данные — синхронизация будет односторонней.
@@ -462,6 +464,60 @@ publish_cluster_version() {
 peer_version() {   # peer-name
     [ -n "$1" ] || return 1
     cut -d'|' -f1 "$PEERS_DIR/${1}.version" 2>/dev/null | head -1
+}
+
+# --- Обмен СОСТОЯНИЕМ ПРОТОКОЛОВ между нодами ---
+# Нода публикует снимок своих протоколов (proto_state_lines: «proto|enabled|up|
+# port|l4»), пиры тянут его в кэш вместе с остальными разделами. Так с любой
+# ноды видно, что где включено и что реально слушает — не заходя на каждый VPS.
+# Свежесть берём из mtime кэша: отдельный ts не нужен, файл переписывается на
+# каждом sync, а протухший mtime сам по себе значит «пир давно не отвечает».
+publish_cluster_protocols() {
+    sub_enabled || return 0
+    declare -F proto_state_lines >/dev/null 2>&1 || return 0
+    mkdir -p "$WEBROOT/cluster"
+    local tmp="$WEBROOT/cluster/protocols.tmp.$BASHPID"
+    proto_state_lines > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv "$tmp" "$WEBROOT/cluster/protocols"
+    chmod 640 "$WEBROOT/cluster/protocols" 2>/dev/null || true
+    secure_web_files
+}
+
+# Строки состояния протоколов конкретного пира из кэша (пусто — ещё не синкались
+# или у пира старая версия менеджера без этого раздела).
+peer_protocols() {   # peer-name
+    [ -n "$1" ] || return 1
+    cat "$PEERS_DIR/${1}.protocols" 2>/dev/null
+}
+
+# Сводка по всему кластеру: «нода|proto|enabled|up|port|l4|возраст_данных_сек».
+# Для своей ноды возраст 0 (данные снимаются прямо сейчас). Пир без кэша
+# пропускается — про него сказать нечего.
+cluster_protocols() {
+    local self name host line age now f
+    self=$(node_host); now=$(date +%s)
+    if declare -F proto_state_lines >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            [ -n "$line" ] && printf '%s|%s|0\n' "$(node_name)" "$line"
+        done < <(proto_state_lines)
+    fi
+    while IFS='|' read -r name host; do
+        [ -n "$host" ] && [ "$host" != "$self" ] || continue
+        [ -z "$name" ] && name="$host"
+        f="$PEERS_DIR/${name}.protocols"
+        [ -f "$f" ] || continue
+        age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") ))
+        while IFS= read -r line; do
+            [ -n "$line" ] && printf '%s|%s|%s\n' "$name" "$line" "$age"
+        done < "$f"
+    done < "$CLUSTER_CONF" 2>/dev/null
+}
+
+# Состояние ОДНОГО протокола на ОДНОЙ ноде: «enabled|up|port|l4|возраст».
+# Пусто — про эту пару данных нет (пир не синкался или протокола он не знает).
+cluster_proto_state() {   # node-name proto
+    cluster_protocols | awk -F'|' -v n="$1" -v p="$2" \
+        '$1==n && $2==p { printf "%s|%s|%s|%s|%s\n", $3, $4, $5, $6, $7; exit }'
 }
 
 # Список «имя<TAB>host<TAB>версия» по всем нодам кластера (эта + пиры из кэша).

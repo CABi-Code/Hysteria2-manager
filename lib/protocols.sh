@@ -1238,6 +1238,32 @@ proto_kick_user() {   # user
     return 0
 }
 
+# ---- Снимок состояния протоколов ноды (для кластера и диагностики) ----
+# Одна строка на протокол: «proto|enabled|up|port|l4».
+#   enabled — включён в настройках ноды (для Hysteria всегда 1: базовый протокол);
+#   up      — сервис активен И порт реально слушается, т.е. протокол принимает
+#             соединения ЛОКАЛЬНО. Снаружи порт может быть закрыт файрволом или
+#             не проброшен фронтом — это уже не видно (см. docs/guide/CLUSTER-PROTOCOLS.md).
+_proto_state_line() {   # name enabled service port l4(tcp|udp)
+    local up=0 hay
+    [ "$5" = udp ] && hay="$_PROTO_LISTEN_UDP" || hay="$_PROTO_LISTEN_TCP"
+    if [ "$2" = 1 ] && systemctl is-active --quiet "$3" 2>/dev/null; then
+        case "$hay" in *":$4 "*) up=1 ;; esac
+    fi
+    printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$up" "$4" "$5"
+}
+
+proto_state_lines() {
+    local _PROTO_LISTEN_TCP _PROTO_LISTEN_UDP
+    _PROTO_LISTEN_TCP=$(ss -ltnH 2>/dev/null)
+    _PROTO_LISTEN_UDP=$(ss -lunH 2>/dev/null)
+    _proto_state_line hy2    1 "$SERVICE"         "$(get_port)"           udp
+    _proto_state_line vless  "$(proto_vless_enabled  && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_vless_port)"  tcp
+    _proto_state_line ss     "$(proto_ss_enabled     && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_ss_port)"     tcp
+    _proto_state_line trojan "$(proto_trojan_enabled && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_trojan_port)" tcp
+    _proto_state_line tuic   "$(proto_tuic_enabled   && echo 1 || echo 0)" "$SINGBOX_SERVICE" "$(proto_tuic_port)"   udp
+}
+
 # Статус для меню/диагностики: строка «vless:💚 ss:🔴 tuic:💚».
 proto_status_line() {
     local s=""

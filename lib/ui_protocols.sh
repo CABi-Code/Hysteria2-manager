@@ -41,6 +41,7 @@ protocols_menu() {
         echo "  5. ⚙  Параметры (порты, шифр SS, REALITY dest/SNI, пути XHTTP/WS)"
         echo "  6. 🔁 Переустановить/пересобрать сервисы (bootstrap)"
         echo "  7. 🔍 Диагностика (версии бинарников, статус, порты)"
+        echo "  8. 🌐 Протоколы по нодам кластера"
         echo "  0. ↩  Назад"
         echo ""
         local choice
@@ -62,6 +63,7 @@ protocols_menu() {
                 pause
                 ;;
             7) proto_diagnose_menu ;;
+            8) proto_cluster_screen ;;
             0) return ;;
             *) echo "  ❌ Неверный выбор!"; sleep 1 ;;
         esac
@@ -147,6 +149,40 @@ proto_params_menu() {
 }
 
 # Диагностика доп. протоколов.
+# Состояние протоколов на всех нодах кластера (данные с пиров — из кэша
+# синхронизации, см. lib/cluster.sh и docs/guide/CLUSTER-PROTOCOLS.md).
+proto_cluster_screen() {
+    clear
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  🌐 Протоколы по нодам кластера"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  💚 работает · 🔴 включён, но не слушает · ⚪ выключен"
+    echo ""
+    local data
+    data=$(cluster_protocols 2>/dev/null)
+    if [ -z "$data" ]; then
+        echo "  Данных нет: кластер не настроен."
+    else
+        printf '%s\n' "$data" | awk -F'|' '
+            { st = ($3 != 1) ? "⚪" : ($4 == 1 ? "💚" : "🔴")
+              line[$1] = line[$1] sprintf("%s %s %s/%s   ", toupper($2), st, toupper($6), $5)
+              age[$1] = $7
+              if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1 } }
+            END {
+              for (i = 1; i <= n; i++) {
+                node = order[i]
+                a = age[node] + 0
+                fresh = (a == 0) ? "сейчас" : (a < 90 ? a " с назад" : int(a/60) " мин назад")
+                printf "  🖥  %s   (данные: %s)\n     %s\n\n", node, fresh, line[node]
+              } }'
+        echo "  ⚠️  Состояние ЛОКАЛЬНОЕ: 💚 значит «порт слушается на самой ноде»."
+        echo "     Снаружи он всё ещё может быть закрыт файрволом или не проброшен"
+        echo "     фронтом/релеем — это видно только проверкой с клиента."
+    fi
+    echo ""
+    pause
+}
+
 proto_diagnose_menu() {
     clear
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
