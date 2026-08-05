@@ -358,36 +358,6 @@ tgbot_daemon() {
     done
 }
 
-# ---------- напоминания об истечении (вызывается из cron --check-expiry) ----------
-# Клиентам с привязанным Telegram — за 3 дня и в день истечения (раз в день).
-bot_expiry_reminders() {
-    bot_enabled || return 0
-    bot_mod_on notify || return 0
-    BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
-    touch "$BOT_NOTIFY_FILE"
-    local today user exp dl chats c
-    today=$(date +%Y-%m-%d)
-    while IFS='|' read -r user exp; do
-        [ -n "$user" ] && [ -n "$exp" ] || continue
-        dl=$(expiry_days_left "$exp" 2>/dev/null) || continue
-        [ -n "$dl" ] || continue
-        # Напоминаем при 3 днях и менее (но ещё не истёк).
-        { [ "$dl" -le 3 ] && [ "$dl" -ge 0 ]; } 2>/dev/null || continue
-        grep -qxF "${user}|${today}" "$BOT_NOTIFY_FILE" 2>/dev/null && continue
-        chats=$(tg_user_chats "$user")
-        [ -n "$chats" ] || continue
-        for c in $chats; do
-            tg_send "$c" "⏰ Ваш доступ (<b>$(tg_esc "$user")</b>) истекает <b>$exp</b> (осталось: $(format_remaining "$exp")).$( bot_sales_on && echo "
-Продлить: /buy" )"
-        done
-        echo "${user}|${today}" >> "$BOT_NOTIFY_FILE"
-        # Подчистка старых меток (держим только сегодняшние и вчерашние).
-        local tmp; tmp=$(mktemp)
-        grep -E "\|($today|$(date -d yesterday +%Y-%m-%d 2>/dev/null))$" "$BOT_NOTIFY_FILE" > "$tmp" 2>/dev/null
-        cat "$tmp" > "$BOT_NOTIFY_FILE"; rm -f "$tmp"
-    done < "$EXPIRY_FILE"
-}
-
 # Уведомление об автоотключении (зовётся из check_expired_users через хук).
 bot_notify_expired() {   # user
     bot_enabled || return 0

@@ -34,7 +34,6 @@ TARIFFS_CONF="$DATA_DIR/tariffs.conf"
 TGUSERS_FILE="$DATA_DIR/tgusers.dat"
 BOTCODES_FILE="$DATA_DIR/botcodes.dat"
 BOT_OFFSET_FILE="$DATA_DIR/bot.offset"
-BOT_NOTIFY_FILE="$DATA_DIR/botnotify.dat"     # анти-дубли напоминаний: «user|YYYY-MM-DD»
 PAYMENTS_LOG="$DATA_DIR/payments.log"
 BOT_LOG="$LOG_DIR/bot.log"
 BOT_UNIT="/etc/systemd/system/hy2-bot.service"
