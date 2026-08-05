@@ -279,6 +279,72 @@ is "  повторный вызов берёт кэш" \
    "$(api_get() { echo '{"zzz":9}'; }; refresh_online; echo "$CACHED_ONLINE" | jq -Sc .)" \
    "$(echo "$CACHED_ONLINE" | jq -Sc .)"
 
+# 13. Публично доверенный TLS для Trojan/TUIC/Hysteria2 (proto_sync_certs).
+#     Ломается тихо и дорого: не разложили серт — протоколы отваливаются на TLS
+#     во ВСЕХ клиентах, которые insecure-флаг не уважают (Xray-core его выпилил).
+echo
+echo "── Сертификаты Trojan/TUIC/Hysteria2 ──"
+CONFIG="$HY2M_DATA_DIR/hy.yaml"; : > "$CONFIG"   # без cert:/key: — ветку Hysteria не трогаем
+export CADDY_CERT_ROOT="$HY2M_DATA_DIR/caddy"
+CA_DIR="$HY2M_DATA_DIR/ca"; mkdir -p "$CA_DIR" "$CADDY_CERT_ROOT/acme/node.example/"
+gen_leaf() {   # dst_dir host [selfsigned]
+    local d="$1" h="$2" self="${3:-}"
+    mkdir -p "$d"
+    if [ -n "$self" ]; then
+        openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+            -keyout "$d/$h.key" -out "$d/$h.crt" -days 30 -subj "/CN=$h" \
+            -addext "subjectAltName=DNS:$h" >/dev/null 2>&1
+        return
+    fi
+    [ -s "$CA_DIR/ca.crt" ] || openssl req -x509 -nodes -newkey ec \
+        -pkeyopt ec_paramgen_curve:prime256v1 -keyout "$CA_DIR/ca.key" \
+        -out "$CA_DIR/ca.crt" -days 30 -subj "/CN=Test CA" >/dev/null 2>&1
+    openssl req -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout "$d/$h.key" -out "$CA_DIR/req" -subj "/CN=$h" >/dev/null 2>&1
+    openssl x509 -req -in "$CA_DIR/req" -CA "$CA_DIR/ca.crt" -CAkey "$CA_DIR/ca.key" \
+        -set_serial 1 -days 30 -out "$d/$h.crt" >/dev/null 2>&1
+}
+node_host() { echo "node.example"; }
+
+# Самоподписанный серт Caddy (внутренний CA, когда ACME не удался) публично не
+# доверен — брать его нельзя, иначе выкинем insecure и всё сломается.
+gen_leaf "$CADDY_CERT_ROOT/acme/node.example" node.example self
+is "самоподписанный серт Caddy не берём" "$(_proto_caddy_cert node.example; echo "rc=$?")" "rc=1"
+
+gen_leaf "$CADDY_CERT_ROOT/acme/node.example" node.example
+: > "$RESTARTS"
+proto_sync_certs
+is "серт разложен по протоколам" "$(cmp -s "$CADDY_CERT_ROOT/acme/node.example/node.example.crt" "$TUIC_CRT" && echo yes)" "yes"
+is "метка доверия выставлена" "$(proto_tls_trusted && echo yes)" "yes"
+is "движки Trojan и TUIC перезапущены" "$(restarts)" "2"
+: > "$RESTARTS"
+proto_sync_certs
+is "повторный прогон не рестартует" "$(restarts)" "0"
+
+# Ссылки: с настоящим сертом insecure-флагов быть не должно ни у кого.
+source "$SCRIPT_DIR/lib/sub_links.sh"
+link_host() { echo node.example; }
+get_port() { echo 443; }; get_obfs_pass() { echo obfspass; }; get_sni() { echo www.twitch.tv; }
+is "trojan без allowInsecure" "$(proto_build_trojan u1 pass1 node.example t | grep -c allowInsecure)" "0"
+is "tuic без allow_insecure"  "$(proto_build_tuic   u1 pass1 node.example t | grep -c allow_insecure)" "0"
+is "hy2 без insecure"         "$(build_user_link    u1 pass1 | grep -c 'insecure=1')" "0"
+is "hy2 идёт с SNI домена ноды" "$(build_user_link u1 pass1 | grep -c 'sni=node.example')" "1"
+# Подпись в hysteria2:// должна быть urlencode: сырой пробел в URI недопустим.
+is "подпись hy2 urlencode" "$(build_user_link u1 pass1 '' '' '' '' '🇫🇮 Фин | HY2')" \
+   "hysteria2://u1:pass1@node.example:443/?obfs=salamander&obfs-password=obfspass&sni=node.example#%F0%9F%87%AB%F0%9F%87%AE%20%D0%A4%D0%B8%D0%BD%20%7C%20HY2"
+
+# Серта нет вовсе (нода без домена) — метка снимается, флаги возвращаются.
+rm -rf "$CADDY_CERT_ROOT"
+proto_sync_certs
+is "без серта метка снята" "$(proto_tls_trusted && echo yes || echo no)" "no"
+is "  trojan снова с allowInsecure" "$(proto_build_trojan u1 pass1 node.example t | grep -c allowInsecure)" "1"
+is "  hy2 снова с insecure"         "$(build_user_link    u1 pass1 | grep -c 'insecure=1')" "1"
+
+# Запасной самоподписанный серт обязан иметь SAN: без него его отвергают ВСЕ
+# Go-клиенты, и insecure-флаг тут уже не спасает.
+rm -f "$TUIC_CRT" "$TUIC_KEY"; proto_gen_tuic_cert
+is "запасной серт с SAN" "$(_proto_cert_has_san "$TUIC_CRT" && echo yes)" "yes"
+
 echo
 [ "$FAIL" = 0 ] && echo "✅ Все проверки прошли" || echo "❌ Есть падения"
 exit "$FAIL"
