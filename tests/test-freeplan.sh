@@ -118,4 +118,21 @@ freeplan_tick
 freeplan_enter user2
 [ "$NOTIFY" = "entered " ] || fail "повторное уведомление о переводе: '$NOTIFY'"
 
+# --- нода БЕЗ бесплатного тарифа не отключает того, кто на бесплатном ---
+# Регрессия: тариф free есть только на части нод, а expiry.dat кластерный.
+# Нода без free=1 в своём tariffs.conf отключала такого юзера и слала админу
+# «⏰ Автоотключение по сроку», а клиенту — «доступ отключён».
+EXPIRED_NOTIFY=""
+db_user_exists()     { return 0; }
+bot_notify_expired() { EXPIRED_NOTIFY+="expired "; }
+EXPIRY_FILE="$HY2M_DATA_DIR/expiry.dat"
+printf 'user2|%s\n' "$(date -d yesterday +%Y-%m-%d)" > "$EXPIRY_FILE"
+TARIFFS_CONF="$HY2M_DATA_DIR/tariffs-nofree.conf"     # тарифов free на этой ноде нет
+printf 'm1|30 дней|30|1|299/240|XTR/RUB\n' > "$TARIFFS_CONF"
+free_enabled && fail "на ноде без free=1 бесплатный тариф не должен быть включён"
+DISABLED=0
+check_expired_users >/dev/null
+[ "$DISABLED" = 0 ] || fail "юзера на бесплатном отключили на ноде без free-тарифа"
+[ -z "$EXPIRED_NOTIFY" ] || fail "прислали «автоотключение» юзеру на бесплатном"
+
 echo "✅ freeplan: окна, лимиты и пороги ок"

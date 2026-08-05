@@ -282,7 +282,10 @@ publish_cluster_freeplan() {
 # LWW корректен: у кого свежее решение — того и состояние.
 cluster_apply_freeplan() {
     sub_enabled || return 0
-    free_enabled || return 0
+    # БЕЗ проверки free_enabled: состояние бесплатного тарифа кластерное, а
+    # тарифы у нод свои. Нода, где free=1 не настроен, всё равно обязана знать,
+    # что юзер на бесплатном, — иначе check_expired_users отключит его у себя
+    # (и пришлёт «автоотключение»), пока другие ноды считают его живым.
     local merged
     merged=$(
         { [ -f "$FREEPLAN_FILE" ] && cat "$FREEPLAN_FILE"
