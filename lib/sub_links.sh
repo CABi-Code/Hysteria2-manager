@@ -82,12 +82,22 @@ build_user_link() {
     local user="$1" pass="$2"
     local ip="${3:-$(link_host)}" port="${4:-$(get_port)}"
     local obfs="${5:-$(get_obfs_pass)}" sni="${6:-$(get_sni)}"
-    local tag="${7:-$user}"
+    local tag="${7:-$user}" insec="&insecure=1"
     # {protocol} — своя метка у каждого ключа (у юзера ключи разных протоколов).
     # Подставляется здесь, а не в render_tag: там протокол ещё не известен. HY2.
     tag=${tag//\{protocol\}/HY2}
-    printf 'hysteria2://%s:%s@%s:%s/?obfs=salamander&obfs-password=%s&sni=%s&insecure=1#%s' \
-        "$user" "$pass" "$ip" "$port" "$obfs" "$sni" "$tag"
+    # Настоящий серт (proto_sync_certs) — идём с проверкой и с SNI ДОМЕНА НОДЫ:
+    # серт выписан на него, а не на хост маскарада из get_sni. Клиентов, которые
+    # insecure не поддерживают (Happ и всё на свежем Xray-core), это и лечит.
+    if declare -F proto_tls_trusted >/dev/null 2>&1 && proto_tls_trusted; then
+        insec=""; sni=$(node_host 2>/dev/null || echo "$sni")
+    fi
+    # Подпись ОБЯЗАНА быть urlencode: в ней пробелы, «|» и эмодзи, а сырой
+    # пробел в URI недопустим — строгий парсер клиента такую ссылку отбросит.
+    # Остальные протоколы гоняют тег через тот же _proto_urlenc.
+    declare -F _proto_urlenc >/dev/null 2>&1 && tag=$(_proto_urlenc "$tag")
+    printf 'hysteria2://%s:%s@%s:%s/?obfs=salamander&obfs-password=%s&sni=%s%s#%s' \
+        "$user" "$pass" "$ip" "$port" "$obfs" "$sni" "$insec" "$tag"
 }
 
 # Плоский список ВСЕХ прямых ссылок юзера: локальный hysteria2:// + локальные
