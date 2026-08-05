@@ -25,11 +25,11 @@
 | Файл | О чём | Проблем |
 |---|---|:--:|
 | [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 8 |
-| [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 12 |
-| [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 6 |
-| [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 4 |
+| [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 13 |
+| [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 7 |
+| [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 6 |
 | [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 10 |
-| [WEBAPP.md](WEBAPP.md) | Мини-апп и веб-кабинет `/opt/надстройка` (отдельный репозиторий) | 6 |
+| [WEBAPP.md](WEBAPP.md) | Мини-апп и веб-кабинет `/opt/надстройка` (отдельный репозиторий) | 10 |
 
 ## Сводка
 
@@ -88,5 +88,13 @@
 | [P-50](PROTOCOLS.md#p-50) | Trojan/TUIC/HY2 держались на insecure-флаге, которого у клиентов больше нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-49](OPS.md#p-49) | Модуль, выпавший из состава, остаётся на ноде навсегда | `install.sh` | [ops](OPS.md) | ✅ |
 | [P-51](PROTOCOLS.md#p-51) | Hysteria2 на ноде «жив», но снаружи её домен его не отдаёт | `lib/cluster.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-52](CLUSTER.md#p-52) | Нода без бесплатного тарифа отключала того, кто на бесплатном | `lib/expiry.sh` | [cluster](CLUSTER.md) | ✅ |
+| [P-53](BILLING.md#p-53) | Снятие дней рапортовалось как «Подписка активна» и глушило напоминания | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
+| [P-54](WEBAPP.md#p-54) | Докупка устройств рапортовала клиенту «начислены дни подписки» | `app/Services/DeviceUpgradeService.php` | [webapp](WEBAPP.md) | ✅ |
+| [P-55](WEBAPP.md#p-55) | В аварийных уведомлениях ЮMoney `\n` печатался буквально | `app/Http/Controllers/YooMoneyController.php` | [webapp](WEBAPP.md) | ✅ |
+| [P-56](LIMITS.md#p-56) | Исчерпав месячную квоту free, бот обещал возврат доступа через неделю | `lib/freeplan.sh` | [limits](LIMITS.md) | ✅ |
+| [P-57](WEBAPP.md#p-57) | Автопродление молчало, когда не хватило баланса | `app/Console/Commands/RunAutoRenew.php` | [webapp](WEBAPP.md) | ✅ |
+| [P-58](WEBAPP.md#p-58) | На одну Stars-оплату клиент получает два сообщения | `lib/tgbot_client.sh` | [webapp](WEBAPP.md) | 🟡 |
+| [P-59](BILLING.md#p-59) | Возврат подарочных дней шлёт два уведомления от двух систем | `app/Services/ReferralGiftService.php` | [billing](BILLING.md) | 🟡 |
 
-Следующий свободный номер — **P-52**.
+Следующий свободный номер — **P-60**.
