@@ -20,10 +20,18 @@ bot_extend_user() {   # user days [nonotify] -> печатает новую да
     if [[ "$new" < "$today" ]]; then new="$today"; fi
     set_user_expiry "$user" "$new"
     # Длина текущего периода — для гейтов порогов «за 7 дней / за 1 день».
-    declare -F period_days_set >/dev/null && period_days_set "$user" "$days"
+    # Только для положительных: при укорачивании срока (эскроу подарочных дней)
+    # период оставался отрицательным, и гейты 7д/3д/1д молча съедали ВСЕ
+    # напоминания об истечении — человек узнавал о конце подписки за 12 часов.
+    [ "$days" -gt 0 ] 2>/dev/null && declare -F period_days_set >/dev/null \
+        && period_days_set "$user" "$days"
     # Уведомление об активации/продлении с датой окончания. Прямой Stars-платёж
     # шлёт свою расширенную карточку (передаёт nonotify), чтобы не дублировать.
-    if [ "$quiet" != "nonotify" ] && declare -F bot_notify_activated >/dev/null; then
+    # Отрицательные дни — это СНЯТИЕ срока (подарочная ссылка запирает дни у
+    # дарителя): «Подписка активна» на такое — прямая ложь, о снятии человеку
+    # пишет мини-апп («списано N дней»).
+    if [ "$quiet" != "nonotify" ] && [ "$days" -gt 0 ] 2>/dev/null \
+       && declare -F bot_notify_activated >/dev/null; then
         bot_notify_activated "$user" "$new"
     fi
     printf '%s' "$new"
