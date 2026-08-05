@@ -33,7 +33,7 @@ disable_user()        { DISABLED=1; }
 enable_user()         { DISABLED=0; }
 sub_enabled()         { return 1; }   # без кластера — публикация не нужна
 bot_notify_free_low()     { NOTIFY+="low "; }
-bot_notify_free_blocked() { NOTIFY+="blocked "; }
+bot_notify_free_blocked() { NOTIFY+="blocked "; BLOCK_RESET="$2"; }
 bot_notify_free_reset()   { NOTIFY+="reset "; }
 bot_notify_free_entered() { NOTIFY+="entered "; }
 
@@ -93,6 +93,10 @@ freeplan_tick
 BYTES=$((3*GB + 15*GB))
 freeplan_tick
 [ "$DISABLED" = 1 ] || fail "месячный лимит не сработал"
+# Обещанное время возврата — сброс месячного окна (позднее недельного), а не
+# недельного: раньше блокировка по месячной квоте обещала доступ через неделю.
+[ "$BLOCK_RESET" = "$(( $(freeplan_field user1 6) + FREE_MONTH_SEC ))" ] \
+    || fail "время сброса не месячное: $BLOCK_RESET"
 
 # --- оплатил снова → бесплатный тариф снимается ---
 EXPIRY=$(date -d '+30 days' +%Y-%m-%d)

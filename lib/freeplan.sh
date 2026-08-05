@@ -236,7 +236,19 @@ freeplan_tick() {
             if [ "$state" != "blocked" ]; then
                 disable_user "$user" silent >/dev/null 2>&1
                 declare -F cstate_mark >/dev/null 2>&1 && cstate_mark "$user" disabled
-                declare -F bot_notify_free_blocked >/dev/null 2>&1 && bot_notify_free_blocked "$user" "$(( wks + FREE_WEEK_SEC ))"
+                # Когда доступ вернётся: сброс ТОГО окна, которое выбрано.
+                # Выбраны оба — ждать позднего из них (пока не освободятся оба
+                # лимита, юзер всё равно заблокирован). Раньше здесь всегда
+                # стоял недельный сброс, и выбравшему месячную квоту бот
+                # обещал доступ на три недели раньше, чем он появлялся.
+                local reset=0 mreset
+                [ "$wk_lim" -gt 0 ] && [ "$wk_used" -ge "$wk_lim" ] && reset=$(( wks + FREE_WEEK_SEC ))
+                if [ "$mo_lim" -gt 0 ] && [ "$mo_used" -ge "$mo_lim" ]; then
+                    mreset=$(( mos + FREE_MONTH_SEC ))
+                    [ "$mreset" -gt "$reset" ] && reset=$mreset
+                fi
+                [ "$reset" -gt 0 ] || reset=$(( wks + FREE_WEEK_SEC ))
+                declare -F bot_notify_free_blocked >/dev/null 2>&1 && bot_notify_free_blocked "$user" "$reset"
                 state=blocked; notif=4; changed=1
             fi
         else
