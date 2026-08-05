@@ -92,22 +92,22 @@ bot_access_text() {   # username
 bot_kb_client() {
     local buy=''
     bot_sales_on && buy=',{"text":"💳 Купить / продлить","callback_data":"m:buy"}'
-    printf '%s' '{"inline_keyboard":[[{"text":"🔗 Моя ссылка","callback_data":"m:link"},{"text":"📡 Подписка","callback_data":"m:sub"}],[{"text":"📊 Мой статус","callback_data":"m:status"}'"$buy"']]}'
+    printf '%s' '{"inline_keyboard":[[{"text":"🔗 Моя ссылка","callback_data":"m:link"},{"text":"📡 Подписка","callback_data":"m:sub"}],[{"text":"📊 Мой статус","callback_data":"m:status"}'"$buy"'],[{"text":"👤 Меню","callback_data":"m:menu"}]]}'
 }
 KB_ADMIN='{"inline_keyboard":[[{"text":"👥 Пользователи","callback_data":"a:users:1"},{"text":"📈 Сервер","callback_data":"a:stat"}],[{"text":"➕ Добавить (/add)","callback_data":"a:add"},{"text":"🎫 Код привязки (/code)","callback_data":"a:codehelp"}],[{"text":"💰 Тарифы","callback_data":"a:tariffs"}]]}'
 
 # Меню клиента / приветствие.
-bot_client_menu() {   # chat_id
-    local chat="$1" user
+bot_client_menu() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}" user
     user=$(tg_bound_user "$chat")
     if [ -n "$user" ]; then
-        tg_send "$chat" "👤 Аккаунт: <b>$(tg_esc "$user")</b>
+        bot_show "$chat" "$mid" "👤 Аккаунт: <b>$(tg_esc "$user")</b>
 Выберите действие:" "$(bot_kb_client)"
     elif bot_sales_on; then
-        tg_send "$chat" "👋 Привет! Это бот VPN-доступа (Hysteria 2).
+        bot_show "$chat" "$mid" "👋 Привет! Это бот VPN-доступа (Hysteria 2).
 У вас пока нет аккаунта. Можно купить доступ прямо здесь — аккаунт создастся автоматически, или введите код привязки от администратора: <code>/start КОД</code>" '{"inline_keyboard":[[{"text":"💳 Купить доступ","callback_data":"m:buy"}]]}'
     else
-        tg_send "$chat" "👋 Привет! Это бот VPN-доступа (Hysteria 2).
+        bot_show "$chat" "$mid" "👋 Привет! Это бот VPN-доступа (Hysteria 2).
 Чтобы привязать ваш аккаунт, запросите у администратора код и отправьте:
 <code>/start КОД</code>"
     fi
@@ -153,21 +153,21 @@ bot_weblogin_cb() {   # chat_id tg_id message_id action id
 }
 
 # ---------- клиентские действия ----------
-bot_client_link() {   # chat_id
-    local chat="$1" user
+bot_client_link() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}" user
     user=$(tg_bound_user "$chat")
-    [ -z "$user" ] && { tg_send "$chat" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
+    [ -z "$user" ] && { bot_show "$chat" "$mid" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
     if is_user_disabled "$user"; then
-        tg_send "$chat" "⛔ Аккаунт <b>$(tg_esc "$user")</b> отключён$( [ "$(tariff_count)" -gt 0 ] && echo " — продлите доступ: /buy" )."
+        bot_show "$chat" "$mid" "⛔ Аккаунт <b>$(tg_esc "$user")</b> отключён$( [ "$(tariff_count)" -gt 0 ] && echo " — продлите доступ: /buy" )." "$(bot_kb_client)"
         return
     fi
-    tg_send "$chat" "$(bot_access_text "$user")"
+    bot_show "$chat" "$mid" "$(bot_access_text "$user")" "$(bot_kb_client)"
 }
 
-bot_client_status() {   # chat_id
-    local chat="$1" user
+bot_client_status() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}" user
     user=$(tg_bound_user "$chat")
-    [ -z "$user" ] && { tg_send "$chat" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
+    [ -z "$user" ] && { bot_show "$chat" "$mid" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
     local st exp exps tl tx rx dev oc
     if is_user_disabled "$user"; then st="⛔ отключён"; else st="✅ активен"; fi
     exp=$(get_user_expiry "$user")
@@ -183,7 +183,7 @@ bot_client_status() {   # chat_id
     IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$user")"
     dev=$(get_user_devices "$user")
     oc=$(api_get "/online" | jq -r --arg u "$user" '.[$u] // 0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
-    tg_send "$chat" "📊 <b>$(tg_esc "$user")</b>
+    bot_show "$chat" "$mid" "📊 <b>$(tg_esc "$user")</b>
 Статус: $st
 Срок действия: $exps
 Трафик: ↑$(format_bytes "$tx") · ↓$(format_bytes "$rx")
@@ -192,14 +192,14 @@ bot_client_status() {   # chat_id
 }
 
 # Список тарифов кнопками (для покупки).
-bot_buy_menu() {   # chat_id
-    local chat="$1"
+bot_buy_menu() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}"
     if ! bot_mod_on sales; then
-        tg_send "$chat" "Покупка через бота отключена — доступ оформляется там, где вы его покупали."
+        bot_show "$chat" "$mid" "Покупка через бота отключена — доступ оформляется там, где вы его покупали."
         return
     fi
     if [ "$(tariff_count)" -eq 0 ] 2>/dev/null; then
-        tg_send "$chat" "Тарифы пока не настроены. Свяжитесь с администратором."
+        bot_show "$chat" "$mid" "Тарифы пока не настроены. Свяжитесь с администратором."
         return
     fi
     local kb rows code title days devices price cur
@@ -211,8 +211,8 @@ bot_buy_menu() {   # chat_id
         read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
         jq -nc --arg t "$title — $(tariff_price_str "$price" "$cur")" --arg d "buy:$code" '[{text:$t,callback_data:$d}]'
     done | jq -sc '.')
-    kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:$r}')
-    tg_send "$chat" "💳 <b>Выберите тариф</b>
+    kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:($r + [[{text:"⬅️ Назад",callback_data:"m:menu"}]])}')
+    bot_show "$chat" "$mid" "💳 <b>Выберите тариф</b>
 Оплата: Telegram Stars (⭐) или картой через платёжного провайдера — доступ выдаётся автоматически сразу после оплаты." "$kb"
 }
 
@@ -284,10 +284,10 @@ bot_ym_invoice() {   # chat_id код название цена дней пол�
 }
 
 # Меню выбора валюты оплаты для мультивалютного тарифа (кнопка на валюту).
-bot_buy_currency_menu() {   # chat_id tariff_code
-    local chat="$1" code="$2" row title price cur _opts
+bot_buy_currency_menu() {   # chat_id tariff_code [message_id]
+    local chat="$1" code="$2" mid="${3:-}" row title price cur _opts
     row=$(tariff_get "$code")
-    [ -z "$row" ] && { tg_send "$chat" "Тариф не найден."; return; }
+    [ -z "$row" ] && { bot_show "$chat" "$mid" "Тариф не найден."; return; }
     IFS='|' read -r _ title _ _ price cur _opts <<< "$row"
     read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
     local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
@@ -297,21 +297,21 @@ bot_buy_currency_menu() {   # chat_id tariff_code
         [ "$c" = "XTR" ] && label="⭐ $p" || label="$p $c"
         jq -nc --arg t "$label" --arg d "buy:$code:$c" '[{text:$t,callback_data:$d}]'
     done | jq -sc '.')
-    local kb; kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:$r}')
-    tg_send "$chat" "💳 <b>$(tg_esc "$title")</b> — выберите способ оплаты:" "$kb"
+    local kb; kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:($r + [[{text:"⬅️ Назад",callback_data:"m:buy"}]])}')
+    bot_show "$chat" "$mid" "💳 <b>$(tg_esc "$title")</b> — выберите способ оплаты:" "$kb"
 }
 
 # Обработка кнопки «buy:...»: «buy:код» (без валюты) или «buy:код:ВАЛЮТА».
 # Без валюты: одна валюта → сразу счёт; несколько → меню выбора валюты.
-bot_buy_dispatch() {   # chat_id rest(код | код:валюта)
-    local chat="$1" rest="$2" code cur
+bot_buy_dispatch() {   # chat_id rest(код | код:валюта) [message_id]
+    local chat="$1" rest="$2" mid="${3:-}" code cur
     # Второй барьер: кнопка из старого сообщения переживает выключение модуля.
-    bot_mod_on sales || { tg_send "$chat" "Покупка через бота отключена."; return; }
+    bot_mod_on sales || { bot_show "$chat" "$mid" "Покупка через бота отключена."; return; }
     code="${rest%%:*}"
     if [ "$rest" = "$code" ]; then
         local -a ca; read -r -a ca <<< "$(tariff_currencies_of "$code")"
         if [ "${#ca[@]}" -le 1 ]; then bot_send_invoice "$chat" "$code"
-        else bot_buy_currency_menu "$chat" "$code"; fi
+        else bot_buy_currency_menu "$chat" "$code" "$mid"; fi
     else
         cur="${rest#*:}"
         bot_send_invoice "$chat" "$code" "$cur"
@@ -327,7 +327,9 @@ bot_fulfill_topup() {   # chat_id tg_id amount currency charge_id
     mkdir -p "$DATA_DIR"
     printf '%s|%s|%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$tgid" "-" "topup" "$amount" "$cur" "$charge" >> "$PAYMENTS_LOG"
     tg_send "$chat" "✅ <b>Оплата получена</b> — баланс пополняется, обновите приложение через пару секунд."
-    bot_notify_admins "💎 <b>Пополнение баланса</b>: tg:${tgid} · ${amount} ${cur} · charge: <code>$(tg_esc "$charge")</code>"
+    # Админу отдельного сообщения НЕ шлём: пополнение приезжает строкой в живой
+    # лог операции мини-аппа (надстройка/docs/ADMIN-OP-LOG.md) — одно
+    # редактируемое сообщение на весь платёж вместо двух разных.
 }
 
 # Имя для НОВОГО профиля: @username Telegram, если он есть и свободен, иначе
