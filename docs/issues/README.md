@@ -87,5 +87,6 @@
 | [P-48](OPS.md#p-48) | Открытое меню менеджера стоит ноде полъядра | `lib/online.sh` | [ops](OPS.md) | ✅ |
 | [P-50](PROTOCOLS.md#p-50) | Trojan/TUIC/HY2 держались на insecure-флаге, которого у клиентов больше нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-49](OPS.md#p-49) | Модуль, выпавший из состава, остаётся на ноде навсегда | `install.sh` | [ops](OPS.md) | ✅ |
+| [P-51](PROTOCOLS.md#p-51) | Hysteria2 на ноде «жив», но снаружи её домен его не отдаёт | `lib/cluster.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 
-Следующий свободный номер — **P-51**.
+Следующий свободный номер — **P-52**.
