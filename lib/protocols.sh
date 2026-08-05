@@ -222,16 +222,104 @@ proto_gen_reality_keys() {
     [ -n "$(proto_reality_shortid)" ] || proto_set PROTO_REALITY_SHORTID "$(openssl rand -hex 8)"
 }
 
-# Самоподписанный серт для TUIC (клиент идёт с allow_insecure=1, как у Hysteria).
+# Запасной самоподписанный серт для TUIC и Trojan — на случай, когда публично
+# доверенного взять негде (нода без домена, см. proto_sync_certs).
+#
+# subjectAltName ОБЯЗАТЕЛЕН. Серт только с CN современные TLS-стеки (все три
+# движка и все клиенты на Go) отвергают ещё до проверки цепочки:
+# «x509: certificate relies on legacy Common Name field, use SANs instead».
+# Такой серт нельзя принять даже с insecure-флагом в тех клиентах, где флаг
+# вообще есть. Поэтому серт без SAN перевыпускаем, а не оставляем как есть.
 proto_gen_tuic_cert() {
-    [ -s "$TUIC_CRT" ] && [ -s "$TUIC_KEY" ] && return 0
+    [ -s "$TUIC_CRT" ] && [ -s "$TUIC_KEY" ] && _proto_cert_has_san "$TUIC_CRT" && return 0
     mkdir -p "$PROTO_DIR"
-    local cn; cn=$(node_host 2>/dev/null); [ -n "$cn" ] || cn="$(get_ip)"
+    local cn san; cn=$(node_host 2>/dev/null); [ -n "$cn" ] || cn="$(get_ip)"
+    # Домен идёт как DNS:, голый адрес — как IP: (в DNS: он не матчится).
+    if [[ "$cn" =~ ^[0-9.]+$ ]] || [[ "$cn" == *:* ]]; then san="IP:${cn}"; else san="DNS:${cn}"; fi
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout "$TUIC_KEY" -out "$TUIC_CRT" -days 3650 -nodes \
-        -subj "/CN=${cn}" >/dev/null 2>&1 || {
+        -subj "/CN=${cn}" -addext "subjectAltName=${san}" >/dev/null 2>&1 || {
             echo "  ❌ Не удалось выпустить серт для TUIC"; return 1; }
     chmod 600 "$TUIC_KEY"
+    return 0
+}
+
+# ---------------- Публично доверенный TLS для Trojan/TUIC/Hysteria2 ----------
+# Зачем. Trojan, TUIC и Hysteria2 стояли на самоподписанном серте, а ссылки шли
+# с allowInsecure=1 / allow_insecure=1 / insecure=1. Это работает ровно до тех
+# пор, пока клиент такой флаг уважает, а половина клиентов его уже НЕ уважает:
+#   • Xray-core (на нём Happ) выпилил allowInsecure совсем — «The feature
+#     "allowInsecure" has been removed and migrated to "pinnedPeerCertSha256"»;
+#   • у Happ в hy2:// поддерживаются только obfs/obfs-password/sni, insecure нет.
+# Итог у пользователя: в Happ пингуется и работает один VLESS (REALITY серт не
+# проверяет), а Trojan/TUIC/HY2 молча отваливаются на TLS. В Hiddify (sing-box)
+# те же ключи работают. Лечение одно — отдавать настоящий серт.
+#
+# Брать его неоткуда, кроме Caddy: он уже держит Let's Encrypt на домен ноды
+# ради HTTPS-подписки. Копируем файлы (перевыпуск раз в 60 дней), а не
+# подсовываем движкам путь в хранилище Caddy: каталог 0700 caddy:caddy, и
+# движкам всё равно нужен рестарт — серты они перечитывают только при старте.
+CADDY_CERT_ROOT="${CADDY_CERT_ROOT:-/var/lib/caddy/.local/share/caddy/certificates}"
+# Метка «на протоколах стоит публично доверенный серт»: по ней ссылки строятся
+# БЕЗ insecure-флагов и с SNI домена ноды. Файл, а не переменная, потому что
+# ссылки собирает не только TUI, но и крон, и Web API.
+TLS_TRUSTED_MARK="$PROTO_DIR/.tls.trusted"
+proto_tls_trusted() { [ -f "$TLS_TRUSTED_MARK" ]; }
+
+_proto_cert_has_san() {   # crt
+    openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null | grep -qE 'DNS:|IP Address:'
+}
+
+# Путь к живому публично доверенному серту Caddy на домен ноды (пусто — нет).
+_proto_caddy_cert() {   # host
+    local host="$1" crt subj iss
+    [ -n "$host" ] || return 1
+    for crt in "$CADDY_CERT_ROOT"/*/"$host"/"$host".crt; do
+        [ -s "$crt" ] && [ -s "${crt%.crt}.key" ] || continue
+        openssl x509 -in "$crt" -noout -checkend 0 >/dev/null 2>&1 || continue
+        # Внутренний CA Caddy (когда ACME не удался) публично не доверен — его
+        # серт самоподписан по цепочке, отличим по совпадению subject и issuer.
+        subj=$(openssl x509 -in "$crt" -noout -subject 2>/dev/null | sed 's/^subject=//')
+        iss=$(openssl  x509 -in "$crt" -noout -issuer  2>/dev/null | sed 's/^issuer=//')
+        [ -n "$subj" ] && [ "$subj" = "$iss" ] && continue
+        printf '%s' "$crt"; return 0
+    done
+    return 1
+}
+
+# Кладёт серт+ключ по назначению. Возврат 0 — файлы ИЗМЕНИЛИСЬ (нужен рестарт),
+# 1 — уже те же самые либо не удалось.
+_proto_install_cert() {   # src_crt src_key dst_crt dst_key owner
+    local sc="$1" sk="$2" dc="$3" dk="$4" own="$5"
+    [ -n "$dc" ] && [ -n "$dk" ] || return 1
+    cmp -s "$sc" "$dc" && cmp -s "$sk" "$dk" && return 1
+    install -m 0644 -o "${own%%:*}" -g "${own##*:}" "$sc" "$dc" 2>/dev/null || return 1
+    install -m 0600 -o "${own%%:*}" -g "${own##*:}" "$sk" "$dk" 2>/dev/null || return 1
+    return 0
+}
+
+# Пути серта Hysteria — из её же конфига, чтобы не завести второй источник правды.
+_proto_hy_cert() { grep -oP '^\s*cert:\s*\K\S+' "$CONFIG" 2>/dev/null | head -1; }
+_proto_hy_key()  { grep -oP '^\s*key:\s*\K\S+'  "$CONFIG" 2>/dev/null | head -1; }
+
+# Разложить серт Caddy по движкам и перезапустить только те, чей файл изменился.
+# Идемпотентно, дёшево (две cmp на протокол) — зовётся из bootstrap и из крона.
+proto_sync_certs() {
+    local host crt key hyc hyk
+    host=$(node_host 2>/dev/null)
+    crt=$(_proto_caddy_cert "$host") || { rm -f "$TLS_TRUSTED_MARK"; return 0; }
+    key="${crt%.crt}.key"
+    if _proto_install_cert "$crt" "$key" "$TUIC_CRT" "$TUIC_KEY" root:root; then
+        # Рестарт рвёт живые сессии, но случается это раз в перевыпуск (~60 дней).
+        proto_trojan_enabled && systemctl restart "$XRAY_SERVICE" >/dev/null 2>&1
+        proto_tuic_enabled   && systemctl restart "$SINGBOX_SERVICE" >/dev/null 2>&1
+    fi
+    hyc=$(_proto_hy_cert); hyk=$(_proto_hy_key)
+    if [ -n "$hyc" ] && [ -n "$hyk" ] \
+        && _proto_install_cert "$crt" "$key" "$hyc" "$hyk" hysteria:hysteria; then
+        systemctl restart "$SERVICE" >/dev/null 2>&1   # серты Hysteria читает только на старте
+    fi
+    : > "$TLS_TRUSTED_MARK"
     return 0
 }
 
@@ -667,17 +755,23 @@ proto_build_ss() {   # user pass ip tag
 proto_build_tuic() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4"
     tag=${tag//\{protocol\}/TUIC}   # {protocol} — метка этого ключа
-    printf 'tuic://%s:%s@%s:%s?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=%s&allow_insecure=1#%s' \
+    # allow_insecure только на запасном самоподписанном серте: с настоящим он
+    # лишний, а часть клиентов на такой ключ вообще не идёт (см. proto_sync_certs).
+    printf 'tuic://%s:%s@%s:%s?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=%s%s#%s' \
         "$(proto_uuid "$user" "$pass")" "$(_proto_urlenc "$pass")" "$ip" "$(proto_tuic_port)" \
-        "$(proto_reality_sni_or_host)" "$(_proto_urlenc "$tag")"
+        "$(proto_reality_sni_or_host)" "$(proto_tls_trusted || echo '&allow_insecure=1')" \
+        "$(_proto_urlenc "$tag")"
 }
 
 proto_build_trojan() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4"
     tag=${tag//\{protocol\}/TROJAN}   # {protocol} — метка этого ключа
-    printf 'trojan://%s@%s:%s?security=tls&type=ws&path=%s&sni=%s&allowInsecure=1#%s' \
+    # allowInsecure в Xray-core УДАЛЁН (мигрировал в pinnedPeerCertSha256), так
+    # что на самоподписанном серте Trojan для Xray-клиентов нерабочий в принципе.
+    printf 'trojan://%s@%s:%s?security=tls&type=ws&path=%s&sni=%s%s#%s' \
         "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_trojan_port)" \
         "$(_proto_urlenc "$(proto_trojan_ws_path)")" "$(proto_reality_sni_or_host)" \
+        "$(proto_tls_trusted || echo '&allowInsecure=1')" \
         "$(_proto_urlenc "$tag")"
 }
 
@@ -735,6 +829,7 @@ proto_bootstrap() {
     proto_write_units
     ensure_proto_ports_open
     proto_sync_users
+    proto_sync_certs   # после sync_users: рестарт движка уже с готовым конфигом
 }
 
 # Включить протокол: vless|ss|tuic. Ставит движок, пишет дефолты, поднимает.

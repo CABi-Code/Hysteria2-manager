@@ -454,10 +454,13 @@ fi
 
 if $GENERATE_CERT; then
     info "Генерирую самоподписанный сертификат (10 лет)..."
+    # subjectAltName обязателен: серт только с CN Go-клиенты отвергают с
+    # «relies on legacy Common Name field» ещё до проверки цепочки. На ноде с
+    # доменом его всё равно заменит настоящий серт Caddy (proto_sync_certs).
     openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
         -keyout "$CERT_DIR/private.key" \
         -out "$CERT_DIR/cert.crt" \
-        -subj "/CN=$HY_SNI" -days 3650 2>/dev/null
+        -subj "/CN=$HY_SNI" -addext "subjectAltName=DNS:$HY_SNI" -days 3650 2>/dev/null
     ok "Сертификат создан: $CERT_DIR"
 fi
 
