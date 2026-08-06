@@ -199,6 +199,10 @@ reset_user_stats() {
 # Аутентификация Hysteria 2 (userpass) — строка "user:pass" в поле password.
 # Блок obfs (salamander) добавляется, только если задан obfs-пароль; для нашего
 # сервера он обязателен, иначе сервер отбросит пакеты.
+#
+# SNI/insecure выбираются ровно как в build_user_link (см. lib/sub_links.sh):
+# при настоящем серте — имя ноды и строгая проверка, иначе хост маскарада и
+# insecure. Расхождение этих двух путей ломало именно JSON-конфиг.
 generate_user_config() {
     local user="$1"
     local mode="${2:-tun}"
@@ -240,7 +244,7 @@ generate_user_config() {
                     server: $server,
                     server_port: $port,
                     password: $auth,
-                    tls: { enabled: true, server_name: $sni, insecure: true }
+                    tls: { enabled: true, server_name: $sni, insecure: $insecure }
                 } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)
                   + (if $dmb > 0 then { down_mbps: $dmb } else {} end)
                   + (if $umb > 0 then { up_mbps: $umb } else {} end)),
@@ -280,7 +284,7 @@ generate_user_config() {
                     server: $server,
                     server_port: $port,
                     password: $auth,
-                    tls: { enabled: true, server_name: $sni, insecure: true }
+                    tls: { enabled: true, server_name: $sni, insecure: $insecure }
                 } + (if $obfs == "" then {} else { obfs: { type: "salamander", password: $obfs } } end)
                   + (if $dmb > 0 then { down_mbps: $dmb } else {} end)
                   + (if $umb > 0 then { up_mbps: $umb } else {} end)),
@@ -306,11 +310,24 @@ generate_user_config() {
     declare -F link_host >/dev/null && srv=$(link_host)
     [ -z "$srv" ] && srv="$CACHED_IP"
 
+    # SNI — ровно тот же выбор, что и в build_user_link (иначе JSON-конфиг и
+    # hysteria2://-ссылка расходятся). get_sni отдаёт ХОСТ МАСКАРАДА, а не имя
+    # из серта; при настоящем серте (proto_sync_certs) сервер включает sniGuard
+    # и рвёт хендшейк с чужим SNI — «tls: internal error» на клиенте, причём
+    # insecure на это НЕ влияет: соединение закрывает сервер, а не клиент.
+    local sni insecure=true
+    sni="${CACHED_SNI:-$(get_sni)}"
+    if declare -F proto_tls_trusted >/dev/null 2>&1 && proto_tls_trusted; then
+        sni=$(node_host 2>/dev/null || echo "$sni")
+        insecure=false
+    fi
+
     jq -n \
         --arg server "$srv" \
         --argjson port "${CACHED_PORT:-$(get_port)}" \
         --arg auth "${user}:${pass}" \
-        --arg sni "${CACHED_SNI:-$(get_sni)}" \
+        --arg sni "$sni" \
+        --argjson insecure "$insecure" \
         --arg obfs "${CACHED_OBFS:-$(get_obfs_pass)}" \
         --argjson dmb "${cl_down_mbps:-0}" \
         --argjson umb "${cl_up_mbps:-0}" \
