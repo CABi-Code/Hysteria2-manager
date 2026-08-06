@@ -292,8 +292,14 @@ get_ip() {
     curl -4s --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
 }
 
+# Порт из listen. Форма listen допускает и ":11478", и "1.2.3.4:11478", и
+# "[::]:11478" — старый шаблон '(?<=listen: :)\d+' ловил только первую и на
+# остальных молча проваливался в дефолт 11478: при смене порта все ссылки и
+# конфиги уезжали на несуществующий порт. Берём последнее число после ':'.
 get_port() {
-    grep -oP '(?<=listen: :)\d+' "$CONFIG" 2>/dev/null || echo "11478"
+    local result
+    result=$(grep -oP '^\s*listen:\s*\S*:\K\d+' "$CONFIG" 2>/dev/null | head -1)
+    echo "${result:-11478}"
 }
 
 get_obfs_pass() {
