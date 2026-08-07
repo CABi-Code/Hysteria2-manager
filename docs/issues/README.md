@@ -13,7 +13,12 @@
   коммита. Запись **не удалять** — она объясняет, почему код выглядит так, а
   не иначе.
 - Номер `P-NN` сквозной по всем файлам темы, стабильный, не переиспользуется.
-  Следующий свободный — см. конец сводки.
+  Следующий свободный — см. конец сводки. Счётчик общий с реестром надстройки:
+  пропуски в нумерации — её номера, а не потерянные записи.
+- **Здесь только проблемы менеджера.** Репозиторий публичный: проблемы
+  надстройки-потребителя API живут в её собственном (приватном) реестре, вместе
+  с хостами, суммами и внутренностями периметра. Проблема на стыке остаётся
+  здесь, если чинится кодом менеджера, — и описывается без чужих хостов и путей.
 - Проверенное отличать от предполагаемого. Если проблема выведена из чтения
   кода, но не воспроизведена — так и писать.
 - Проблема, у которой есть проект решения, ссылается на него, а не пересказывает.
@@ -29,7 +34,6 @@
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 7 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 6 |
 | [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 10 |
-| [WEBAPP.md](WEBAPP.md) | Мини-апп и веб-кабинет `/opt/надстройка` (отдельный репозиторий) | 12 |
 
 ## Сводка
 
@@ -46,14 +50,12 @@
 | [P-13](CLUSTER.md#p-13) | Удаление профиля на одной ноде не удаляет его в кластере | `lib/users.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-15](PROTOCOLS.md#p-15) | Онлайн Xray-протоколов всегда пуст (нет `statsUserOnline`) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-16](LIMITS.md#p-16) | Кик только у Hysteria: лимиты не действуют на доп. протоколы | `lib/protocols.sh` | [limits](LIMITS.md) | 🟡 |
-| [P-26](WEBAPP.md#p-26) | Неавторизованный запрос к `/api/*` отдаёт 500 и стек вместо 401 | `bootstrap/app.php` | [webapp](WEBAPP.md) | ✅ |
-| [P-27](WEBAPP.md#p-27) | Прод работает как `APP_ENV=local` с `APP_DEBUG=true` | `.env` | [webapp](WEBAPP.md) | ✅ |
 | [P-02](PROTOCOLS.md#p-02) | Трафик TUIC не считается вообще (проверено) | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-04](CLUSTER.md#p-04) | Общий секрет кластера: утечка с одной ноды = доступ ко всем | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-05](CLUSTER.md#p-05) | Манифест содержит пароли юзеров: каждая нода знает учётки всех | `lib/sub_links.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-06](CLUSTER.md#p-06) | Нет паспорта ноды: ёмкость, метка, протоколы не публикуются | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-08](CLUSTER.md#p-08) | Все юзеры на всех нодах: ёмкости нет, рост упирается в слабейшую | весь кластер | [cluster](CLUSTER.md) | 🟡 |
-| [P-09](BILLING.md#p-09) | Роль издателя расщеплена между менеджером и webapp | cross-repo | [billing](BILLING.md) | ✅ |
+| [P-09](BILLING.md#p-09) | Роль издателя расщеплена между менеджером и надстройкой | cross-repo | [billing](BILLING.md) | ✅ |
 | [P-11](BILLING.md#p-11) | Длина ваучера в стоковых клиентах не проверена | — | [billing](BILLING.md) | 🟡 |
 | [P-14](CLUSTER.md#p-14) | Осиротевшие токены подписки не убираются никогда | `lib/sub_links.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-34](PROTOCOLS.md#p-34) | Онлайн складывался по протоколам: один клиент считался трижды | `lib/online.sh` | [protocols](PROTOCOLS.md) | ✅ |
@@ -65,17 +67,13 @@
 | [P-21](OPS.md#p-21) | `stats.dat` правится без блокировки, кроны пересекаются | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
 | [P-35](OPS.md#p-35) | Трафик Xray в менеджере обновлялся раз в полчаса — выглядел зависшим | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
 | [P-22](CLUSTER.md#p-22) | Кластерная сумма трафика немонотонна, free-план строит на ней разницу | `lib/freeplan.sh` | [cluster](CLUSTER.md) | 🟡 |
-| [P-28](WEBAPP.md#p-28) | Резервный провайдер курсов мёртв: цепочка фактически из одного | `app/Services/RatesService.php` | [webapp](WEBAPP.md) | 🟡 |
 | [P-10](LIMITS.md#p-10) | tc-классы привязаны к имени юзера из `users.db` | `lib/perf.sh` | [limits](LIMITS.md) | 🟢 |
 | [P-12](OPS.md#p-12) | Возможный двойной счёт скорости на релейном трафике | `lib/publish.sh` | [ops](OPS.md) | 🟢 |
 | [P-23](LIMITS.md#p-23) | `abuse.dat` растёт вечно | `lib/antiabuse.sh` | [limits](LIMITS.md) | ✅ |
 | [P-24](CLUSTER.md#p-24) | Хвосты удалённого профиля достаются одноимённому новому | `lib/users.sh` | [cluster](CLUSTER.md) | 🟢 |
 | [P-25](OPS.md#p-25) | Web API не знает про Trojan | `webapi/wa_dispatch.py` | [ops](OPS.md) | ✅ |
 | [P-39](OPS.md#p-39) | Бот отправлял всех на сайт одного оператора | `lib/tgbot_daemon.sh` | [ops](OPS.md) | ✅ |
-| [P-29](WEBAPP.md#p-29) | `topup:watch-ton` рапортует о зачислении, которого не было | `app/Services/TonWatcher.php` | [webapp](WEBAPP.md) | ✅ |
 | [P-36](OPS.md#p-36) | `authmap.dat` растёт вечно, а его читает каждый перерасчёт онлайна | `lib/ip_tracking.sh` | [ops](OPS.md) | ✅ |
-| [P-30](WEBAPP.md#p-30) | `laravel.log` без ротации, туда же пишут прогоны тестов | `.env` | [webapp](WEBAPP.md) | ✅ |
-| [P-40](WEBAPP.md#p-40) | Caddy резал PUT и DELETE: админка не сохранялась | `/etc/caddy/extra/00-common.caddy` | [webapp](WEBAPP.md) | ✅ |
 | [P-31](CLUSTER.md#p-31) | Недоступный пир никак себя не проявлял в менеджере | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-41](LIMITS.md#p-41) | Жёсткая проверка снимает лимит устройств внутри ноды | `lib/devlimits.sh` | [limits](LIMITS.md) | ✅ |
 | [P-42](LIMITS.md#p-42) | Оплата тарифа в боте затирает докупленные устройства | `lib/tgbot_client.sh` | [limits](LIMITS.md) | ✅ |
@@ -90,13 +88,7 @@
 | [P-51](PROTOCOLS.md#p-51) | Hysteria2 на ноде «жив», но снаружи её домен его не отдаёт | `lib/cluster.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-52](CLUSTER.md#p-52) | Нода без бесплатного тарифа отключала того, кто на бесплатном | `lib/expiry.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-53](BILLING.md#p-53) | Снятие дней рапортовалось как «Подписка активна» и глушило напоминания | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
-| [P-54](WEBAPP.md#p-54) | Докупка устройств рапортовала клиенту «начислены дни подписки» | `app/Services/DeviceUpgradeService.php` | [webapp](WEBAPP.md) | ✅ |
-| [P-55](WEBAPP.md#p-55) | В аварийных уведомлениях ЮMoney `\n` печатался буквально | `app/Http/Controllers/YooMoneyController.php` | [webapp](WEBAPP.md) | ✅ |
 | [P-56](LIMITS.md#p-56) | Исчерпав месячную квоту free, бот обещал возврат доступа через неделю | `lib/freeplan.sh` | [limits](LIMITS.md) | ✅ |
-| [P-57](WEBAPP.md#p-57) | Автопродление молчало, когда не хватило баланса | `app/Console/Commands/RunAutoRenew.php` | [webapp](WEBAPP.md) | ✅ |
-| [P-58](WEBAPP.md#p-58) | На одну Stars-оплату клиент получает два сообщения | `lib/tgbot_client.sh` | [webapp](WEBAPP.md) | 🟡 |
-| [P-59](BILLING.md#p-59) | Возврат подарочных дней шлёт два уведомления от двух систем | `app/Services/ReferralGiftService.php` | [billing](BILLING.md) | 🟡 |
-| [P-60](WEBAPP.md#p-60) | Кнопка «Пополнить на N ₽» не делала ничего: обработчик вырезан из скрипта | `resources/js/pages/Balance.vue` | [webapp](WEBAPP.md) | ✅ |
-| [P-61](WEBAPP.md#p-61) | QR-код устройства не рисовался: `ref` внутри `v-for` приходит массивом | `resources/js/components/DeviceLinks.vue` | [webapp](WEBAPP.md) | ✅ |
+| [P-59](BILLING.md#p-59) | Возврат подарочных дней шлёт два уведомления от двух систем | `lib/tgbot_client.sh` | [billing](BILLING.md) | 🟡 |
 
 Следующий свободный номер — **P-62**.

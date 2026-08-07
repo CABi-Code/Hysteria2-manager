@@ -118,7 +118,7 @@ bot_client_menu() {   # chat_id [message_id]
 # уведомления о начисленном бонусе. Сообщение шлёт одна сторона — иначе клиент
 # получил бы и приветствие, и меню бота.
 # Мини-апп не открывается по ссылке из директа канала (баг Telegram), поэтому
-# реферальная ссылка ведёт на /start бота. См. надстройка/docs/BOT-START.md.
+# реферальная ссылка ведёт на /start бота. Сторона мини-аппа — в его доках.
 # 0 — приветствие отправлено, 1 — мини-апп не настроен/недоступен (зовите меню).
 bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
     local url secret body resp
@@ -139,7 +139,7 @@ bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
 
 # Нажата кнопка в карточке «Вход в веб-версию» (callback_data «wl:ok|no:<id>»).
 # Решение принимает мини-апп: он же и переписывает карточку в чате. Здесь только
-# доставка нажатия — long-polling наш. См. надстройка/docs/WEB-LOGIN.md.
+# доставка нажатия — long-polling наш.
 bot_weblogin_cb() {   # chat_id tg_id message_id action id
     local url secret body
     url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
@@ -328,7 +328,7 @@ bot_fulfill_topup() {   # chat_id tg_id amount currency charge_id
     printf '%s|%s|%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$tgid" "-" "topup" "$amount" "$cur" "$charge" >> "$PAYMENTS_LOG"
     tg_send "$chat" "✅ <b>Оплата получена</b> — баланс пополняется, обновите приложение через пару секунд."
     # Админу отдельного сообщения НЕ шлём: пополнение приезжает строкой в живой
-    # лог операции мини-аппа (надстройка/docs/ADMIN-OP-LOG.md) — одно
+    # лог операции мини-аппа — одно
     # редактируемое сообщение на весь платёж вместо двух разных.
 }
 
@@ -381,7 +381,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
     fi
     newexp=$(bot_extend_user "$user" "$days" nonotify)
     # Тариф ПОДНИМАЕТ лимит устройств, но не опускает: сверх тарифных устройства
-    # докупаются отдельно и за деньги (надстройка, надстройка/docs/DEVICES.md),
+    # докупаются отдельно и за деньги (надстройка),
     # а «поставить ровно тарифное» стирало их при каждой оплате в боте (P-42).
     # Та же болезнь, что была у тарифа скорости (P-19).
     tariff_raise_devices "$user" "$devices"
