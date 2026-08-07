@@ -71,10 +71,10 @@ subscription_menu() {
             1)
                 echo ""
                 local domain name dph rc
-                ask domain "  Домен этой ноды (A-запись на её IP, напр. vpn1.example.com): "
+                ask domain "  Домен этой ноды (A-запись на её IP, напр. node1.example.com): "
                 domain=$(printf '%s' "$domain" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
                 if ! valid_domain "$domain"; then
-                    echo "  ❌ «$domain» не похоже на домен. Нужен FQDN, напр. vpn1.example.com"
+                    echo "  ❌ «$domain» не похоже на домен. Нужен FQDN, напр. node1.example.com"
                     echo "     Сертификат на произвольную строку выдать невозможно."
                     pause; continue
                 fi
@@ -157,7 +157,7 @@ subscription_menu() {
             4)
                 echo ""
                 local phost
-                ask phost "  Домен пира (напр. vpn2.example.com): "
+                ask phost "  Домен пира (напр. node2.example.com): "
                 if [ -n "$phost" ]; then
                     cluster_add_peer "$phost" "$phost"
                     publish_peers_list
@@ -317,7 +317,7 @@ subscription_menu() {
                         echo "  ⚠️ $nd пока не резолвится. Создайте A-запись $nd → один из: $(list_local_ips | tr '\n' ' ')(DNS-only)."
                     else
                         echo "  ⚠️ $nd резолвится на $(printf '%s' "$ph" | tr '\n' ' ')— НЕ на этот сервер."
-                        echo "     Локальные IP: $(list_local_ips | tr '\n' ' '). Если это IP Cloudflare (оранжевое облако) — VPN не подключится."
+                        echo "     Локальные IP: $(list_local_ips | tr '\n' ' '). Если это IP Cloudflare (оранжевое облако) — клиент не подключится."
                     fi
                     node_set CONN_HOST "$nd"
                     sub_refresh
@@ -444,7 +444,7 @@ subscription_menu() {
                     case "$ed" in 1|3|4) cluster_pull_settings ;; esac
                     case "$ed" in
                         1) echo "    Плейсхолдеры: {user} имя юзера · {label} метка ноды · {name} имя ноды · {online} онлайн сервера"
-                           echo "    Примеры: VPN   |   VPN · {user}   |   {user} — {label}"
+                           echo "    Примеры: Доступ   |   Доступ · {user}   |   {user} — {label}"
                            echo "    ℹ️ С {user} название профиля у каждого юзера своё."
                            local v; ask v "  Название профиля: "; [ -n "$v" ] && { setting_set SUB_TITLE "$v"; glob_changed=1; } ;;
                         2) local v; ask v "  Метка ноды (Enter — сбросить к «$(node_name)»): "; node_set NODE_LABEL "$v"; [ -z "$v" ] && sed -i '/^NODE_LABEL=$/d' "$NODE_CONF" 2>/dev/null ;;

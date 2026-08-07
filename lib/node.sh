@@ -101,7 +101,7 @@ sub_tag_tmpl()     { local t; t=$(node_get SUB_TAG_TMPL); [ -z "$t" ] && t='{lab
 _tag_needs_online() { case "$(sub_tag_tmpl)" in *'{online}'*) return 0 ;; *) return 1 ;; esac; }
 # Название всего профиля подписки в клиенте. Поддерживает те же плейсхолдеры,
 # что и подпись ключа: {label} {user} {name} {online} (см. render_title).
-sub_title()        { local t; t=$(node_get SUB_TITLE); echo "${t:-VPN}"; }
+sub_title()        { local t; t=$(node_get SUB_TITLE); echo "${t:-Доступ}"; }
 # Есть ли в названии профиля плейсхолдеры? Если да — название у каждого юзера своё,
 # и заголовок profile-title приходится раздавать по токенам (см. write_sub_titles).
 _title_has_ph()    { case "$(sub_title)" in *'{user}'*|*'{label}'*|*'{name}'*|*'{online}'*) return 0 ;; *) return 1 ;; esac; }

@@ -29,7 +29,7 @@ HYPORT="${hyport}"
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 
-# UDP — сам VPN (Hysteria/QUIC)
+# UDP — сам туннель (Hysteria/QUIC)
 iptables -t nat -C PREROUTING -p udp --dport "\$HYPORT" -j DNAT --to-destination "\$NODE_IP:\$HYPORT" 2>/dev/null || \\
   iptables -t nat -A PREROUTING -p udp --dport "\$HYPORT" -j DNAT --to-destination "\$NODE_IP:\$HYPORT"
 

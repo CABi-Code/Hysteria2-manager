@@ -93,7 +93,7 @@ ${api_block}
         file_server
     }
     handle {
-        respond "Hysteria2 subscription endpoint. Open your personal /sub/<token> URL inside a VPN client (Hiddify, Nekobox, sing-box) as a subscription - not in a browser." 200
+        respond "Subscription endpoint. Open your personal /sub/<token> URL inside a client app (Hiddify, Nekobox, sing-box) as a subscription - not in a browser." 200
     }
 }
 EOF
