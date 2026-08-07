@@ -106,22 +106,13 @@ check_expired_users() {
         # Ровно та же проверка, что и в freeplan_tick — иначе они разъезжаются
         # и гоняют юзера туда-сюда (см. комментарий у expiry_is_over).
         if expiry_is_over "$exp_date"; then
-            # Уже на бесплатном тарифе — не наше дело: доступ ему даёт freeplan,
-            # квоты считает freeplan_tick. Проверка ВЫШЕ проверки free_enabled и
-            # намеренно смотрит только в freeplan.dat (файл кластерный): нода без
-            # своего free-тарифа в tariffs.conf отключала такого юзера и слала
-            # «⏰ Автоотключение по сроку» админу и «доступ отключён» клиенту —
-            # ровно в момент, когда человек нажал «подключить бесплатный».
-            if declare -F freeplan_has >/dev/null && freeplan_has "$user"; then
-                continue
-            fi
             # Пользователь активен (есть в базе) и ещё не отключён — отключаем.
             # Применяется сразу (база + kick), рестарт Hysteria не нужен.
             # Настроен бесплатный тариф (free=1) — не отключаем, а переводим
             # на него: доступ продолжает работать в рамках лимитов трафика.
             # См. lib/freeplan.sh (idea 02).
             if declare -F freeplan_enter >/dev/null && free_enabled; then
-                if db_user_exists "$user"; then
+                if db_user_exists "$user" && ! freeplan_has "$user"; then
                     freeplan_enter "$user"
                     echo "🆓 Перевод на бесплатный тариф: $user (срок: $exp_date)"
                 fi

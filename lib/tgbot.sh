@@ -34,6 +34,7 @@ TARIFFS_CONF="$DATA_DIR/tariffs.conf"
 TGUSERS_FILE="$DATA_DIR/tgusers.dat"
 BOTCODES_FILE="$DATA_DIR/botcodes.dat"
 BOT_OFFSET_FILE="$DATA_DIR/bot.offset"
+BOT_NOTIFY_FILE="$DATA_DIR/botnotify.dat"     # анти-дубли напоминаний: «user|YYYY-MM-DD»
 PAYMENTS_LOG="$DATA_DIR/payments.log"
 BOT_LOG="$LOG_DIR/bot.log"
 BOT_UNIT="/etc/systemd/system/hy2-bot.service"
@@ -104,33 +105,18 @@ tg_send() {   # chat_id text [reply_markup_json]
     fi
 }
 
-# Переписать своё сообщение. Возвращает 1, если Telegram не дал (сообщение
-# удалили, оно слишком старое, это не наше сообщение) — тогда зовущий шлёт новое.
-# «message is not modified» считаем успехом: экран уже такой, какой просили.
 tg_edit() {   # chat_id message_id text [reply_markup_json]
-    local chat="$1" mid="$2" text="$3" kb="$4" resp
+    local chat="$1" mid="$2" text="$3" kb="$4"
     if [ -n "$kb" ]; then
-        resp=$(tg_api editMessageText --data-urlencode "chat_id=$chat" --data-urlencode "message_id=$mid" \
+        tg_api editMessageText --data-urlencode "chat_id=$chat" --data-urlencode "message_id=$mid" \
             --data-urlencode "text=$text" --data-urlencode "parse_mode=HTML" \
             --data-urlencode "disable_web_page_preview=true" \
-            --data-urlencode "reply_markup=$kb")
+            --data-urlencode "reply_markup=$kb" >/dev/null
     else
-        resp=$(tg_api editMessageText --data-urlencode "chat_id=$chat" --data-urlencode "message_id=$mid" \
+        tg_api editMessageText --data-urlencode "chat_id=$chat" --data-urlencode "message_id=$mid" \
             --data-urlencode "text=$text" --data-urlencode "parse_mode=HTML" \
-            --data-urlencode "disable_web_page_preview=true")
+            --data-urlencode "disable_web_page_preview=true" >/dev/null
     fi
-    [[ "$resp" == *'"ok":true'* || "$resp" == *"not modified"* ]]
-}
-
-# Показать экран: правим сообщение, из которого нажали кнопку, и только если
-# это невозможно — шлём новое. Так меню бота живёт в ОДНОМ сообщении, а не
-# растёт лентой копий (см. docs/guide/BOT-MODULES.md, раздел про навигацию).
-bot_show() {   # chat_id message_id text [reply_markup_json]
-    local chat="$1" mid="$2" text="$3" kb="${4:-}"
-    if [ -n "$mid" ] && [ "$mid" != 0 ] && tg_edit "$chat" "$mid" "$text" "$kb"; then
-        return 0
-    fi
-    tg_send "$chat" "$text" "$kb"
 }
 
 tg_answer_cb() {   # callback_id [text]

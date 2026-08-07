@@ -48,116 +48,100 @@ bot_handle_update() {   # json
         chat=$(echo "$upd" | jq -r '.callback_query.message.chat.id // empty')
         mid=$(echo "$upd" | jq -r '.callback_query.message.message_id // empty')
         from=$(echo "$upd" | jq -r '.callback_query.from.id // empty')
-        # Ответ на нажатие даём ОДИН раз и в конце: Telegram принимает
-        # answerCallbackQuery на запрос только однажды, а ответить хочется тем
-        # текстом, который получился (всплывашка вместо лишнего сообщения в чат).
-        # Ветка, которой есть что сказать, кладёт текст в CB_TEXT.
-        local CB_TEXT=""
-        [ -z "$chat" ] && { tg_answer_cb "$cb_id"; return 0; }
+        tg_answer_cb "$cb_id"
+        [ -z "$chat" ] && return 0
         case "$data" in
             wl:*)
                 # Подтверждение входа в веб-версию: «wl:<ok|no>:<id запроса>».
                 local wl="${data#wl:}"
                 bot_weblogin_cb "$chat" "$from" "${mid:-0}" "${wl%%:*}" "${wl#*:}" ;;
-            m:menu)   bot_client_menu "$chat" "$mid" ;;
-            m:link)   bot_client_link "$chat" "$mid" ;;
+            m:link)   bot_client_link "$chat" ;;
             m:sub)
                 local u; u=$(tg_bound_user "$chat")
-                if [ -z "$u" ]; then bot_show "$chat" "$mid" "Аккаунт не привязан (/start КОД)." "$(bot_kb_client)"
-                elif ! sub_enabled; then bot_show "$chat" "$mid" "Подписка на сервере не настроена — используйте «Моя ссылка»." "$(bot_kb_client)"
-                else bot_show "$chat" "$mid" "📡 <b>Ссылка-подписка</b>:
-<code>$(tg_esc "$(subscription_url "$u")")</code>" "$(bot_kb_client)"
+                if [ -z "$u" ]; then tg_send "$chat" "Аккаунт не привязан (/start КОД)."
+                elif ! sub_enabled; then tg_send "$chat" "Подписка на сервере не настроена — используйте «Моя ссылка»."
+                else tg_send "$chat" "📡 <b>Ссылка-подписка</b>:
+<code>$(tg_esc "$(subscription_url "$u")")</code>"
                 fi ;;
-            m:status) bot_client_status "$chat" "$mid" ;;
-            m:buy)    bot_buy_menu "$chat" "$mid" ;;
-            buy:*)    bot_buy_dispatch "$chat" "${data#buy:}" "$mid" ;;
+            m:status) bot_client_status "$chat" ;;
+            m:buy)    bot_buy_menu "$chat" ;;
+            buy:*)    bot_buy_dispatch "$chat" "${data#buy:}" ;;
             ymchk:*)
                 # Проверка оплаты ЮMoney по кнопке. Успех сам пришлёт карточку
                 # доступа (bot_fulfill_payment) — здесь только исходы «нет/мало».
-                bot_mod_on sales || { tg_answer_cb "$cb_id"; return 0; }
+                bot_mod_on sales || return 0
                 local ym_rc=0
                 ym_settle "${data#ymchk:}" >/dev/null 2>&1 || ym_rc=$?
-                # Ответ на кнопку — всплывашкой поверх счёта, а не новым
-                # сообщением: счёт остаётся один, история чата не растёт.
                 case "$ym_rc" in
-                    1) CB_TEXT="Оплата пока не найдена. Перевели только что — подождите минуту и нажмите ещё раз." ;;
-                    2) CB_TEXT="Сумма меньше цены тарифа — администратор уведомлён и свяжется с вами." ;;
+                    1) tg_send "$chat" "Оплата пока не найдена. Если только что перевели — подождите минуту и нажмите ещё раз." ;;
+                    2) tg_send "$chat" "Сумма перевода меньше цены тарифа — администратор уведомлён и свяжется с вами." ;;
                 esac ;;
             a:*)
-                bot_mod_on admin || { tg_answer_cb "$cb_id"; return 0; }
-                bot_is_admin "$from" || { tg_answer_cb "$cb_id" "⛔ Только для администратора"; return 0; }
+                bot_mod_on admin || return 0
+                bot_is_admin "$from" || { tg_send "$chat" "⛔ Только для администратора."; return 0; }
                 case "$data" in
                     a:menu)     tg_edit "$chat" "$mid" "🛠 <b>Админ-панель</b>" "$KB_ADMIN" ;;
                     a:users:*)  bot_admin_users "$chat" "${data##*:}" "$mid" ;;
                     a:u:*)      bot_admin_user_card "$chat" "${data#a:u:}" "$mid" ;;
-                    a:stat)     bot_admin_server_status "$chat" "$mid" ;;
-                    a:add)      bot_show "$chat" "$mid" "Добавить: <code>/add имя [дней] [устройств]</code>
-Пример: <code>/add vasya 30 2</code>" "$KB_ADMIN" ;;
-                    a:codehelp) bot_show "$chat" "$mid" "Код привязки: <code>/code имя</code> — бот выдаст одноразовый код, клиент отправит его боту командой /start КОД." "$KB_ADMIN" ;;
+                    a:stat)     bot_admin_server_status "$chat" ;;
+                    a:add)      tg_send "$chat" "Добавить: <code>/add имя [дней] [устройств]</code>
+Пример: <code>/add vasya 30 2</code>" ;;
+                    a:codehelp) tg_send "$chat" "Код привязки: <code>/code имя</code> — бот выдаст одноразовый код, клиент отправит его боту командой /start КОД." ;;
                     a:tariffs)
                         local tl
                         tl=$(tariff_list | while IFS='|' read -r c t d dv p cur _opts; do
                             read -r p cur <<< "$(tariff_prices_effective "$p" "$cur")"
                             [ -n "$c" ] && echo "• <code>$c</code> — $(tg_esc "$t"): ${d} дн., устройств ${dv}, $(tariff_price_str "$p" "$cur")"
                         done)
-                        bot_show "$chat" "$mid" "💰 <b>Тарифы</b>
+                        tg_send "$chat" "💰 <b>Тарифы</b>
 ${tl:-нет тарифов}
 
-Управление тарифами — в менеджере на сервере: Настройки → Telegram-бот → Тарифы." "$KB_ADMIN" ;;
+Управление тарифами — в менеджере на сервере: Настройки → Telegram-бот → Тарифы." ;;
                     a:tgl:*)
                         local u="${data#a:tgl:}"
                         if is_user_disabled "$u"; then enable_user "$u" >/dev/null 2>&1; else disable_user "$u" >/dev/null 2>&1; fi
                         declare -F cstate_mark >/dev/null && { is_user_disabled "$u" && cstate_mark "$u" disabled || cstate_mark "$u" active; }
                         bot_admin_user_card "$chat" "$u" "$mid" ;;
                     a:kick:*)
-                        # Кик ничего не меняет на экране — отвечаем всплывашкой
-                        # и оставляем карточку юзера как есть.
                         hy_kick_user "${data#a:kick:}" &>/dev/null
-                        CB_TEXT="✂ Сессии сброшены" ;;
+                        tg_send "$chat" "✂ Сессии сброшены." ;;
                     a:link:*)
                         local u="${data#a:link:}"
-                        bot_show "$chat" "$mid" "$(bot_access_text "$u")" "$(bot_kb_back_user "$u")" ;;
+                        tg_send "$chat" "$(bot_access_text "$u")" ;;
                     a:sub:*)
                         local u="${data#a:sub:}"
-                        if sub_enabled; then
-                            bot_show "$chat" "$mid" "📡 <code>$(tg_esc "$(subscription_url "$u")")</code>" "$(bot_kb_back_user "$u")"
-                        else
-                            bot_show "$chat" "$mid" "Подписка не настроена." "$(bot_kb_back_user "$u")"
-                        fi ;;
+                        sub_enabled && tg_send "$chat" "📡 <code>$(tg_esc "$(subscription_url "$u")")</code>" \
+                            || tg_send "$chat" "Подписка не настроена." ;;
                     a:ext:*)
                         local rest="${data#a:ext:}" u days
                         u="${rest%%:*}"; days="${rest##*:}"
-                        # Итог виден в самой карточке (строка «Срок») — отдельным
-                        # сообщением его не дублируем, только всплывашка.
                         if [ "$days" = "0" ]; then
                             remove_user_expiry "$u"
-                            CB_TEXT="Срок снят — доступ бессрочный"
+                            tg_send "$chat" "⏰ Срок у $(tg_esc "$u") снят (бессрочно)."
                         else
                             local newd; newd=$(bot_extend_user "$u" "$days")
-                            CB_TEXT="Продлено до ${newd:-?}"
+                            tg_send "$chat" "⏰ $(tg_esc "$u"): продлено до <b>${newd:-?}</b>."
                         fi
                         bot_admin_user_card "$chat" "$u" "$mid" ;;
                     a:code:*)
                         local u="${data#a:code:}" code botun
                         code=$(bot_bind_code "$u")
                         botun=$(bot_get BOT_USERNAME)
-                        bot_show "$chat" "$mid" "🎫 Код привязки для <b>$(tg_esc "$u")</b> (действует 48 ч):
+                        tg_send "$chat" "🎫 Код привязки для <b>$(tg_esc "$u")</b> (действует 48 ч):
 <code>${code}</code>
 Клиент отправляет боту: <code>/start ${code}</code>${botun:+
-Или по ссылке: https://t.me/${botun}?start=${code}}" "$(bot_kb_back_user "$u")" ;;
+Или по ссылке: https://t.me/${botun}?start=${code}}" ;;
                     a:del:*)
                         local u="${data#a:del:}"
-                        bot_show "$chat" "$mid" "Удалить <b>$(tg_esc "$u")</b> ПОЛНОСТЬЮ (ключи, статистика, привязки)?" \
+                        tg_send "$chat" "Удалить <b>$(tg_esc "$u")</b> ПОЛНОСТЬЮ (ключи, статистика, привязки)?" \
                             "$(jq -nc --arg u "$u" '{inline_keyboard:[[{text:"🗑 Да, удалить",callback_data:("a:del2:"+$u)},{text:"Отмена",callback_data:("a:u:"+$u)}]]}')" ;;
                     a:del2:*)
                         local u="${data#a:del2:}" t
                         delete_user "$u" >/dev/null 2>&1
                         for t in $(tg_user_chats "$u"); do tg_unbind "$t"; done
-                        bot_show "$chat" "$mid" "🗑 <b>$(tg_esc "$u")</b> удалён." \
-                            '{"inline_keyboard":[[{"text":"↩ К списку","callback_data":"a:users:1"}]]}' ;;
+                        tg_send "$chat" "🗑 $(tg_esc "$u") удалён." ;;
                 esac ;;
         esac
-        tg_answer_cb "$cb_id" "$CB_TEXT"
         return 0
     fi
 
@@ -372,6 +356,36 @@ tgbot_daemon() {
             tail -c 262144 "$BOT_LOG" > "${BOT_LOG}.tmp.$BASHPID" 2>/dev/null && mv "${BOT_LOG}.tmp.$BASHPID" "$BOT_LOG"
         fi
     done
+}
+
+# ---------- напоминания об истечении (вызывается из cron --check-expiry) ----------
+# Клиентам с привязанным Telegram — за 3 дня и в день истечения (раз в день).
+bot_expiry_reminders() {
+    bot_enabled || return 0
+    bot_mod_on notify || return 0
+    BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
+    touch "$BOT_NOTIFY_FILE"
+    local today user exp dl chats c
+    today=$(date +%Y-%m-%d)
+    while IFS='|' read -r user exp; do
+        [ -n "$user" ] && [ -n "$exp" ] || continue
+        dl=$(expiry_days_left "$exp" 2>/dev/null) || continue
+        [ -n "$dl" ] || continue
+        # Напоминаем при 3 днях и менее (но ещё не истёк).
+        { [ "$dl" -le 3 ] && [ "$dl" -ge 0 ]; } 2>/dev/null || continue
+        grep -qxF "${user}|${today}" "$BOT_NOTIFY_FILE" 2>/dev/null && continue
+        chats=$(tg_user_chats "$user")
+        [ -n "$chats" ] || continue
+        for c in $chats; do
+            tg_send "$c" "⏰ Ваш доступ (<b>$(tg_esc "$user")</b>) истекает <b>$exp</b> (осталось: $(format_remaining "$exp")).$( bot_sales_on && echo "
+Продлить: /buy" )"
+        done
+        echo "${user}|${today}" >> "$BOT_NOTIFY_FILE"
+        # Подчистка старых меток (держим только сегодняшние и вчерашние).
+        local tmp; tmp=$(mktemp)
+        grep -E "\|($today|$(date -d yesterday +%Y-%m-%d 2>/dev/null))$" "$BOT_NOTIFY_FILE" > "$tmp" 2>/dev/null
+        cat "$tmp" > "$BOT_NOTIFY_FILE"; rm -f "$tmp"
+    done < "$EXPIRY_FILE"
 }
 
 # Уведомление об автоотключении (зовётся из check_expired_users через хук).
