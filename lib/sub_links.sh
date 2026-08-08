@@ -565,6 +565,10 @@ sub_refresh() {
 sub_userinfo_line() {   # user -> строка заголовка
     local kind exp used total out
     IFS='|' read -r kind exp used total <<< "$(user_plan_facts "$1")"
+    # Округляем вниз до мегабайта: сниппет заголовков живёт в конфиге Caddy, и
+    # любое изменение цифры стоит reload. Молчащий (но подключённый) клиент
+    # набирает килобайты — с округлением он не дёргает reload каждые 5 минут.
+    used=$(( ${used:-0} / 1048576 * 1048576 ))
     out="upload=0; download=${used}; total=${total}"
     [ "${exp:-0}" -gt 0 ] 2>/dev/null && out="${out}; expire=${exp}"
     printf '%s' "$out"
