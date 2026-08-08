@@ -549,36 +549,97 @@ sub_refresh() {
     regen_subscriptions
 }
 
-# Пишет сниппет с заголовком profile-title для /sub/* (его импортирует Caddyfile).
-# Без плейсхолдеров название одно на всех — хватает статического заголовка.
-# С плейсхолдерами название у каждого юзера своё: раскладываем «токен → название»
-# в map по {path}; default — название с пустым {user} (на случай чужого токена).
+# ---- Заголовки подписки: что клиент показывает поверх списка ключей ----
+# Клиенты (Happ, v2RayTun, Hiddify, Streisand…) читают из ответа подписки не
+# только ключи: название профиля, строку расхода/срока, текст анонса, кнопки
+# ссылок. Полный список параметров и что их понимает — docs/guide/SUB-HEADERS.md.
+#
+# Персональные заголовки (у каждого юзера своё значение) отдаются через
+# «map {path}» по токену подписки: /sub/* раздаёт статику сам Caddy, и другого
+# способа привязать заголовок к юзеру без своего HTTP-демона нет.
+
+# Строка subscription-userinfo для юзера: расход и срок ЭТОГО доступа. Расход
+# кладём целиком в download (клиент показывает сумму upload+download), лимит и
+# срок пропускаем, когда их нет: total=0 в клиентах означает «без лимита», а
+# нулевой expire часть клиентов рисует как «просрочено».
+sub_userinfo_line() {   # user -> строка заголовка
+    local kind exp used total out
+    IFS='|' read -r kind exp used total <<< "$(user_plan_facts "$1")"
+    out="upload=0; download=${used}; total=${total}"
+    [ "${exp:-0}" -gt 0 ] 2>/dev/null && out="${out}; expire=${exp}"
+    printf '%s' "$out"
+}
+
+# Текст анонса для юзера: шаблон под его план (демо / бесплатный / платный),
+# с подставленными плейсхолдерами. Пусто — анонс этому юзеру не отдаём.
+sub_announce_for() {   # user -> текст
+    local user="$1" kind exp used total tmpl
+    IFS='|' read -r kind exp used total <<< "$(user_plan_facts "$user")"
+    case "$kind" in
+        demo) tmpl=$(sub_ann_demo) ;;
+        free) tmpl=$(sub_ann_free) ;;
+        *)    [ "${exp:-0}" -gt 0 ] 2>/dev/null && tmpl=$(sub_ann_paid) || tmpl=$(sub_ann_paid noexp) ;;
+    esac
+    [ -n "$tmpl" ] || return 0
+    plan_apply_ph "$(_render_ph "$tmpl" "$user")" "$user"
+}
+
+_sub_b64() { printf '%s' "$1" | base64 -w0 2>/dev/null; }
+
+# Пишет сниппет заголовков /sub/* (его импортирует Caddyfile): profile-title,
+# subscription-userinfo, announce. Название без плейсхолдеров одно на всех —
+# хватает статического заголовка; всё остальное персонально и идёт через map по
+# токену (default — значение для чужого/протухшего токена).
 # Печатает ничего; код возврата: 0 — файл изменился (нужен reload caddy), 1 — нет.
 write_sub_titles() {
     local tmp; tmp=$(mktemp) || return 1
     mkdir -p "$(dirname "$CADDY_SUBTITLES")"
-    if ! _title_has_ph; then
-        printf '\theader profile-title "base64:%s"\n' \
-            "$(printf '%s' "$(sub_title)" | base64 -w0 2>/dev/null)" > "$tmp"
-    else
+    local m_title m_info m_ann static_title=0
+    m_title=$(mktemp) || return 1; m_info=$(mktemp) || return 1; m_ann=$(mktemp) || return 1
+    _title_has_ph || static_title=1
+
+    # Один проход по юзерам: факты плана считаются на юзера один раз (кэш в
+    # user_plan_facts), а не на каждый заголовок и каждый токен.
+    local user tok title info ann
+    while IFS= read -r user; do
+        [ -n "$user" ] || continue
         # {online} в названии — тот же онлайн ЭТОЙ ноды, что и в подписи ключа.
-        local user tok
-        {
+        [ "$static_title" = 1 ] || title=$(render_title "$user")
+        info=$(sub_userinfo_line "$user")
+        ann=$(sub_announce_for "$user")
+        while IFS= read -r tok; do
+            [ -n "$tok" ] || continue
+            [ "$static_title" = 1 ] || printf '\t\t/sub/%s "base64:%s"\n' "$tok" "$(_sub_b64 "$title")" >> "$m_title"
+            [ -n "$info" ] && printf '\t\t/sub/%s "%s"\n' "$tok" "$info" >> "$m_info"
+            [ -n "$ann" ]  && printf '\t\t/sub/%s "base64:%s"\n' "$tok" "$(_sub_b64 "$ann")" >> "$m_ann"
+        done <<< "$(sub_tokens_cluster "$user")"
+    done <<< "$(sub_all_users)"
+
+    {
+        if [ "$static_title" = 1 ]; then
+            printf '\theader profile-title "base64:%s"\n' "$(_sub_b64 "$(sub_title)")"
+        else
             printf '\tmap {path} {sub_title} {\n'
-            while IFS= read -r user; do
-                [ -n "$user" ] || continue
-                while IFS= read -r tok; do
-                    [ -n "$tok" ] || continue
-                    printf '\t\t/sub/%s "base64:%s"\n' \
-                        "$tok" "$(printf '%s' "$(render_title "$user")" | base64 -w0 2>/dev/null)"
-                done <<< "$(sub_tokens_cluster "$user")"
-            done <<< "$(sub_all_users)"
-            printf '\t\tdefault "base64:%s"\n' \
-                "$(printf '%s' "$(render_title '')" | base64 -w0 2>/dev/null)"
-            printf '\t}\n'
-            printf '\theader profile-title "{sub_title}"\n'
-        } > "$tmp"
-    fi
+            cat "$m_title"
+            printf '\t\tdefault "base64:%s"\n' "$(_sub_b64 "$(render_title '')")"
+            printf '\t}\n\theader profile-title "{sub_title}"\n'
+        fi
+        # Заголовок без значения клиенты трактуют по-разному, поэтому map с
+        # default "" не годится: пустой блок просто не пишем.
+        if [ -s "$m_info" ]; then
+            printf '\tmap {path} {sub_info} {\n'; cat "$m_info"
+            printf '\t\tdefault "upload=0; download=0; total=0"\n\t}\n'
+            printf '\theader subscription-userinfo "{sub_info}"\n'
+        fi
+        if [ -s "$m_ann" ]; then
+            printf '\tmap {path} {sub_ann} {\n'; cat "$m_ann"
+            # default — для чужого токена: файла подписки под ним всё равно нет
+            # (404), поэтому анонса там быть не должно.
+            printf '\t\tdefault ""\n\t}\n'
+            printf '\theader announce "{sub_ann}"\n'
+        fi
+    } > "$tmp"
+    rm -f "$m_title" "$m_info" "$m_ann"
     if [ -f "$CADDY_SUBTITLES" ] && cmp -s "$tmp" "$CADDY_SUBTITLES"; then
         rm -f "$tmp"; return 1
     fi
