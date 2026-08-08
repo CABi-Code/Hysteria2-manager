@@ -425,6 +425,12 @@ subscription_menu() {
                     echo "  Метка этой ноды  : $(node_label)"
                     echo "  Шаблон подписи   : $(sub_tag_tmpl)   (плейсхолдеры: {label} {user} {name} {online} {protocol})"
                     echo "  Интервал обновл. : каждые $(sub_update_hours) ч"
+                    local _sup _annu _hdrs
+                    _sup=$(sub_support_url); _annu=$(sub_announce_url); _hdrs=$(sub_headers_extra)
+                    echo "  Поддержка        : ${_sup:-—}"
+                    echo "  Страница подписки: $(sub_page_url)"
+                    echo "  Клик по анонсу   : ${_annu:-—}"
+                    echo "  Доп. заголовки   : ${_hdrs//|/ · }"
                     echo ""
                     echo "  Пример названия профиля      : $(render_title 'username')"
                     echo "  Пример подписи ключа этой ноды: $(render_tag 'username')"
@@ -433,15 +439,18 @@ subscription_menu() {
                     echo "  2. Метка ноды (можно с эмодзи/флагом, напр. «🇩🇪 Германия-1»)"
                     echo "  3. Шаблон подписи ключа"
                     echo "  4. Интервал обновления (часы)"
-                    echo "  5. 🔄 Получить синхронизацию (локально)"
+                    echo "  5. Тексты анонса (демо / бесплатный / платный)"
+                    echo "  6. Ссылки в клиенте (поддержка, страница, клик по анонсу)"
+                    echo "  7. Доп. заголовки (любой параметр клиента)"
+                    echo "  8. 🔄 Получить синхронизацию (локально)"
                     echo "  0. Назад"
-                    echo "  ℹ️ Название, шаблон и интервал — ОБЩИЕ для кластера (синхронизируются)."
-                    echo "     Метка ноды — своя у каждого сервера."
+                    echo "  ℹ️ Всё, кроме метки ноды, — ОБЩЕЕ для кластера (синхронизируется)."
+                    echo "     Расход и срок клиент показывает сам: их отдаём всегда (subscription-userinfo)."
                     local ed glob_changed=0; ask ed "  Выберите: "
                     # Перед правкой ОБЩЕЙ настройки стягиваем свежие настройки пиров,
                     # чтобы ts правки (max+1) гарантированно превысил максимум по
                     # кластеру и синхронизация не откатила её (LWW при разных часах).
-                    case "$ed" in 1|3|4) cluster_pull_settings ;; esac
+                    case "$ed" in 1|3|4|5|6|7) cluster_pull_settings ;; esac
                     case "$ed" in
                         1) echo "    Плейсхолдеры: {user} имя юзера · {label} метка ноды · {name} имя ноды · {online} онлайн сервера"
                            echo "    Примеры: Доступ   |   Доступ · {user}   |   {user} — {label}"
@@ -456,7 +465,43 @@ subscription_menu() {
                            echo "    ℹ️ {protocol} — метка протокола этого ключа: HY2 / VLESS / SS22 / TUIC."
                            local v; ask v "  Шаблон (Enter — по умолчанию {label}): "; setting_set SUB_TAG_TMPL "$v"; glob_changed=1 ;;
                         4) local v; ask v "  Интервал обновления, часов (напр. 12): "; if [[ "$v" =~ ^[0-9]+$ ]]; then setting_set SUB_UPDATE_HOURS "$v"; glob_changed=1; else echo "  ❌ Нужно число"; fi ;;
-                        5) cluster_sync_now; pause; continue ;;
+                        5) echo "    Анонс — строка поверх ключей в клиенте (Happ, v2RayTun). Свой текст на каждый"
+                           echo "    план: демо, бесплатный, платный. До ~200 символов, дальше клиент обрежет."
+                           echo "    Плейсхолдеры: {plan} тип плана · {expire} дата конца · {left} сколько осталось"
+                           echo "                  {used} израсходовано · {total} лимит трафика · {devices} устройств"
+                           echo "                  {rate} тариф скорости · плюс {user} {label} {name} {online}"
+                           echo "    Enter — оставить как есть · «-» — не показывать анонс этому плану"
+                           echo ""
+                           echo "    Демо      : $(sub_ann_demo)"
+                           echo "    Бесплатный: $(sub_ann_free)"
+                           echo "    Платный   : $(sub_ann_paid)"
+                           echo ""
+                           local w v
+                           ask w "  Какой план менять (1 демо / 2 бесплатный / 3 платный): "
+                           case "$w" in
+                               1) ask v "  Текст для демо: ";       [ -n "$v" ] && { setting_set SUB_ANN_DEMO "$v"; glob_changed=1; } ;;
+                               2) ask v "  Текст для бесплатного: "; [ -n "$v" ] && { setting_set SUB_ANN_FREE "$v"; glob_changed=1; } ;;
+                               3) ask v "  Текст для платного: ";    [ -n "$v" ] && { setting_set SUB_ANN_PAID "$v"; glob_changed=1; } ;;
+                               *) echo "  ❌ Неверный выбор"; sleep 1; continue ;;
+                           esac ;;
+                        6) echo "    Кнопки и ссылки, которые клиент рисует рядом с подпиской."
+                           echo "    Enter — оставить как есть · «-» — убрать."
+                           local v
+                           ask v "  Поддержка (ссылка на бота/чат): "
+                           case "$v" in '') ;; '-') setting_set SUB_SUPPORT_URL ''; glob_changed=1 ;; *) setting_set SUB_SUPPORT_URL "$v"; glob_changed=1 ;; esac
+                           ask v "  Страница подписки (Enter — корень домена ноды): "
+                           case "$v" in '') ;; '-') setting_set SUB_PAGE_URL ''; glob_changed=1 ;; *) setting_set SUB_PAGE_URL "$v"; glob_changed=1 ;; esac
+                           ask v "  Куда ведёт клик по анонсу: "
+                           case "$v" in '') ;; '-') setting_set SUB_ANN_URL ''; glob_changed=1 ;; *) setting_set SUB_ANN_URL "$v"; glob_changed=1 ;; esac ;;
+                        7) echo "    Любые прочие параметры клиента — списком «имя: значение», через «|»."
+                           echo "    Список того, что понимают клиенты — docs/guide/SUB-HEADERS.md. Примеры:"
+                           echo "      update-always: true|subscriptions-sort-type: ping|subscription-pin: true"
+                           echo "      hide-vpn-icon: true|notification-subs-expire: 1"
+                           echo "    Сейчас: $(sub_headers_extra)"
+                           echo "    Enter — оставить как есть · «-» — очистить список."
+                           local v; ask v "  Список: "
+                           case "$v" in '') ;; '-') setting_set SUB_HEADERS ''; glob_changed=1 ;; *) setting_set SUB_HEADERS "$v"; glob_changed=1 ;; esac ;;
+                        8) cluster_sync_now; pause; continue ;;
                         0) break ;;
                         *) echo "  ❌ Неверный выбор"; sleep 1; continue ;;
                     esac
