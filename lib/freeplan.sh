@@ -160,7 +160,9 @@ freeplan_user_bytes() {   # user -> bytes
     # ПРЯМО СЕЙЧАС, видит его минутно и отключит сама. Нужна точность — публиковать
     # живой кумулятив в publish_stats.
     if [ -d "$PEERS_DIR" ] && compgen -G "$PEERS_DIR/*.stats" >/dev/null 2>&1; then
-        peers=$(awk -F'\t' -v u="$user" 'NF>=4 && $1==u {s+=$3+$4} END{printf "%d", s+0}' "$PEERS_DIR"/*.stats 2>/dev/null)
+        # «%.0f», а не «%d»: mawk (штатный awk в Debian) режет %d по int32, и любой
+        # расход пира больше 2 ГиБ превращался в 2147483647 — квота недосчитывалась.
+        peers=$(awk -F'\t' -v u="$user" 'NF>=4 && $1==u {s+=$3+$4} END{printf "%.0f", s+0}' "$PEERS_DIR"/*.stats 2>/dev/null)
         [[ "$peers" =~ ^[0-9]+$ ]] && total=$(( total + peers ))
     fi
     printf '%s' "$total"
