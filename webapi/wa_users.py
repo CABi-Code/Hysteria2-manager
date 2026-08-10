@@ -189,6 +189,32 @@ def local_traffic(user):
     return 0, 0
 
 
+def _num(value):
+    return int(value) if value.isdigit() else 0
+
+
+def total_traffic():
+    """Трафик всех пользователей за всё время, по всему кластеру: тот же
+    local_traffic + peer_stats, но без фильтра по имени. Счётчики кумулятивны
+    (обнуляются только сбросом конкретного юзера), удалённые юзера из файлов
+    уходят — то есть это сумма по живым, а не бухгалтерия."""
+    total = 0
+    for r in pipe_rows(data_path("stats.dat"), 3):
+        total += _num(r[1]) + _num(r[2])
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".stats"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("\t")
+            if len(parts) >= 4:
+                total += _num(parts[2]) + _num(parts[3])
+    return total
+
+
 # Окно «активных устройств»: считаем уникальные IP только за последние сутки.
 # ips.dat раньше отдавался целиком (кумулятивно за всё время) и рос вечно
 # из-за ротации мобильных IP/CGNAT — карточка показывала «128 из 1». Формат

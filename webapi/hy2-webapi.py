@@ -54,6 +54,7 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/tariffs$"), "read", "h_tariffs"),
     ("GET", re.compile(r"^/v1/nodes$"), "read", "h_nodes"),
     ("GET", re.compile(r"^/v1/online$"), "read", "h_online"),
+    ("GET", re.compile(r"^/v1/stats$"), "read", "h_stats"),
     ("GET", re.compile(r"^/v1/users/([^/]+)$"), "read", "h_user"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/subscription$"), "read", "h_user_sub"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/devices$"), "read", "h_devices"),
@@ -252,6 +253,11 @@ class Handler(BaseHTTPRequestHandler):
     def h_online(self):
         users = online_users()
         return {"users": users, "count": len(users)}
+
+    def h_stats(self):
+        """Сводка по кластеру для витрин: сколько людей в сети сейчас (любых —
+        платных, бесплатных, демо) и сколько трафика прокачано за всё время."""
+        return {"online": len(online_users()), "traffic_bytes": total_traffic()}
 
     def h_user(self, name):
         payload = user_payload(need_username(name))
