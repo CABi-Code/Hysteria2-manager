@@ -59,6 +59,11 @@ bot_handle_update() {   # json
                 # Подтверждение входа в веб-версию: «wl:<ok|no>:<id запроса>».
                 local wl="${data#wl:}"
                 bot_weblogin_cb "$chat" "$from" "${mid:-0}" "${wl%%:*}" "${wl#*:}" ;;
+            pr:*)
+                # Карточка согласования контента («pr:<действие>:<номер>»):
+                # решение принимает мини-апп, он же переписывает карточку.
+                local pr="${data#pr:}"
+                bot_review_cb "$from" "${mid:-0}" "${pr%%:*}" "${pr#*:}" ;;
             m:menu)   bot_client_menu "$chat" "$mid" ;;
             m:link)   bot_client_link "$chat" "$mid" ;;
             m:sub)
@@ -190,6 +195,15 @@ ${tl:-нет тарифов}
         bot_fulfill_payment "$chat" "$from" "$sp" "$amount" "$cur" "$charge" \
             "$(echo "$upd" | jq -r '.message.from.username // empty')"
         return 0
+    fi
+
+    # 3б) ответ на карточку согласования контента: текст правки уходит мини-аппу.
+    # Своего состояния не держим — мини-апп сам скажет, его ли это сообщение
+    # (ok:false — значит обычный ответ, обрабатываем дальше по общим правилам).
+    local reply_mid
+    reply_mid=$(echo "$upd" | jq -r '.message.reply_to_message.message_id // empty' 2>/dev/null)
+    if [ -n "$reply_mid" ] && [ -n "$text" ] && declare -F bot_review_cb >/dev/null; then
+        bot_review_cb "$from" "$reply_mid" text 0 "$text" && return 0
     fi
 
     case "$text" in

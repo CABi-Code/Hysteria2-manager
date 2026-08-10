@@ -121,35 +121,51 @@ bot_client_menu() {   # chat_id [message_id]
 # реферальная ссылка ведёт на /start бота. Сторона мини-аппа — в его доках.
 # 0 — приветствие отправлено, 1 — мини-апп не настроен/недоступен (зовите меню).
 bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
-    local url secret body resp
-    url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
-    [ -n "$url" ] && [ -n "$secret" ] || return 1
+    local body resp
     body=$(jq -nc --argjson chat "$1" --argjson tg "$2" \
         --arg sp "${3:-}" --arg un "${4:-}" --arg fn "${5:-}" \
         '{chat_id:$chat, tg_id:$tg, start_param:$sp, username:$un, first_name:$fn}') || return 1
     # Долгий таймаут: в ответе может лежать провижининг нового профиля (~18 с).
-    resp=$(curl -s --max-time 60 -X POST "${url%/}/api/bot/start" \
-        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
-        --data-binary "$body" 2>/dev/null)
+    resp=$(bot_miniapp_post api/bot/start "$body" 60)
     # Telegram легко теряет payload (человек жмёт «START», а не ссылку) — без
     # лога «пришёл без кода» неотличимо от сломанной привязки.
     echo "$(date '+%F %T') miniapp /start: tg=$2 payload='${3:-—}' → ${resp:0:120}"
     [ "$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
 }
 
+# POST готового JSON в мини-апп: общий транспорт для всех «доставок нажатия».
+# Тело ответа уходит в stdout — вызывающий сам решает, что с ним делать.
+# 1 — мини-апп не настроен.
+bot_miniapp_post() {   # path json [timeout]
+    local url secret
+    url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
+    [ -n "$url" ] && [ -n "$secret" ] || return 1
+    curl -s --max-time "${3:-15}" -X POST "${url%/}/$1" \
+        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
+        --data-binary "$2" 2>/dev/null
+}
+
 # Нажата кнопка в карточке «Вход в веб-версию» (callback_data «wl:ok|no:<id>»).
 # Решение принимает мини-апп: он же и переписывает карточку в чате. Здесь только
 # доставка нажатия — long-polling наш.
 bot_weblogin_cb() {   # chat_id tg_id message_id action id
-    local url secret body
-    url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
-    [ -n "$url" ] && [ -n "$secret" ] || return 1
+    local body
     body=$(jq -nc --argjson chat "$1" --argjson tg "$2" --argjson mid "${3:-0}" \
         --arg act "$4" --arg id "$5" \
         '{chat_id:$chat, tg_id:$tg, message_id:$mid, action:$act, request:$id}') || return 1
-    curl -s --max-time 15 -X POST "${url%/}/api/bot/weblogin" \
-        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
-        --data-binary "$body" >/dev/null 2>&1
+    bot_miniapp_post api/bot/weblogin "$body" >/dev/null || return 1
+}
+
+# Карточка согласования в личке владельца: нажата кнопка («pr:<действие>:<id>»)
+# или прислан текст правки ответом на карточку (action=text). Как и с входом в
+# веб-версию, решение и перерисовка карточки — на стороне мини-аппа.
+# 0 — мини-апп обработал, 1 — это не про него (сообщение идёт дальше обычным путём).
+bot_review_cb() {   # tg_id message_id action [draft_id] [text]
+    local body
+    body=$(jq -nc --argjson tg "$1" --argjson mid "${2:-0}" --arg act "$3" \
+        --argjson draft "${4:-0}" --arg text "${5:-}" \
+        '{tg_id:$tg, message_id:$mid, action:$act, draft:$draft, text:$text}') || return 1
+    [ "$(bot_miniapp_post api/bot/review "$body" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
 }
 
 # ---------- клиентские действия ----------
