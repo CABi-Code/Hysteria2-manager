@@ -256,8 +256,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def h_stats(self):
         """Сводка по кластеру для витрин: сколько людей в сети сейчас (любых —
-        платных, бесплатных, демо) и сколько трафика прокачано за всё время."""
-        return {"online": len(online_users()), "traffic_bytes": total_traffic()}
+        платных, бесплатных, демо) и сколько трафика прокачано за всё время.
+
+        «В сети» здесь — подключён к любой ноде (connected_users), а не «двигает
+        трафик» как в /v1/online: витрине нужен человек, который сидит с
+        включённым клиентом, даже если он в этот момент ничего не качает.
+        """
+        return {"online": len(connected_users()), "traffic_bytes": total_traffic()}
 
     def h_user(self, name):
         payload = user_payload(need_username(name))
