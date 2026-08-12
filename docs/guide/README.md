@@ -24,7 +24,7 @@
 | [BOT-MODULES.md](BOT-MODULES.md) | **Модули бота**: продажу, уведомления и админ-панель можно включать по отдельности (`BOT_MODULES`); что при этом остаётся ядром | `lib/tgbot.sh`, `lib/tgbot_client.sh`, `lib/tgbot_daemon.sh`, `lib/tgbot_menu.sh` |
 | [BOT-START.md](BOT-START.md) | **`/start` и реферальные ссылки**: бот передаёт команду мини-аппу, тот шлёт приветствие и начисляет бонус (его сторона — в его документации) | `lib/tgbot_client.sh`, `lib/tgbot_daemon.sh` |
 | [YOOMONEY.md](YOOMONEY.md) | **Приём рублей через ЮMoney**: продажа тарифов без платёжного провайдера (личный кошелёк, метка платежа, опрос истории) | `lib/yoomoney.sh`, `lib/tgbot_client.sh`, `lib/tgbot_menu.sh` |
-| [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи**: `demo_create()`, таблица `DEMOS_DB`, enforcement капов кроном, грейс-сутки и авто-purge | `lib/demo.sh`, `lib/ui_users.sh` |
+| [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи**: `demo_create()`, таблица `DEMOS_DB`, выбор ноды-приёмника (`DEMO_NODES`), выдача на соседней ноде, enforcement капов минутным тиком, грейс-сутки и авто-purge | `lib/demo.sh`, `webapi/hy2-webapi.py` |
 | [CRON.md](CRON.md) | **Периодические задачи и цена одного тика**: расписание кронов, замок `cron_lock` (один живой прогон на режим), правила против форков в циклах, отказ от лишней работы, ориентиры по времени | `lib/cron.sh`, `hy2-manager.sh`, `lib/config.sh`, `lib/online.sh` |
 | [MAINTENANCE.md](MAINTENANCE.md) | **Эксплуатационная гигиена**: ротация логов, временные файлы с `$BASHPID`, retention истории IP, пин и сверка версий ядер | `install.sh`, `lib/ip_tracking.sh`, `lib/publish.sh`, `lib/protocols.sh` |
 

@@ -138,13 +138,26 @@ def free_status(user, total_bytes):
     }
 
 
+def demo_row(user):
+    """Строка demos.db по имени или None."""
+    return next((r for r in pipe_rows(data_path("demos.db"), 7) if r[0] == user), None)
+
+
+def demo_node(row):
+    """Нода профиля из строки demos.db (8-е поле). Пусто = эта нода: так
+    выглядят все строки, выданные до появления выбора ноды."""
+    return (row[7].strip() if len(row) > 7 else "") or ""
+
+
 def demo_status(user, total_bytes):
     """Состояние демо-профиля или None. Строка demos.db:
-    user|state|created|expires|cap|base|used (см. lib/demo.sh). Расход считаем
-    ровно как demo_tick, который и отбирает доступ: текущий трафик минус база
-    на момент выдачи. У отобранного демо (state=expired) расход уже записан в
-    строке — текущий трафик там ни при чём."""
-    row = next((r for r in pipe_rows(data_path("demos.db"), 7) if r[0] == user), None)
+    user|state|created|expires|cap|base|used|node (см. lib/demo.sh). Расход
+    считаем ровно как demo_tick, который и отбирает доступ: текущий трафик минус
+    база на момент выдачи. У отобранного демо (state=expired) расход уже записан
+    в строке — текущий трафик там ни при чём. Для профиля на ЧУЖОЙ ноде цифры
+    здесь бессмысленны (трафик считает она) — такое состояние берут у неё,
+    см. h_demo_state."""
+    row = demo_row(user)
     if row is None:
         return None
     nums = [int(x) if x.lstrip("-").isdigit() else 0 for x in row[2:7]]

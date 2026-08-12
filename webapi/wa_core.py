@@ -117,6 +117,45 @@ def has_scope(key, scope):
     return "*" in key["scopes"] or scope in key["scopes"]
 
 
+# --- Второй способ авторизации: общий секрет кластера (только демо) ---
+# Ноды уже ходят друг к другу с заголовком X-Cluster-Auth (lib/cluster.sh:
+# cluster_call), и этот секрет знают все ноды кластера. Демо-профиль теперь
+# заводит нода-приёмник (lib/demo.sh: demo_create_remote), поэтому ей нужен
+# способ позвать соседа НЕ раздавая по нодам ключи webapi.keys. Ничего нового
+# секрет не открывает: с ним и так забирают манифесты, то есть ключи всех юзеров.
+# Разрешаем им ТОЛЬКО /v1/demo* — см. CLUSTER_AUTH_PREFIX в hy2-webapi.py.
+def node_host():
+    """Домен ЭТОЙ ноды (node.conf) — им же подписаны строки demos.db."""
+    return read_kv(os.path.join(DATA_DIR, "node.conf")).get("NODE_HOST") or ""
+
+
+def cluster_secret():
+    try:
+        with open(os.path.join(DATA_DIR, "cluster.secret"), encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def cluster_auth_ok(header):
+    secret = cluster_secret()
+    return bool(secret) and bool(header) and hmac.compare_digest(secret, header.strip())
+
+
+def cluster_request(host, path, method="GET", timeout=15):
+    """Запрос к Web API другой ноды кластера под тем же общим секретом.
+    Возвращает поле data ответа; бросает OSError/ValueError при отказе."""
+    req = urllib.request.Request("https://%s/api%s" % (host, path), method=method,
+                                 data=b"{}" if method == "POST" else None,
+                                 headers={"X-Cluster-Auth": cluster_secret(),
+                                          "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    if not body.get("ok"):
+        raise ValueError((body.get("error") or {}).get("code") or "peer_error")
+    return body.get("data") or {}
+
+
 def rate_ok(key_name, rpm):
     """Token bucket: ёмкость rpm, пополнение rpm/60 в секунду."""
     now = time.monotonic()
