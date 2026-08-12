@@ -33,7 +33,7 @@
 | [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 14 |
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 9 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 6 |
-| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 10 |
+| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 11 |
 
 ## Сводка
 
@@ -71,6 +71,7 @@
 | [P-22](CLUSTER.md#p-22) | Кластерная сумма трафика немонотонна, free-план строит на ней разницу | `lib/freeplan.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-10](LIMITS.md#p-10) | tc-классы привязаны к имени юзера из `users.db` | `lib/perf.sh` | [limits](LIMITS.md) | 🟢 |
 | [P-12](OPS.md#p-12) | Возможный двойной счёт скорости на релейном трафике | `lib/publish.sh` | [ops](OPS.md) | 🟢 |
+| [P-72](OPS.md#p-72) | `onlineips.dat` осиротел: файл лежит, никто его не пишет и не читает | `lib/online.sh` | [ops](OPS.md) | 🟢 |
 | [P-23](LIMITS.md#p-23) | `abuse.dat` растёт вечно | `lib/antiabuse.sh` | [limits](LIMITS.md) | ✅ |
 | [P-24](CLUSTER.md#p-24) | Хвосты удалённого профиля достаются одноимённому новому | `lib/users.sh` | [cluster](CLUSTER.md) | 🟢 |
 | [P-25](OPS.md#p-25) | Web API не знает про Trojan | `webapi/wa_dispatch.py` | [ops](OPS.md) | ✅ |
@@ -94,4 +95,4 @@
 | [P-59](BILLING.md#p-59) | Возврат подарочных дней шлёт два уведомления от двух систем | `lib/tgbot_client.sh` | [billing](BILLING.md) | 🟡 |
 | [P-62](CLUSTER.md#p-62) | Расход юзера на других нодах обрезался до 2 ГиБ (mawk, `%d`) | `lib/freeplan.sh` | [cluster](CLUSTER.md) | ✅ |
 
-Следующий свободный номер — **P-72**.
+Следующий свободный номер — **P-73**.
