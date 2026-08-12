@@ -43,7 +43,7 @@
 |:--:|---|---|---|:--:|
 | [P-37](OPS.md#p-37) | Сбор трафика обнулял счётчики движков — спидометр падал в ноль при открытом TUI | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
 | [P-38](CLUSTER.md#p-38) | По кластеру ездил только Hysteria-онлайн: VLESS/TUIC-юзеры офлайн для соседей | `lib/publish.sh` | [cluster](CLUSTER.md) | ✅ |
-| [P-71](LIMITS.md#p-71) | Глобальный лимит скорости — один на всю ноду, а не на клиента | `lib/perf.sh` | [limits](LIMITS.md) | 🔴 |
+| [P-71](LIMITS.md#p-71) | Глобальный лимит скорости — один на всю ноду, а не на клиента | `lib/perf.sh` | [limits](LIMITS.md) | ✅ |
 | [P-70](LIMITS.md#p-70) | Нода без `SHAPE` шейпила один Hysteria — остальные протоколы мимо лимита | `lib/perf.sh` | [limits](LIMITS.md) | ✅ |
 | [P-32](CLUSTER.md#p-32) | Нода с самоподписанным сертификатом не лечится сама | `lib/caddy.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-01](PROTOCOLS.md#p-01) | TUIC рестартует при любом изменении состава юзеров | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |

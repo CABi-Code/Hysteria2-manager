@@ -191,6 +191,12 @@ apply_quic_profile() {   # weak|normal
 klimit_get() { conf_get "$KLIMIT_CONF" "$1"; }
 klimit_down() { local v; v=$(klimit_get DOWN_MBIT); [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 klimit_up()   { local v; v=$(klimit_get UP_MBIT);   [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
+# Потолок ВСЕЙ ноды на туннельный трафик, Мбит/с. 0 = не ограничивать (физический
+# потолок — сам аплинк). Держит сумму пер-IP классов: сто клиентов по 30 не
+# вынесут канал, если тут стоит осмысленное число. Правится в klimit.conf и
+# переживает перегенерацию — klimit_apply читает старое значение перед записью.
+KLIMIT_NODE_DEFAULT=10000
+klimit_node() { local v; v=$(klimit_get NODE_MBIT); [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && echo "$v" || echo "$KLIMIT_NODE_DEFAULT"; }
 
 # Активен ли kernel-лимит прямо сейчас? Основной сигнал — oneshot-юнит hy2-limit
 # успешно применился (RemainAfterExit); плюс прямые проверки tc/nft/iptables на
@@ -224,8 +230,9 @@ klimit_active() {
 #   • IPv4 шейпится через tc; IPv6-клиентов (редко) добираем лёгким nft-дропом, чтобы
 #     они не проходили мимо лимита.
 # down_mbit — скачивание клиента (сервер -> клиент), up_mbit — отдача клиента.
-_klimit_write_script() {   # down_mbit up_mbit port [tariffs] [shape]
-    local down="$1" up="$2" port="$3" tariffs="$4" shape="$5"
+_klimit_write_script() {   # down_mbit up_mbit port [tariffs] [shape] [node_mbit]
+    local down="$1" up="$2" port="$3" tariffs="$4" shape="$5" node="$6"
+    [[ "$node" =~ ^[0-9]+$ ]] && [ "$node" -gt 0 ] || node="$KLIMIT_NODE_DEFAULT"
     # Для дроп-фолбэка (nft/iptables): Мбит/с -> KiB/s (~13% запас на заголовки).
     local dkb=$(( down * 138 ))
     local ukb=$(( up * 138 ))
@@ -240,6 +247,7 @@ _klimit_write_script() {   # down_mbit up_mbit port [tariffs] [shape]
         echo "SHAPE=\"${shape}\"   # protonum:port всех шейпимых протоколов (17=udp,6=tcp); пусто -> 17:PORT"
         echo "DMBIT=${down}    # Мбит/с на IP: скачивание клиента, дефолт-класс туннеля (0 = без лимита)"
         echo "UMBIT=${up}      # Мбит/с на IP: отдача клиента,     дефолт-класс туннеля (0 = без лимита)"
+        echo "NODEMBIT=${node}   # потолок ВСЕЙ ноды на туннельный трафик (класс 1:1, родитель пер-IP классов)"
         echo "TARIFFS=\"${tariffs}\"   # тарифные тиры (Мбит) — по классу на каждый; пер-IP раскладку ставит klimit_reconcile"
         echo "DKB=${dkb} UKB=${ukb} DBURST=${dburst} UBURST=${uburst}   # для дроп-фолбэка"
         echo "IFB=ifb-hy2"
@@ -275,41 +283,41 @@ tc_ok() {
     return $rc
 }
 
-# classid тарифного класса из скорости (Мбит): 1:<0x1000+rate>. Смещение 0x1000
-# уводит от 1:1 (глобальный класс) и 1:9999 (без лимита). Та же формула — в
-# klimit_reconcile (perf.sh), чтобы пер-IP фильтры указывали в нужный класс.
-tclass() { printf '1:%x' $(( 0x1000 + $1 )); }
-
 # Строит дерево классов на устройстве $1 для ОДНОГО направления:
 #   1:9999 — без лимита (не-туннельный трафик: SSH, маскировка-сайт) = htb default
-#   1:1    — глобальный лимит направления ($2 Мбит) = дефолт туннеля без тарифа
-#   1:<t>  — по классу на каждый тариф из $TARIFFS
+#   1:1    — ПОТОЛОК НОДЫ ($NODEMBIT Мбит) на весь туннельный трафик. Класс
+#            внутренний: листового qdisc у него нет, под ним живут дети.
+#   1:ffff — общий класс направления ($2 Мбит) для туннельного трафика с адреса,
+#            которого нет в раскладке. Цель catch-all (prio 2).
+#   1:2xxx — по классу НА КАЖДЫЙ активный адрес; их ставит klimit_reconcile.
 # $3/$4 — селектор порта туннеля (sport/PORT для скачивания, dport/PORT для отдачи).
-# Пер-IP раскладку (prio 1, IP → тарифный класс) НЕ ставим здесь — ею заведует
-# klimit_reconcile. Тут только catch-all (prio 2): весь туннель без пер-IP
-# правила → глобальный класс 1:1.
+#
+# Класс на АДРЕС, а не на величину тарифа. Раньше classid считался из скорости
+# (0x1000+rate), поэтому все адреса одного тарифа делили один класс, а все
+# бестарифные — один класс 1:1 на всю ноду: десять человек онлайн при лимите 30
+# получали по 3 Мбит/с вместо 30 каждый. Запасные пути (nft meter по ip daddr,
+# iptables --hashlimit-mode dstip) всегда считали по адресу — теперь и tc.
 build_dev() {   # dev global_mbit portsel portval
-    local D="$1" G="$2" PSEL="$3" PV="$4" T cid
+    local D="$1" G="$2" PSEL="$3" PV="$4" GG
+    # Гарантия = десятая доля потолка (не меньше 1): всё сверх неё класс занимает
+    # у родителя, и только так потолок ноды вообще действует. Та же формула — в
+    # _klimit_guarantee (perf.sh) для пер-IP классов.
+    GG=$(( G / 10 )); [ "$GG" -lt 1 ] && GG=1
     tc qdisc add dev "$D" root handle 1: htb default 9999 || return 1
     tc class add dev "$D" parent 1: classid 1:9999 htb rate 10000mbit ceil 10000mbit || return 1
     tc qdisc add dev "$D" parent 1:9999 fq_codel
-    tc class add dev "$D" parent 1: classid 1:1 htb rate "${G}mbit" ceil "${G}mbit" || return 1
-    tc qdisc add dev "$D" parent 1:1 fq_codel
-    for T in $TARIFFS; do
-        [ "$T" -gt 0 ] 2>/dev/null || continue
-        cid=$(tclass "$T")
-        tc class add dev "$D" parent 1: classid "$cid" htb rate "${T}mbit" ceil "${T}mbit" || return 1
-        tc qdisc add dev "$D" parent "$cid" fq_codel
-    done
+    tc class add dev "$D" parent 1: classid 1:1 htb rate "${NODEMBIT}mbit" ceil "${NODEMBIT}mbit" || return 1
+    tc class add dev "$D" parent 1:1 classid 1:ffff htb rate "${GG}mbit" ceil "${G}mbit" || return 1
+    tc qdisc add dev "$D" parent 1:ffff fq_codel
     # catch-all: весь туннель (все протоколы/порты из SHAPE) без пер-IP правила
-    # -> глобальный класс 1:1. SHAPE = список "protonum:port" (17=udp, 6=tcp);
+    # -> общий класс 1:ffff. SHAPE = список "protonum:port" (17=udp, 6=tcp);
     # фолбэк на один udp/PORT, если SHAPE пуст (старый конфиг без мультипротокола).
     local _tok _pr _po
     [ -n "$SHAPE" ] || SHAPE="17:${PORT}"
     for _tok in $SHAPE; do
         _pr=${_tok%%:*}; _po=${_tok##*:}
         tc filter add dev "$D" parent 1: prio 2 protocol ip u32 \
-            match ip protocol "$_pr" 0xff match ip "$PSEL" "$_po" 0xffff flowid 1:1 || return 1
+            match ip protocol "$_pr" 0xff match ip "$PSEL" "$_po" 0xffff flowid 1:ffff || return 1
     done
 }
 
@@ -481,7 +489,6 @@ klimit_set_tiers() {   # "100 200 500"
     klimit_apply "$(klimit_down)" "$(klimit_up)"
 }
 # Проверка: rate есть среди классов TARIFFS ($2 — список).
-_tariff_has_class() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # Есть ли хоть у одного юзера ненулевой тариф.
 _any_user_tariff() {
     local u
@@ -535,14 +542,16 @@ klimit_apply() {   # down_mbit up_mbit
     port=$(get_port)
     tariffs=$(_all_rates "$tiers")
     shape=$(_klimit_shape_ports "$port")
+    local node; node=$(klimit_node)      # читаем ДО перезаписи конфига — иначе потеряется
     {   echo "DOWN_MBIT=$down"
         echo "UP_MBIT=$up"
+        echo "NODE_MBIT=$node"
         echo "PORT=$port"
         echo "SHAPE=$shape"
         echo "TIERS=$tiers"
         echo "TARIFFS=$tariffs"
     } > "$KLIMIT_CONF"
-    _klimit_write_script "$down" "$up" "$port" "$tariffs" "$shape"
+    _klimit_write_script "$down" "$up" "$port" "$tariffs" "$shape" "$node"
     _klimit_write_unit
     systemctl enable hy2-limit.service &>/dev/null
     bash "$KLIMIT_SCRIPT" apply 2>/dev/null
@@ -579,14 +588,46 @@ klimit_clear() {
 # накладные расходы минимальны (не-udp пакеты отсекаются на первом селекторе).
 # Бонус: `tc filter del prio 1` начисто сносит флат-фильтры (у хеша divisor-таблица
 # «залипала» в ядре и ломала пересборку).
-_reconcile_dev() {   # dev ipkey portsel shape("protonum:port ...")
-    local D="$1" IPK="$2" PSEL="$3" SH="$4" ip rate cid tok pr po
+# Класс на КАЖДЫЙ активный адрес: миноры 0x2001..0x8fff, дети потолка ноды 1:1.
+# Нумеруем подряд: раскладка каждый раз сносится целиком и строится заново, так
+# что привязывать минор к самому адресу незачем. Диапазон ОГРАНИЧЕН сверху — за
+# ним лежат чужие миноры каркаса (0x9999 «без лимита», 0xffff общий класс), и
+# уборка не должна их задеть. 28 тысяч адресов на направление хватает с запасом.
+KLIMIT_IPCLASS_BASE=8192          # 0x2000
+KLIMIT_IPCLASS_MAX=36863          # 0x8fff
+
+# Гарантия класса (htb rate) при потолке ceil. Десятая доля, но не меньше 1 Мбит.
+# Почему rate НЕ равен ceil: пока класс укладывается в собственный rate, HTB не
+# спрашивает родителя — и потолок ноды на таких классах не действует вовсе
+# (проверено: два клиента по 30 при потолке 40 давали 53.7 Мбит/с). Всё, что
+# выше гарантии, класс ЗАНИМАЕТ у родителя, и там потолок уже держит: те же два
+# клиента при rate 3 / ceil 30 дали 36.8. Один клиент в тишине по-прежнему
+# разгоняется до своего ceil.
+_klimit_guarantee() {   # ceil_mbit -> rate_mbit
+    local g=$(( ${1:-0} / 10 )); [ "$g" -lt 1 ] && g=1; echo "$g"
+}
+_reconcile_dev() {   # dev ipkey portsel shape("protonum:port ...") default_mbit
+    local D="$1" IPK="$2" PSEL="$3" SH="$4" DEF="$5" ip rate cid tok pr po n=0 minor
     tc qdisc show dev "$D" 2>/dev/null | grep -q 'htb 1:' || return 0   # каркас классов есть?
     tc filter del dev "$D" parent 1: prio 1 2>/dev/null                 # снести старые пер-IP
+    # Снести пер-IP классы прошлого прохода. Строго после фильтров: класс, на
+    # который ещё ссылается фильтр, ядро удалить не даст.
+    for cid in $(tc class show dev "$D" 2>/dev/null | awk '$1=="class" && $2=="htb" {print $3}'); do
+        minor=$(( 0x${cid#*:} )) 2>/dev/null || continue
+        [ "$minor" -ge "$KLIMIT_IPCLASS_BASE" ] && [ "$minor" -le "$KLIMIT_IPCLASS_MAX" ] \
+            && tc class del dev "$D" classid "$cid" 2>/dev/null
+    done
     for ip in "${!DES[@]}"; do
+        case "$ip" in *:*) continue ;; esac      # IPv6 не шейпим на tc (→ общий класс)
         rate="${DES[$ip]}"
-        case "$ip" in *:*) continue ;; esac      # IPv6 не шейпим на tc (→ глобальный класс)
-        cid=$(printf '1:%x' $(( 0x1000 + rate )))
+        [ "$rate" -gt 0 ] 2>/dev/null || rate="$DEF"   # без тарифа — общий лимит направления
+        [ "$rate" -gt 0 ] 2>/dev/null || continue      # направление без лимита — класс не нужен
+        n=$(( n + 1 ))
+        [ $(( KLIMIT_IPCLASS_BASE + n )) -le "$KLIMIT_IPCLASS_MAX" ] || break   # диапазон кончился
+        cid=$(printf '1:%x' $(( KLIMIT_IPCLASS_BASE + n )))
+        tc class add dev "$D" parent 1:1 classid "$cid" \
+            htb rate "$(_klimit_guarantee "$rate")mbit" ceil "${rate}mbit" 2>/dev/null || continue
+        tc qdisc add dev "$D" parent "$cid" fq_codel 2>/dev/null
         # по фильтру на каждый (proto,port): один IP шейпится на всех протоколах.
         for tok in $SH; do
             pr=${tok%%:*}; po=${tok##*:}
@@ -598,21 +639,26 @@ _reconcile_dev() {   # dev ipkey portsel shape("protonum:port ...")
     return 0
 }
 
-# Разложить активные IP по тарифным классам (вызывается из cron --online-sync и
-# после смены тарифа/каркаса). Без тарифов или без каркаса — тихий no-op.
+# Разложить активные IP по собственным классам (вызывается из cron --online-sync
+# и после смены тарифа/каркаса). Без каркаса — тихий no-op.
+#
+# Раскладываем ВСЕ активные адреса, а не только тарифные: адрес без тарифа
+# получает свой класс на общий лимит направления. Раньше такие адреса оставались
+# на catch-all и делили между собой ОДИН класс на всю ноду — это и был обвал
+# скорости при нескольких клиентах онлайн.
 klimit_reconcile() {
     [ -f "$KLIMIT_CONF" ] || return 0
     command -v tc >/dev/null 2>&1 || return 0
-    local tariffs port dev ifb shape
+    local tariffs port dev ifb shape down up
     tariffs=$(klimit_get TARIFFS)
-    [ -n "$tariffs" ] || return 0                 # нет тарифных классов — раскладывать нечего
+    down=$(klimit_down); up=$(klimit_up)
     port=$(klimit_get PORT); [ -n "$port" ] || return 0
     shape=$(klimit_get SHAPE); [ -n "$shape" ] || shape="17:${port}"   # фолбэк: старый конфиг
     dev=$(ip -o route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
     [ -n "$dev" ] || return 0
     ifb="ifb-hy2"
 
-    # 1) desired: ip -> rate (только юзеры с тарифом, чей rate есть среди классов).
+    # 1) desired: ip -> тариф (0 = тарифа нет, класс будет на общий лимит).
     declare -A DES=()
     # Тариф юзера запоминаем: в authmap десятки строк на одного человека (по
     # строке на IP), а тик спидометра зовёт reconcile каждые 5 секунд.
@@ -624,8 +670,7 @@ klimit_reconcile() {
         [[ "$ts" =~ ^[0-9]+$ ]] && [ "$ts" -lt "$cutoff" ] && continue
         [ -n "${URATE[$u]:-}" ] || URATE[$u]=$(get_user_rate "$u")
         rate="${URATE[$u]}"
-        [ "$rate" -gt 0 ] 2>/dev/null || continue
-        _tariff_has_class "$rate" "$tariffs" || continue
+        [[ "$rate" =~ ^[0-9]+$ ]] || rate=0
         # Несколько юзеров за одним IP с разным тарифом — берём максимум (не режем сильнее).
         if [ -z "${DES[$ip]:-}" ] || [ "$rate" -gt "${DES[$ip]}" ]; then DES[$ip]="$rate"; fi
     done < <( { [ -f "$AUTHMAP_FILE" ] && cat "$AUTHMAP_FILE"
@@ -638,11 +683,13 @@ klimit_reconcile() {
     # раскладку — и тарифные клиенты молча уехали бы в глобальный класс. Поэтому
     # при совпадении подписи дополнительно убеждаемся, что фильтры реально на месте.
     local sig stored=""
+    # Лимиты направлений — часть подписи: они задают скорость классов у адресов
+    # без тарифа, и смена лимита в меню обязана пересобрать раскладку.
     sig=$( { for ip in "${!DES[@]}"; do echo "${ip}=${DES[$ip]}"; done | sort
-            echo "T=$tariffs P=$port S=$shape"; } | md5sum 2>/dev/null | cut -d' ' -f1)
+            echo "T=$tariffs P=$port S=$shape D=$down U=$up"; } | md5sum 2>/dev/null | cut -d' ' -f1)
     [ -f "$KLIMIT_SIG" ] && stored=$(cat "$KLIMIT_SIG" 2>/dev/null)
     if [ -n "$sig" ] && [ "$sig" = "$stored" ]; then
-        # Нет тарифных IP — раскладывать нечего. Есть — и фильтры prio-1 стоят —
+        # Нет активных адресов — раскладывать нечего. Есть — и фильтры prio-1 стоят —
         # действительно актуально, выходим. Иначе (фильтры пропали) пересобираем.
         if [ "${#DES[@]}" -eq 0 ] || tc filter show dev "$dev" parent 1: prio 1 2>/dev/null | grep -q .; then
             return 0
@@ -650,8 +697,8 @@ klimit_reconcile() {
     fi
 
     # 3) пересобрать пер-IP раскладку на обоих направлениях (по всем портам SHAPE).
-    _reconcile_dev "$dev" dst sport "$shape"      # скачивание: клиент — получатель
-    _reconcile_dev "$ifb" src dport "$shape"      # отдача: клиент — источник (через IFB)
+    _reconcile_dev "$dev" dst sport "$shape" "$down"   # скачивание: клиент — получатель
+    _reconcile_dev "$ifb" src dport "$shape" "$up"     # отдача: клиент — источник (через IFB)
     [ -n "$sig" ] && echo "$sig" > "$KLIMIT_SIG"
     return 0
 }
