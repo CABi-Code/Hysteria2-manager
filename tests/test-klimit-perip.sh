@@ -84,3 +84,34 @@ grep -q 'class del.*classid 1:9999' "$LOG" && fail "уборка снесла к
 grep -q 'class del.*classid 1:ffff' "$LOG" && fail "уборка снесла общий класс 1:ffff — catch-all повис"
 
 echo "✅ klimit: класс скорости на каждый адрес, под общим потолком ноды"
+
+# ---- Источники раскладки -----------------------------------------------------
+# Адрес живого клиента обязан попасть в раскладку, даже если ни authmap, ни
+# ips.dat про него не знают: authmap помнит адрес с момента аутентификации
+# (долгая сессия из часового окна выпадает), а ips.dat ведётся по журналу
+# Hysteria — клиента на Xray/TUIC там нет вовсе (P-18).
+: > "$LOG"
+AUTHMAP_FILE="$DATA_DIR/authmap.dat"; IPS_FILE="$DATA_DIR/ips.dat"
+KLIMIT_SIG="$DATA_DIR/sig"
+KLIMIT_CONF="$DATA_DIR/klimit.conf"; printf 'DOWN_MBIT=30\nUP_MBIT=30\n' > "$KLIMIT_CONF"
+printf 'olduser|10.0.0.9|1\n' > "$AUTHMAP_FILE"      # ts=1 — заведомо старее часа
+: > "$IPS_FILE"
+CACHED_ONLINE_IPS='liveuser|203.0.113.7
+ghost|?'
+refresh_online() { :; }
+klimit_get() { case "$1" in PORT) echo 38268 ;; SHAPE) echo "17:38268" ;; TARIFFS) echo "" ;; esac; }
+klimit_down() { echo 30; }; klimit_up() { echo 30; }
+get_user_rate() { echo 0; }
+ip() { echo "default via 10.0.0.1 dev dummy0"; }
+
+klimit_reconcile
+
+grep -q 'match ip dst 203.0.113.7/32' "$LOG" \
+    || fail "адрес клиента, который в сети прямо сейчас, не попал в раскладку"
+grep -q '10.0.0.9' "$LOG" && fail "адрес старее часа всё-таки разложен"
+grep -q '203.0.113.7.*flowid' "$LOG" || fail "для живого адреса не поставлен фильтр"
+# По классу на направление (скачивание на самом интерфейсе, отдача через IFB).
+[ "$(grep -c '^class add' "$LOG")" -eq 2 ] \
+    || fail "классов $(grep -c '^class add' "$LOG"), ожидалось 2 (один адрес × два направления)"
+
+echo "✅ klimit: адрес клиента в сети попадает в раскладку помимо authmap/ips"
