@@ -663,13 +663,21 @@ klimit_reconcile() {
 #     ни тариф не действуют). Сверяем запечённый SHAPE со свежевычисленным.
 # Вызывается при старте менеджера и в --online-sync (протокол могли включить из
 # веб-аппа/бота, без перезапуска TUI).
+#
+# ОТСУТСТВИЕ SHAPE — тоже дрейф, и самый частый. klimit.conf, записанный до
+# появления SHAPE, откатывается на фолбэк «17:$PORT»: шейпится один Hysteria, а
+# VLESS/Trojan/TUIC/SS идут мимо лимита. Раньше ветку закрывал guard
+# [ -n "$saved_shape" ] — нода со старым конфигом не лечилась НИКОГДА: SHAPE ей
+# было взять неоткуда, а без него сравнение не запускалось. Так нода и стояла с
+# глобальным лимитом, который действовал ровно на один протокол из пяти.
 klimit_sync_port() {
     [ -f "$KLIMIT_CONF" ] || return 0
     local saved cur saved_shape cur_shape
     saved=$(klimit_get PORT); cur=$(get_port)
+    [ -n "$cur" ] || return 0     # порт Hysteria не читается — пересобирать не на чем
     saved_shape=$(klimit_get SHAPE); cur_shape=$(_klimit_shape_ports "$cur")
     if { [ -n "$saved" ] && [ "$saved" != "$cur" ]; } || \
-       { [ -n "$saved_shape" ] && [ "$saved_shape" != "$cur_shape" ]; }; then
+       [ "$saved_shape" != "$cur_shape" ]; then
         klimit_apply "$(klimit_down)" "$(klimit_up)"
     fi
     return 0
