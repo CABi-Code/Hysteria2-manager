@@ -160,7 +160,9 @@ freeplan_user_bytes() {   # user -> bytes
     # ПРЯМО СЕЙЧАС, видит его минутно и отключит сама. Нужна точность — публиковать
     # живой кумулятив в publish_stats.
     if [ -d "$PEERS_DIR" ] && compgen -G "$PEERS_DIR/*.stats" >/dev/null 2>&1; then
-        peers=$(awk -F'\t' -v u="$user" 'NF>=4 && $1==u {s+=$3+$4} END{printf "%d", s+0}' "$PEERS_DIR"/*.stats 2>/dev/null)
+        # «%.0f», а не «%d»: mawk (штатный awk в Debian) режет %d по int32, и любой
+        # расход пира больше 2 ГиБ превращался в 2147483647 — квота недосчитывалась.
+        peers=$(awk -F'\t' -v u="$user" 'NF>=4 && $1==u {s+=$3+$4} END{printf "%.0f", s+0}' "$PEERS_DIR"/*.stats 2>/dev/null)
         [[ "$peers" =~ ^[0-9]+$ ]] && total=$(( total + peers ))
     fi
     printf '%s' "$total"
@@ -236,7 +238,19 @@ freeplan_tick() {
             if [ "$state" != "blocked" ]; then
                 disable_user "$user" silent >/dev/null 2>&1
                 declare -F cstate_mark >/dev/null 2>&1 && cstate_mark "$user" disabled
-                declare -F bot_notify_free_blocked >/dev/null 2>&1 && bot_notify_free_blocked "$user" "$(( wks + FREE_WEEK_SEC ))"
+                # Когда доступ вернётся: сброс ТОГО окна, которое выбрано.
+                # Выбраны оба — ждать позднего из них (пока не освободятся оба
+                # лимита, юзер всё равно заблокирован). Раньше здесь всегда
+                # стоял недельный сброс, и выбравшему месячную квоту бот
+                # обещал доступ на три недели раньше, чем он появлялся.
+                local reset=0 mreset
+                [ "$wk_lim" -gt 0 ] && [ "$wk_used" -ge "$wk_lim" ] && reset=$(( wks + FREE_WEEK_SEC ))
+                if [ "$mo_lim" -gt 0 ] && [ "$mo_used" -ge "$mo_lim" ]; then
+                    mreset=$(( mos + FREE_MONTH_SEC ))
+                    [ "$mreset" -gt "$reset" ] && reset=$mreset
+                fi
+                [ "$reset" -gt 0 ] || reset=$(( wks + FREE_WEEK_SEC ))
+                declare -F bot_notify_free_blocked >/dev/null 2>&1 && bot_notify_free_blocked "$user" "$reset"
                 state=blocked; notif=4; changed=1
             fi
         else
@@ -282,7 +296,10 @@ publish_cluster_freeplan() {
 # LWW корректен: у кого свежее решение — того и состояние.
 cluster_apply_freeplan() {
     sub_enabled || return 0
-    free_enabled || return 0
+    # БЕЗ проверки free_enabled: состояние бесплатного тарифа кластерное, а
+    # тарифы у нод свои. Нода, где free=1 не настроен, всё равно обязана знать,
+    # что юзер на бесплатном, — иначе check_expired_users отключит его у себя
+    # (и пришлёт «автоотключение»), пока другие ноды считают его живым.
     local merged
     merged=$(
         { [ -f "$FREEPLAN_FILE" ] && cat "$FREEPLAN_FILE"

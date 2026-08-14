@@ -1,12 +1,12 @@
 # Проектирование
 
 Спроектировано и решено делать, но **кода ещё нет**. Отдельно от
-[guide/](../guide/README.md), чтобы не путать «работает» с «согласовано», и от
-[research/](../research/README.md), где ничего не согласовано вовсе.
+[guide/](../guide/README.md), чтобы не путать «работает» с «согласовано».
 
 | Проект | О чём | Код, который придётся править |
 |---|---|---|
 | [SLOTS/](SLOTS/README.md) | **Слоты**: устройство = свой кред и своя ссылка вместо уникального адреса, отказ на занятом слоте вместо кика. Жёстко работает только на Hysteria — измеренные потолки движков в [guide/DEVICE-LIMITS.md](../guide/DEVICE-LIMITS.md) §5 | `lib/sub_links.sh`, `lib/protocols.sh`, `hysteria-auth.sh`, `lib/online.sh` |
+| [NOTIFY-ROADMAP.md](NOTIFY-ROADMAP.md) | **Уведомления**: чего не хватает клиенту и админу, что сокращает шум (ежедневная сводка вместо поштучных), что зарабатывает (win-back, скидка в последний день). Что уже шлётся — [guide/NOTIFICATIONS.md](../guide/NOTIFICATIONS.md) | `lib/notify.sh`, `lib/tgbot_daemon.sh` + сторона надстройки |
 | [PLACEMENT/](PLACEMENT/README.md) | **Размещение профилей по нодам**: ёмкость ноды, N нод на профиль вместо «все на всех», фазы внедрения, задел под маркет локаций. Разбор проблем — [PROBLEMS.md](PLACEMENT/PROBLEMS.md), веса профилей — [USAGE-CLASSES.md](PLACEMENT/USAGE-CLASSES.md) | `lib/cluster.sh`, `lib/sub_links.sh`, `lib/node.sh`, `webapi/wa_dispatch.py` |
 
 Реализация PLACEMENT упирается в [P-03](../issues/CLUSTER.md#p-03) (нельзя снять

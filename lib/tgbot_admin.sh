@@ -10,7 +10,7 @@ bot_admin_users() {   # chat_id page [message_id]
     local users total pages start
     users=$(get_all_users)
     total=$(printf '%s\n' "$users" | grep -c .)
-    [ "$total" -eq 0 ] && { tg_send "$chat" "Пользователей нет."; return; }
+    [ "$total" -eq 0 ] && { bot_show "$chat" "$mid" "Пользователей нет." "$KB_ADMIN"; return; }
     pages=$(( (total + 7) / 8 )); [ "$page" -gt "$pages" ] && page=$pages; [ "$page" -lt 1 ] && page=1
     start=$(( (page - 1) * 8 + 1 ))
     local online; online=$(api_get "/online")
@@ -30,8 +30,7 @@ bot_admin_users() {   # chat_id page [message_id]
             '[{text:"←",callback_data:$p},{text:$t,callback_data:"a:menu"},{text:"→",callback_data:$n}]')
     fi
     local kb; kb=$(jq -nc --argjson r "$rows" --argjson n "$nav" '{inline_keyboard:($r + (if ($n|length)>0 then [$n] else [] end))}')
-    local text="👥 <b>Пользователи</b> (всего $total)"
-    if [ -n "$mid" ]; then tg_edit "$chat" "$mid" "$text" "$kb"; else tg_send "$chat" "$text" "$kb"; fi
+    bot_show "$chat" "$mid" "👥 <b>Пользователи</b> (всего $total)" "$kb"
 }
 
 bot_admin_user_card() {   # chat_id username [message_id]
@@ -67,11 +66,17 @@ Telegram: ${tglabel:-не привязан}"
         [{text:"🎫 Код привязки",callback_data:("a:code:"+$u)},{text:"🗑 Удалить",callback_data:("a:del:"+$u)}],
         [{text:"↩ К списку",callback_data:"a:users:1"}]
     ]}')
-    if [ -n "$mid" ]; then tg_edit "$chat" "$mid" "$text" "$kb"; else tg_send "$chat" "$text" "$kb"; fi
+    bot_show "$chat" "$mid" "$text" "$kb"
 }
 
-bot_admin_server_status() {   # chat_id
-    local chat="$1" la mem du online total
+# Кнопка возврата в карточку юзера — для экранов, которые её замещают
+# (ссылка, подписка, код привязки).
+bot_kb_back_user() {   # username
+    jq -nc --arg u "$1" '{inline_keyboard:[[{text:"↩ К юзеру",callback_data:("a:u:"+$u)}]]}'
+}
+
+bot_admin_server_status() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}" la mem du online total
     la=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
     mem=$(free -m 2>/dev/null | awk '/^Mem:/{printf "%s/%s МБ", $3, $2}')
     du=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
@@ -83,7 +88,7 @@ bot_admin_server_status() {   # chat_id
     if declare -F klimit_down >/dev/null && { [ "$(klimit_down)" -gt 0 ] || [ "$(klimit_up)" -gt 0 ]; } 2>/dev/null; then
         klimit_active && kl="💚 ↓$(klimit_down)/↑$(klimit_up) Мбит" || kl="🔴 настроен, но не загружен"
     fi
-    tg_send "$chat" "📈 <b>Сервер «$(tg_esc "$(node_name 2>/dev/null || hostname -s)")»</b>
+    bot_show "$chat" "$mid" "📈 <b>Сервер «$(tg_esc "$(node_name 2>/dev/null || hostname -s)")»</b>
 Hysteria: $hyst · онлайн: $online из $total
 LoadAvg: ${la:-?} · RAM: ${mem:-?}
 Диск: ${du:-?}

@@ -20,10 +20,18 @@ bot_extend_user() {   # user days [nonotify] -> печатает новую да
     if [[ "$new" < "$today" ]]; then new="$today"; fi
     set_user_expiry "$user" "$new"
     # Длина текущего периода — для гейтов порогов «за 7 дней / за 1 день».
-    declare -F period_days_set >/dev/null && period_days_set "$user" "$days"
+    # Только для положительных: при укорачивании срока (эскроу подарочных дней)
+    # период оставался отрицательным, и гейты 7д/3д/1д молча съедали ВСЕ
+    # напоминания об истечении — человек узнавал о конце подписки за 12 часов.
+    [ "$days" -gt 0 ] 2>/dev/null && declare -F period_days_set >/dev/null \
+        && period_days_set "$user" "$days"
     # Уведомление об активации/продлении с датой окончания. Прямой Stars-платёж
     # шлёт свою расширенную карточку (передаёт nonotify), чтобы не дублировать.
-    if [ "$quiet" != "nonotify" ] && declare -F bot_notify_activated >/dev/null; then
+    # Отрицательные дни — это СНЯТИЕ срока (подарочная ссылка запирает дни у
+    # дарителя): «Подписка активна» на такое — прямая ложь, о снятии человеку
+    # пишет надстройка («списано N дней»).
+    if [ "$quiet" != "nonotify" ] && [ "$days" -gt 0 ] 2>/dev/null \
+       && declare -F bot_notify_activated >/dev/null; then
         bot_notify_activated "$user" "$new"
     fi
     printf '%s' "$new"
@@ -84,22 +92,22 @@ bot_access_text() {   # username
 bot_kb_client() {
     local buy=''
     bot_sales_on && buy=',{"text":"💳 Купить / продлить","callback_data":"m:buy"}'
-    printf '%s' '{"inline_keyboard":[[{"text":"🔗 Моя ссылка","callback_data":"m:link"},{"text":"📡 Подписка","callback_data":"m:sub"}],[{"text":"📊 Мой статус","callback_data":"m:status"}'"$buy"']]}'
+    printf '%s' '{"inline_keyboard":[[{"text":"🔗 Моя ссылка","callback_data":"m:link"},{"text":"📡 Подписка","callback_data":"m:sub"}],[{"text":"📊 Мой статус","callback_data":"m:status"}'"$buy"'],[{"text":"👤 Меню","callback_data":"m:menu"}]]}'
 }
 KB_ADMIN='{"inline_keyboard":[[{"text":"👥 Пользователи","callback_data":"a:users:1"},{"text":"📈 Сервер","callback_data":"a:stat"}],[{"text":"➕ Добавить (/add)","callback_data":"a:add"},{"text":"🎫 Код привязки (/code)","callback_data":"a:codehelp"}],[{"text":"💰 Тарифы","callback_data":"a:tariffs"}]]}'
 
 # Меню клиента / приветствие.
-bot_client_menu() {   # chat_id
-    local chat="$1" user
+bot_client_menu() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}" user
     user=$(tg_bound_user "$chat")
     if [ -n "$user" ]; then
-        tg_send "$chat" "👤 Аккаунт: <b>$(tg_esc "$user")</b>
+        bot_show "$chat" "$mid" "👤 Аккаунт: <b>$(tg_esc "$user")</b>
 Выберите действие:" "$(bot_kb_client)"
     elif bot_sales_on; then
-        tg_send "$chat" "👋 Привет! Это бот VPN-доступа (Hysteria 2).
+        bot_show "$chat" "$mid" "👋 Привет! Это бот защищённого доступа (Hysteria 2).
 У вас пока нет аккаунта. Можно купить доступ прямо здесь — аккаунт создастся автоматически, или введите код привязки от администратора: <code>/start КОД</code>" '{"inline_keyboard":[[{"text":"💳 Купить доступ","callback_data":"m:buy"}]]}'
     else
-        tg_send "$chat" "👋 Привет! Это бот VPN-доступа (Hysteria 2).
+        bot_show "$chat" "$mid" "👋 Привет! Это бот защищённого доступа (Hysteria 2).
 Чтобы привязать ваш аккаунт, запросите у администратора код и отправьте:
 <code>/start КОД</code>"
     fi
@@ -110,56 +118,72 @@ bot_client_menu() {   # chat_id
 # уведомления о начисленном бонусе. Сообщение шлёт одна сторона — иначе клиент
 # получил бы и приветствие, и меню бота.
 # Мини-апп не открывается по ссылке из директа канала (баг Telegram), поэтому
-# реферальная ссылка ведёт на /start бота. См. надстройка/docs/BOT-START.md.
+# реферальная ссылка ведёт на /start бота. Сторона мини-аппа — в его доках.
 # 0 — приветствие отправлено, 1 — мини-апп не настроен/недоступен (зовите меню).
 bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
-    local url secret body resp
-    url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
-    [ -n "$url" ] && [ -n "$secret" ] || return 1
+    local body resp
     body=$(jq -nc --argjson chat "$1" --argjson tg "$2" \
         --arg sp "${3:-}" --arg un "${4:-}" --arg fn "${5:-}" \
         '{chat_id:$chat, tg_id:$tg, start_param:$sp, username:$un, first_name:$fn}') || return 1
     # Долгий таймаут: в ответе может лежать провижининг нового профиля (~18 с).
-    resp=$(curl -s --max-time 60 -X POST "${url%/}/api/bot/start" \
-        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
-        --data-binary "$body" 2>/dev/null)
+    resp=$(bot_miniapp_post api/bot/start "$body" 60)
     # Telegram легко теряет payload (человек жмёт «START», а не ссылку) — без
     # лога «пришёл без кода» неотличимо от сломанной привязки.
     echo "$(date '+%F %T') miniapp /start: tg=$2 payload='${3:-—}' → ${resp:0:120}"
     [ "$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
 }
 
-# Нажата кнопка в карточке «Вход в веб-версию» (callback_data «wl:ok|no:<id>»).
-# Решение принимает мини-апп: он же и переписывает карточку в чате. Здесь только
-# доставка нажатия — long-polling наш. См. надстройка/docs/WEB-LOGIN.md.
-bot_weblogin_cb() {   # chat_id tg_id message_id action id
-    local url secret body
+# POST готового JSON в мини-апп: общий транспорт для всех «доставок нажатия».
+# Тело ответа уходит в stdout — вызывающий сам решает, что с ним делать.
+# 1 — мини-апп не настроен.
+bot_miniapp_post() {   # path json [timeout]
+    local url secret
     url=$(bot_get MINIAPP_API); secret=$(bot_get MINIAPP_SECRET)
     [ -n "$url" ] && [ -n "$secret" ] || return 1
+    curl -s --max-time "${3:-15}" -X POST "${url%/}/$1" \
+        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
+        --data-binary "$2" 2>/dev/null
+}
+
+# Нажата кнопка в карточке «Вход в веб-версию» (callback_data «wl:ok|no:<id>»).
+# Решение принимает мини-апп: он же и переписывает карточку в чате. Здесь только
+# доставка нажатия — long-polling наш.
+bot_weblogin_cb() {   # chat_id tg_id message_id action id
+    local body
     body=$(jq -nc --argjson chat "$1" --argjson tg "$2" --argjson mid "${3:-0}" \
         --arg act "$4" --arg id "$5" \
         '{chat_id:$chat, tg_id:$tg, message_id:$mid, action:$act, request:$id}') || return 1
-    curl -s --max-time 15 -X POST "${url%/}/api/bot/weblogin" \
-        -H "X-Bot-Secret: $secret" -H 'Content-Type: application/json' \
-        --data-binary "$body" >/dev/null 2>&1
+    bot_miniapp_post api/bot/weblogin "$body" >/dev/null || return 1
+}
+
+# Карточка согласования в личке владельца: нажата кнопка («pr:<действие>:<id>»)
+# или прислан текст правки ответом на карточку (action=text). Как и с входом в
+# веб-версию, решение и перерисовка карточки — на стороне мини-аппа.
+# 0 — мини-апп обработал, 1 — это не про него (сообщение идёт дальше обычным путём).
+bot_review_cb() {   # tg_id message_id action [draft_id] [text]
+    local body
+    body=$(jq -nc --argjson tg "$1" --argjson mid "${2:-0}" --arg act "$3" \
+        --argjson draft "${4:-0}" --arg text "${5:-}" \
+        '{tg_id:$tg, message_id:$mid, action:$act, draft:$draft, text:$text}') || return 1
+    [ "$(bot_miniapp_post api/bot/review "$body" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
 }
 
 # ---------- клиентские действия ----------
-bot_client_link() {   # chat_id
-    local chat="$1" user
+bot_client_link() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}" user
     user=$(tg_bound_user "$chat")
-    [ -z "$user" ] && { tg_send "$chat" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
+    [ -z "$user" ] && { bot_show "$chat" "$mid" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
     if is_user_disabled "$user"; then
-        tg_send "$chat" "⛔ Аккаунт <b>$(tg_esc "$user")</b> отключён$( [ "$(tariff_count)" -gt 0 ] && echo " — продлите доступ: /buy" )."
+        bot_show "$chat" "$mid" "⛔ Аккаунт <b>$(tg_esc "$user")</b> отключён$( [ "$(tariff_count)" -gt 0 ] && echo " — продлите доступ: /buy" )." "$(bot_kb_client)"
         return
     fi
-    tg_send "$chat" "$(bot_access_text "$user")"
+    bot_show "$chat" "$mid" "$(bot_access_text "$user")" "$(bot_kb_client)"
 }
 
-bot_client_status() {   # chat_id
-    local chat="$1" user
+bot_client_status() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}" user
     user=$(tg_bound_user "$chat")
-    [ -z "$user" ] && { tg_send "$chat" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
+    [ -z "$user" ] && { bot_show "$chat" "$mid" "Аккаунт не привязан. Отправьте /start КОД или купите доступ (/buy)."; return; }
     local st exp exps tl tx rx dev oc
     if is_user_disabled "$user"; then st="⛔ отключён"; else st="✅ активен"; fi
     exp=$(get_user_expiry "$user")
@@ -175,7 +199,7 @@ bot_client_status() {   # chat_id
     IFS='|' read -r _ tx rx <<< "$(get_user_traffic "$user")"
     dev=$(get_user_devices "$user")
     oc=$(api_get "/online" | jq -r --arg u "$user" '.[$u] // 0' 2>/dev/null); [[ "$oc" =~ ^[0-9]+$ ]] || oc=0
-    tg_send "$chat" "📊 <b>$(tg_esc "$user")</b>
+    bot_show "$chat" "$mid" "📊 <b>$(tg_esc "$user")</b>
 Статус: $st
 Срок действия: $exps
 Трафик: ↑$(format_bytes "$tx") · ↓$(format_bytes "$rx")
@@ -184,14 +208,14 @@ bot_client_status() {   # chat_id
 }
 
 # Список тарифов кнопками (для покупки).
-bot_buy_menu() {   # chat_id
-    local chat="$1"
+bot_buy_menu() {   # chat_id [message_id]
+    local chat="$1" mid="${2:-}"
     if ! bot_mod_on sales; then
-        tg_send "$chat" "Покупка через бота отключена — доступ оформляется там, где вы его покупали."
+        bot_show "$chat" "$mid" "Покупка через бота отключена — доступ оформляется там, где вы его покупали."
         return
     fi
     if [ "$(tariff_count)" -eq 0 ] 2>/dev/null; then
-        tg_send "$chat" "Тарифы пока не настроены. Свяжитесь с администратором."
+        bot_show "$chat" "$mid" "Тарифы пока не настроены. Свяжитесь с администратором."
         return
     fi
     local kb rows code title days devices price cur
@@ -203,8 +227,8 @@ bot_buy_menu() {   # chat_id
         read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
         jq -nc --arg t "$title — $(tariff_price_str "$price" "$cur")" --arg d "buy:$code" '[{text:$t,callback_data:$d}]'
     done | jq -sc '.')
-    kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:$r}')
-    tg_send "$chat" "💳 <b>Выберите тариф</b>
+    kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:($r + [[{text:"⬅️ Назад",callback_data:"m:menu"}]])}')
+    bot_show "$chat" "$mid" "💳 <b>Выберите тариф</b>
 Оплата: Telegram Stars (⭐) или картой через платёжного провайдера — доступ выдаётся автоматически сразу после оплаты." "$kb"
 }
 
@@ -276,10 +300,10 @@ bot_ym_invoice() {   # chat_id код название цена дней пол�
 }
 
 # Меню выбора валюты оплаты для мультивалютного тарифа (кнопка на валюту).
-bot_buy_currency_menu() {   # chat_id tariff_code
-    local chat="$1" code="$2" row title price cur _opts
+bot_buy_currency_menu() {   # chat_id tariff_code [message_id]
+    local chat="$1" code="$2" mid="${3:-}" row title price cur _opts
     row=$(tariff_get "$code")
-    [ -z "$row" ] && { tg_send "$chat" "Тариф не найден."; return; }
+    [ -z "$row" ] && { bot_show "$chat" "$mid" "Тариф не найден."; return; }
     IFS='|' read -r _ title _ _ price cur _opts <<< "$row"
     read -r price cur <<< "$(tariff_prices_effective "$price" "$cur")"
     local -a pa ca; IFS='/' read -r -a pa <<< "$price"; IFS='/' read -r -a ca <<< "$cur"
@@ -289,36 +313,40 @@ bot_buy_currency_menu() {   # chat_id tariff_code
         [ "$c" = "XTR" ] && label="⭐ $p" || label="$p $c"
         jq -nc --arg t "$label" --arg d "buy:$code:$c" '[{text:$t,callback_data:$d}]'
     done | jq -sc '.')
-    local kb; kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:$r}')
-    tg_send "$chat" "💳 <b>$(tg_esc "$title")</b> — выберите способ оплаты:" "$kb"
+    local kb; kb=$(jq -nc --argjson r "$rows" '{inline_keyboard:($r + [[{text:"⬅️ Назад",callback_data:"m:buy"}]])}')
+    bot_show "$chat" "$mid" "💳 <b>$(tg_esc "$title")</b> — выберите способ оплаты:" "$kb"
 }
 
 # Обработка кнопки «buy:...»: «buy:код» (без валюты) или «buy:код:ВАЛЮТА».
 # Без валюты: одна валюта → сразу счёт; несколько → меню выбора валюты.
-bot_buy_dispatch() {   # chat_id rest(код | код:валюта)
-    local chat="$1" rest="$2" code cur
+bot_buy_dispatch() {   # chat_id rest(код | код:валюта) [message_id]
+    local chat="$1" rest="$2" mid="${3:-}" code cur
     # Второй барьер: кнопка из старого сообщения переживает выключение модуля.
-    bot_mod_on sales || { tg_send "$chat" "Покупка через бота отключена."; return; }
+    bot_mod_on sales || { bot_show "$chat" "$mid" "Покупка через бота отключена."; return; }
     code="${rest%%:*}"
     if [ "$rest" = "$code" ]; then
         local -a ca; read -r -a ca <<< "$(tariff_currencies_of "$code")"
         if [ "${#ca[@]}" -le 1 ]; then bot_send_invoice "$chat" "$code"
-        else bot_buy_currency_menu "$chat" "$code"; fi
+        else bot_buy_currency_menu "$chat" "$code" "$mid"; fi
     else
         cur="${rest#*:}"
         bot_send_invoice "$chat" "$code" "$cur"
     fi
 }
 
-# Пополнение баланса мини-аппа (payload «topup:<tg_id>»): доступ VPN НЕ трогаем,
+# Пополнение баланса мини-аппа (payload «topup:<tg_id>»): сам доступ НЕ трогаем,
 # только пишем строку topup в журнал оплат — её подхватит биллинг мини-аппа
 # (Laravel PollPayments) и зачислит баланс = звёзды × курс. Формат строки тот же,
 # что у обычной оплаты; отличие — code=topup, username=«-» (биллинг матчит по tgid).
+#
+# Клиенту отсюда НЕ пишем: счёт на пополнение выставляет надстройка своим
+# сообщением и сама переписывает его в «зачислено» — наше «оплата получена»
+# было вторым сообщением об одном и том же событии. Админам пишем: журнал
+# оплат ноды — наш.
 bot_fulfill_topup() {   # chat_id tg_id amount currency charge_id
-    local chat="$1" tgid="$2" amount="$3" cur="$4" charge="$5"
+    local _chat="$1" tgid="$2" amount="$3" cur="$4" charge="$5"
     mkdir -p "$DATA_DIR"
     printf '%s|%s|%s|%s|%s|%s|%s\n' "$(date '+%F %T')" "$tgid" "-" "topup" "$amount" "$cur" "$charge" >> "$PAYMENTS_LOG"
-    tg_send "$chat" "✅ <b>Оплата получена</b> — баланс пополняется, обновите приложение через пару секунд."
     bot_notify_admins "💎 <b>Пополнение баланса</b>: tg:${tgid} · ${amount} ${cur} · charge: <code>$(tg_esc "$charge")</code>"
 }
 
@@ -371,7 +399,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
     fi
     newexp=$(bot_extend_user "$user" "$days" nonotify)
     # Тариф ПОДНИМАЕТ лимит устройств, но не опускает: сверх тарифных устройства
-    # докупаются отдельно и за деньги (надстройка, надстройка/docs/DEVICES.md),
+    # докупаются отдельно и за деньги (надстройка),
     # а «поставить ровно тарифное» стирало их при каждой оплате в боте (P-42).
     # Та же болезнь, что была у тарифа скорости (P-19).
     tariff_raise_devices "$user" "$devices"

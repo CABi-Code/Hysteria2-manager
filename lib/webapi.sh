@@ -145,7 +145,7 @@ webapi_menu() {
                 pause "  Enter для продолжения..."
                 ;;
             2)
-                ask name "  Имя ключа (латиница/цифры, например надстройка): "
+                ask name "  Имя ключа (латиница/цифры, например webapp): "
                 [[ "$name" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "  ❌ Недопустимое имя"; pause "  Enter..."; continue; }
                 echo "  Scopes: read (чтение) · users (управление) · payments (журнал оплат)"
                 echo "          telegram (привязки/коды) · tariffs (правка каталога и цен) · * (все)"

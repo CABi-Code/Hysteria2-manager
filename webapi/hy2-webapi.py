@@ -54,6 +54,7 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/tariffs$"), "read", "h_tariffs"),
     ("GET", re.compile(r"^/v1/nodes$"), "read", "h_nodes"),
     ("GET", re.compile(r"^/v1/online$"), "read", "h_online"),
+    ("GET", re.compile(r"^/v1/stats$"), "read", "h_stats"),
     ("GET", re.compile(r"^/v1/users/([^/]+)$"), "read", "h_user"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/subscription$"), "read", "h_user_sub"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/devices$"), "read", "h_devices"),
@@ -87,6 +88,11 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/stream/ticket$"), "read", "h_stream_ticket"),
     ("GET", re.compile(r"^/v1/stream/online$"), None, "h_stream_online"),
 ]
+
+
+# Единственная ветка API, куда пускают по общему секрету кластера, а не по
+# ключу webapi.keys (см. handle_route и wa_core.cluster_auth_ok).
+CLUSTER_AUTH_PREFIX = "/v1/demo"
 
 
 class ApiError(Exception):
@@ -253,6 +259,16 @@ class Handler(BaseHTTPRequestHandler):
         users = online_users()
         return {"users": users, "count": len(users)}
 
+    def h_stats(self):
+        """Сводка по кластеру для витрин: сколько людей в сети сейчас (любых —
+        платных, бесплатных, демо) и сколько трафика прокачано за всё время.
+
+        «В сети» здесь — подключён к любой ноде (connected_users), а не «двигает
+        трафик» как в /v1/online: витрине нужен человек, который сидит с
+        включённым клиентом, даже если он в этот момент ничего не качает.
+        """
+        return {"online": len(connected_users()), "traffic_bytes": total_traffic()}
+
     def h_user(self, name):
         payload = user_payload(need_username(name))
         if payload is None:
@@ -366,13 +382,16 @@ class Handler(BaseHTTPRequestHandler):
         # Демо-профиль гостю (idea 13): рабочий доступ до регистрации, жёстко
         # закапанный по скорости/трафику/времени. Кого пускать (один раз на
         # устройство) решает веб-апп — менеджер просто выдаёт профиль.
+        # Ноду-приёмник выбирает менеджер (lib/demo.sh: demo_pick_node), поэтому
+        # ссылка может вести на любую ноду кластера — её домен в поле node.
         res = self.dispatch("demo-create")
         expires = res.get("expires")
         return {"username": res.get("user"),
                 "subscription_url": res.get("sub_url"),
                 "expires_at": int(expires) if str(expires).isdigit() else None,
                 "cap_bytes": int(res.get("cap") or 0),
-                "rate_mbps": int(res.get("rate") or 0)}
+                "rate_mbps": int(res.get("rate") or 0),
+                "node": res.get("node") or node_host()}
 
     def h_demo_state(self, name, refresh=False):
         """Что сейчас с демо-профилем: состояние, лимит, расход, онлайн.
@@ -381,6 +400,23 @@ class Handler(BaseHTTPRequestHandler):
         случилось). refresh=True сперва пересчитывает трафик (см.
         /v1/users/{name}/refresh)."""
         user = need_username(name)
+        row = demo_row(user)
+        if row is None:
+            raise ApiError(404, "demo_not_found", "демо-профиль не найден")
+
+        # Профиль на другой ноде — спрашиваем её: трафик, TTL и отбор доступа
+        # считает она, а у нас лежит только строка-указатель. Клиенту при этом
+        # ничего не меняется: ручка та же, поля те же.
+        node = demo_node(row)
+        if node and node != node_host():
+            path = "/v1/demo/%s%s" % (urllib.parse.quote(user), "/refresh" if refresh else "")
+            try:
+                data = cluster_request(node, path, "POST" if refresh else "GET")
+            except Exception:
+                raise ApiError(502, "demo_node_unreachable",
+                               "нода демо-профиля не отвечает")
+            return dict(data, username=user, node=node)
+
         refreshed = False
         if refresh:
             try:
@@ -393,7 +429,8 @@ class Handler(BaseHTTPRequestHandler):
         if demo is None:
             raise ApiError(404, "demo_not_found", "демо-профиль не найден")
         return dict(demo, username=user, alive=bool(active),
-                    online=is_online(user) if active else False, refreshed=refreshed)
+                    online=is_online(user) if active else False, refreshed=refreshed,
+                    node=node or node_host())
 
     def h_demo_state_fresh(self, name):
         return self.h_demo_state(name, refresh=True)
@@ -514,6 +551,13 @@ class Handler(BaseHTTPRequestHandler):
                                "метод не поддерживается" if matched else "нет такого эндпоинта (см. docs/guide/API.md)")
             if scope is not None:
                 key = authenticate(self.headers.get("Authorization"))
+                # Соседняя нода приходит не с ключом, а с общим секретом кластера
+                # (тем же, что в cluster_call) — и только за демо: она заводит
+                # профиль у себя по нашему выбору ноды (lib/demo.sh:
+                # demo_create_remote) и отвечает нам о его состоянии.
+                if key is None and path.startswith(CLUSTER_AUTH_PREFIX) \
+                        and cluster_auth_ok(self.headers.get("X-Cluster-Auth")):
+                    key = {"name": "cluster", "scopes": {"read", "users"}}
                 if key is None:
                     raise ApiError(401, "unauthorized", "нужен заголовок Authorization: Bearer <ключ>")
                 if not rate_ok(key["name"], conf()["rate_rpm"]):

@@ -4,6 +4,11 @@
 # Раздаёт /sub/* публично и /cluster/* по X-Cluster-Auth.
 # ================================================
 
+# Значение заголовка, безопасное для Caddyfile: кавычки и обратные слэши в нём
+# развалили бы парсер, а перевод строки — весь блок. Режем, а не экранируем:
+# в URL и параметрах клиентов им делать нечего.
+_caddy_hval() { printf '%s' "$1" | tr -d '"\\\n\r'; }
+
 # Пишет Caddyfile под домен ноды и перезагружает Caddy. Идемпотентно.
 # /sub/* — публично; /cluster/* — только при заголовке X-Cluster-Auth.
 setup_caddy() {
@@ -32,6 +37,28 @@ setup_caddy() {
     local upd
     write_sub_titles >/dev/null
     upd=$(sub_update_hours)
+
+    # Остальные заголовки подписки — общие для всех юзеров: кнопки ссылок и
+    # свободный список (SUB_HEADERS: «имя: значение|имя: значение»), через который
+    # включается любой параметр клиента без правки кода. Значение в кавычки не
+    # берём как есть, а прогоняем через printf %q-безопасный путь: кавычка в
+    # значении иначе развалила бы Caddyfile.
+    local sub_hdrs="" u
+    u=$(sub_support_url);  [ -n "$u" ] && sub_hdrs+="        header support-url \"$(_caddy_hval "$u")\"
+"
+    u=$(sub_page_url);     [ -n "$u" ] && sub_hdrs+="        header profile-web-page-url \"$(_caddy_hval "$u")\"
+"
+    u=$(sub_announce_url); [ -n "$u" ] && sub_hdrs+="        header announce-url \"$(_caddy_hval "$u")\"
+"
+    local hline name val
+    while IFS= read -r hline; do
+        [ -n "$hline" ] || continue
+        name=${hline%%:*}; val=${hline#*:}
+        name=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9-')
+        val=${val# }
+        [ -n "$name" ] && [ -n "$val" ] && sub_hdrs+="        header ${name} \"$(_caddy_hval "$val")\"
+"
+    done <<< "$(printf '%s' "$(sub_headers_extra)" | tr '|' '\n')"
 
     # Web API для внешних приложений (lib/webapi.sh): когда включён — проксируем
     # /api/* на локальный демон. Блок генерируется здесь, а не дописывается извне:
@@ -89,11 +116,10 @@ ${api_block}
         header Content-Type "text/plain; charset=utf-8"
         import ${CADDY_SUBTITLES}
         header profile-update-interval "${upd}"
-        header profile-web-page-url "https://${domain}/"
-        file_server
+${sub_hdrs}        file_server
     }
     handle {
-        respond "Hysteria2 subscription endpoint. Open your personal /sub/<token> URL inside a VPN client (Hiddify, Nekobox, sing-box) as a subscription - not in a browser." 200
+        respond "Subscription endpoint. Open your personal /sub/<token> URL inside a client app (Hiddify, Nekobox, sing-box) as a subscription - not in a browser." 200
     }
 }
 EOF

@@ -51,6 +51,12 @@ Authorization: Bearer hyk_<40 символов>
 Рекомендация: каждому приложению — свой ключ с минимальными scopes (mini-app
 хватает `read,users,payments,telegram`; странице статуса — только `read`).
 
+**Исключение — соседние ноды кластера.** В ветку `/v1/demo*` пускают ещё и по
+заголовку `X-Cluster-Auth` с общим секретом кластера: нода, выбранная приёмником
+демо, заводит профиль у себя по просьбе выдающей ноды
+([DEMO-KEYS.md](DEMO-KEYS.md) §5). Больше этот секрет в API не даёт ничего, и
+ключей `webapi.keys` раздавать по нодам не нужно.
+
 ## Формат ответов
 
 Всегда JSON, UTF-8:
@@ -82,7 +88,7 @@ Authorization: Bearer hyk_<40 символов>
 
 ## Эндпоинты
 
-Во всех примерах: `BASE=https://vpn.example.com/api`,
+Во всех примерах: `BASE=https://node.example.com/api`,
 `H='Authorization: Bearer hyk_...'`.
 
 ### GET /v1/health — живость (без аутентификации)
@@ -99,7 +105,7 @@ curl -H "$H" "$BASE/v1/info"
 ```
 ```json
 {"ok":true,"data":{"manager_version":"3.6","node_name":"frankfurt",
- "node_host":"vpn.example.com","users_active":42,"users_disabled":3,
+ "node_host":"node.example.com","users_active":42,"users_disabled":3,
  "cluster_peers":2}}
 ```
 
@@ -195,9 +201,28 @@ curl -X POST -H "$H" -H 'Content-Type: application/json' "$BASE/v1/pricing" \
 
 ```json
 {"ok":true,"data":{"nodes":[
-  {"name":"frankfurt","host":"vpn.example.com","label":"🇩🇪 Frankfurt","self":true},
+  {"name":"frankfurt","host":"node.example.com","label":"🇩🇪 Frankfurt","self":true},
   {"name":"tokyo","host":"jp.example.com","label":"tokyo","self":false}]}}
 ```
+
+### GET /v1/stats — сводка кластера (scope: read)
+
+Для витрин и статусных страниц: одним запросом — сколько человек в сети прямо
+сейчас (любых: платных, бесплатных, демо) и сколько трафика прокачано за всё
+время всеми пользователями.
+
+```json
+{"ok":true,"data":{"online":12,"traffic_bytes":184739201553}}
+```
+
+`online` здесь — **подключённые к любой ноде** (колонка «online» из своей
+`self.stats` и кэшей пиров, протухшие кэши не читаются), а не «двигают трафик
+прямо сейчас», как в `GET /v1/online`. Витрине нужен человек с включённым
+клиентом, даже если он ничего не качает; счёт по именам, поэтому клиент,
+висящий на всех нодах подписки сразу, — это один человек. `traffic_bytes` —
+сумма tx+rx по локальным счётчикам и кэшам пиров; счётчики кумулятивны, но
+удалённый пользователь уносит свои байты с собой (это витринная цифра, а не
+бухгалтерия).
 
 ### GET /v1/users/{name} — статус пользователя (scope: read)
 
@@ -237,7 +262,7 @@ curl -H "$H" "$BASE/v1/users/alice"
 
 ```json
 {"username":"alice",
- "devices":[{"token":"tok…","url":"https://vpn.example.com/sub/tok…",
+ "devices":[{"token":"tok…","url":"https://node.example.com/sub/tok…",
              "primary":true,"last_ip":"203.0.113.7","last_seen":1785823993}],
  "used":1,"allowed":3,"can_add":true}
 ```
@@ -270,8 +295,8 @@ curl -H "$H" "$BASE/v1/users/alice"
 
 ```json
 {"ok":true,"data":{"username":"alice",
-  "subscription_url":"https://vpn.example.com/sub/tok...",
-  "subscription_urls":["https://vpn.example.com/sub/tok..."],
+  "subscription_url":"https://node.example.com/sub/tok...",
+  "subscription_urls":["https://node.example.com/sub/tok..."],
   "links":["hysteria2://alice:pass@node-a:443/?...#Нода-A | HY2",
            "vless://uuid@node-a:8443?...#Нода-A | VLESS", "..."],
   "direct_links":[
@@ -316,7 +341,7 @@ curl -X POST -H "$H" -H 'Content-Type: application/json' \
 ```
 ```json
 {"ok":true,"data":{"username":"alice","created":true,
-  "password":"...","subscription_url":"https://vpn.example.com/sub/..."}}
+  "password":"...","subscription_url":"https://node.example.com/sub/..."}}
 ```
 
 ### POST /v1/users/{name}/extend — продлить срок (scope: users)
@@ -354,9 +379,17 @@ curl -X POST -H "$H" -H 'Content-Type: application/json' \
 ### POST /v1/demo — выдать демо-профиль (scope: users)
 
 Рабочий доступ гостю **до регистрации и оплаты** (idea 13 веб-аппа): обычный
-пользователь, но закапанный сразу по скорости, трафику и сроку, и живущий
-только на этой ноде. Кого пускать, решает веб-апп — менеджер просто выдаёт.
-Ответ: `username`, `subscription_url`, `expires_at`, `cap_bytes`, `rate_mbps`.
+пользователь, но закапанный сразу по скорости, трафику и сроку. Кого пускать,
+решает веб-апп — менеджер просто выдаёт.
+Ответ: `username`, `subscription_url`, `expires_at`, `cap_bytes`, `rate_mbps`,
+`node`.
+
+Ноду-приёмник **выбирает менеджер** на каждую выдачу (случайно из живых
+кандидатов, см. [DEMO-KEYS.md](DEMO-KEYS.md) §4), поэтому `subscription_url`
+может вести не на ту ноду, которой вы отправили запрос, — её домен приходит в
+поле `node`. Профиль целиком живёт там: трафик, срок и отбор доступа считает
+она. Для клиента API это ничего не меняет — состояние спрашивается там же, где
+профиль выдали.
 
 ### GET /v1/demo/{name} — состояние демо (scope: read)
 
@@ -365,7 +398,7 @@ curl -X POST -H "$H" -H 'Content-Type: application/json' \
   "username":"demo-0tnqekep","state":"active","alive":true,"online":false,
   "created_at":1784741346,"expires_at":1784744946,
   "used_bytes":1048576,"limit_bytes":524288000,"left_bytes":523239424,
-  "refreshed":false}}
+  "refreshed":false,"node":"node-a.example"}}
 ```
 
 Отдельно от `/v1/users/{name}` намеренно: когда лимит исчерпан или время вышло,
@@ -374,6 +407,9 @@ curl -X POST -H "$H" -H 'Content-Type: application/json' \
 доступ; `state` — `active`/`expired`; `used_bytes` считается ровно как в
 `demo_tick` (трафик минус база на момент выдачи), у отобранного — как записано
 в строке.
+
+Профиль, выданный на другой ноде, менеджер спрашивает у неё и отдаёт ответ как
+свой. Если та нода недоступна — `502 demo_node_unreachable`.
 
 ### POST /v1/demo/{name}/refresh — то же, но пересчитав сейчас (scope: read)
 

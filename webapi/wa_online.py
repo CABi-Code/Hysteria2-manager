@@ -132,6 +132,37 @@ def online_users():
         )
 
 
+def connected_users():
+    """Кто ДЕРЖИТ соединение хоть с одной нодой кластера: колонка «online» (число
+    сессий) из своей self.stats и кэшей пиров, плюс активные по трафику прямо
+    сейчас (active_users_raw — на случай, если минутная stats ещё не обновилась).
+
+    Шире, чем online_users(): туда попадают только те, кто прямо сейчас двигает
+    трафик выше порога, — подключённый, но простаивающий клиент оттуда выпадает,
+    и счётчик витрины показывал 0 при живых людях на соседних нодах. Считаем
+    ИМЕНА, а не сессии: клиент пингует все ноды подписки и висит на каждой (P-45),
+    но человек за ними один.
+
+    Протухшие stats (нода молчит дольше STATS_MAX_AGE) не читаем — иначе упавшая
+    нода вечно держала бы своих юзеров «в сети».
+    """
+    users = set(active_users_raw())
+    paths = [data_path("self.stats")]
+    try:
+        paths += [os.path.join(PEERS_DIR, n)
+                  for n in os.listdir(PEERS_DIR) if n.endswith(".stats")]
+    except OSError:
+        pass
+    for path in paths:
+        if not _fresh(path, STATS_MAX_AGE):
+            continue
+        for line in read_lines(path):
+            p = line.split("\t")
+            if len(p) >= 2 and p[0] and p[1].isdigit() and int(p[1]) > 0:
+                users.add(p[0])
+    return users
+
+
 def is_online(user):
     """«Онлайн сейчас» с гистерезисом: active сейчас ИЛИ active наблюдался в
     последние ONLINE_GRACE_SEC. Гистерезис держится в памяти демона (сбрасывается

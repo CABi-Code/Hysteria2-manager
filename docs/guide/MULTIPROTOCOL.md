@@ -111,7 +111,7 @@ TLS. Подробности и замеры — [issues/PROTOCOLS.md P-50](../is
 | ссылка `hysteria2://` | `build_user_link` (`lib/sub_links.sh`) | подписка, манифест пирам, Web API, бот |
 | JSON-конфиг sing-box | `generate_user_config` (`lib/users.sh`) | пункт 8 карточки юзера в TUI |
 
-Правка только одного из них уже стоила [P-52](../issues/PROTOCOLS.md#p-52):
+Правка только одного из них уже стоила [P-74](../issues/PROTOCOLS.md#p-74):
 конфиг уходил с SNI маскарада и сервер рвал хендшейк, пока ссылка на тот же
 ключ работала. Совпадение обоих путей сторожит `tests/test-client-config.sh`.
 
