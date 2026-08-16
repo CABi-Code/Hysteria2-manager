@@ -293,6 +293,11 @@ curl -H "$H" "$BASE/v1/users/alice"
   `label` — подпись ключа (метка ноды из `SUB_TAG_TMPL`), `protocol` — схема URI
   (`hysteria2`/`vless`/`ss`/`tuic`/`trojan`).
 
+Поле `prefer` в том же ответе — какой ключ идёт первым (`«host/протокол»`, пусто =
+порядок как собрался): кабинет помечает «основной» в том же списке, что получил,
+без второго запроса. Ставится через `POST /v1/users/{name}/limits`
+([SUB-PREFER.md](SUB-PREFER.md)).
+
 ```json
 {"ok":true,"data":{"username":"alice",
   "subscription_url":"https://node.example.com/sub/tok...",

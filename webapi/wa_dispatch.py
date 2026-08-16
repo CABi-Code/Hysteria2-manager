@@ -335,6 +335,10 @@ def subscription_payload(user):
         "subscription_url": urls[0] if urls else None,
         "links": raw,               # плоский список строк (обратная совместимость)
         "direct_links": direct,     # структурированные (протокол/хост/метка)
+        # Какой ключ выбран первым («host/протокол», пусто = порядок как собрался).
+        # Здесь же, а не отдельным запросом: кабинет рисует пометку «основной»
+        # ровно в том списке, который только что получил (guide/SUB-PREFER.md).
+        "prefer": user_limits(user).get("prefer", ""),
     }
 
 
