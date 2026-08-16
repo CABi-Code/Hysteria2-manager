@@ -33,7 +33,7 @@
 | [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 16 |
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 9 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 6 |
-| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 11 |
+| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 12 |
 
 ## Сводка
 
@@ -90,6 +90,7 @@
 | [P-50](PROTOCOLS.md#p-50) | Trojan/TUIC/HY2 держались на insecure-флаге, которого у клиентов больше нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-49](OPS.md#p-49) | Модуль, выпавший из состава, остаётся на ноде навсегда | `install.sh` | [ops](OPS.md) | ✅ |
 | [P-51](PROTOCOLS.md#p-51) | Hysteria2 на ноде «жив», но снаружи её домен его не отдаёт | `lib/cluster.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-77](OPS.md#p-77) | `POST /v1/users/{name}/limits` отвечает ~5,5 с — потребитель срывается по таймауту | `webapi/dispatch.sh` | [ops](OPS.md) | 🟡 |
 | [P-76](CLUSTER.md#p-76) | Верхний ключ подписки один для всех, а клиент выбор не запоминает | `lib/sub_links.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-52](CLUSTER.md#p-52) | Нода без бесплатного тарифа отключала того, кто на бесплатном | `lib/expiry.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-53](BILLING.md#p-53) | Снятие дней рапортовалось как «Подписка активна» и глушило напоминания | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
@@ -97,4 +98,4 @@
 | [P-59](BILLING.md#p-59) | Возврат подарочных дней шлёт два уведомления от двух систем | `lib/tgbot_client.sh` | [billing](BILLING.md) | 🟡 |
 | [P-62](CLUSTER.md#p-62) | Расход юзера на других нодах обрезался до 2 ГиБ (mawk, `%d`) | `lib/freeplan.sh` | [cluster](CLUSTER.md) | ✅ |
 
-Следующий свободный номер — **P-77**.
+Следующий свободный номер — **P-78**.

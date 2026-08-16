@@ -136,30 +136,37 @@ case "$verb" in
         printf 'status=disabled\n'
         ;;
 
-    set-limits)  # <user> <devices> <rate_mbps> [prefer]  (hardcheck сохраняется текущий)
-        # prefer — «host/протокол», первый ключ подписки; «-» снимает выбор.
-        # Аргумент опционален: без него сохраняется текущий (иначе кабинет,
-        # меняющий устройства, стирал бы выбранный клиентом сервер).
-        [ $# -eq 3 ] || [ $# -eq 4 ] || fail 64 bad_args "set-limits <user> <devices> <rate> [prefer]"
+    set-limits)  # <user> <devices> <rate_mbps>  (hardcheck сохраняется текущий)
+        [ $# -eq 3 ] || fail 64 bad_args "set-limits <user> <devices> <rate>"
         valid_user "$1"; valid_num "$2"; valid_num "$3"
         db_user_exists "$1" || is_user_disabled "$1" || fail 2 user_not_found "пользователь не найден"
-        _pref=$(get_user_prefer "$1")
-        if [ $# -eq 4 ]; then
-            _pref="$4"
-            [ "$_pref" = "-" ] && _pref=""
-            [ -z "$_pref" ] || prefer_valid "$_pref" || fail 64 bad_prefer "prefer: «host/протокол» или «-»"
-        fi
         take_lock
-        set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" "" "$3" "$_pref" >/dev/null 2>&1
-        # Порядок ключей живёт в файле подписки — без пересборки клиент увидел бы
-        # старый порядок до ближайшего общего regen (десятки секунд на всех юзеров).
-        regen_user_subscription "$1" >/dev/null 2>&1 || true
+        set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" "" "$3" "$(get_user_prefer "$1")" >/dev/null 2>&1
         write_authlimits >/dev/null 2>&1 || true
         # Пересобрать kernel-лимит: гарантирует HTB-класс под назначенную скорость
         # (иначе тариф без совпадающего класса игнорируется klimit_reconcile) и
         # немедленно раскладывает пер-IP правила. Меню бота делает то же (ui.sh).
         klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1 || true
-        printf 'devices=%s\nrate=%s\nprefer=%s\n' "$(get_user_devices "$1")" "$(get_user_rate "$1")" "$(get_user_prefer "$1")"
+        printf 'devices=%s\nrate=%s\n' "$(get_user_devices "$1")" "$(get_user_rate "$1")"
+        ;;
+
+    set-prefer)  # <user> <«host/протокол»|-> — первый ключ подписки, «-» снять
+        # Отдельно от set-limits намеренно: там пересборка kernel-лимитов и
+        # снимок жёсткой проверки, к порядку ключей отношения не имеющие, а
+        # вместе это уже несколько секунд — дольше, чем клиент ждёт ответ.
+        [ $# -eq 2 ] || fail 64 bad_args "set-prefer <user> <host/протокол|->"
+        valid_user "$1"
+        _pref="$2"; [ "$_pref" = "-" ] && _pref=""
+        [ -z "$_pref" ] || prefer_valid "$_pref" || fail 64 bad_prefer "prefer: «host/протокол» или «-»"
+        db_user_exists "$1" || is_user_disabled "$1" || fail 2 user_not_found "пользователь не найден"
+        take_lock
+        if [ "$_pref" != "$(get_user_prefer "$1")" ]; then
+            set_user_prefer "$1" "$_pref" >/dev/null 2>&1
+            # Порядок живёт в файле подписки: без пересборки клиент увидел бы
+            # старый до ближайшего общего regen (десятки секунд на всех юзеров).
+            regen_user_subscription "$1" >/dev/null 2>&1 || true
+        fi
+        printf 'prefer=%s\n' "$(get_user_prefer "$1")"
         ;;
 
     reset-subscription)  # <user> → sub_url=… (новая ссылка + новые ключи везде)

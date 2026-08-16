@@ -72,6 +72,7 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/enable$"), "users", "h_enable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/disable$"), "users", "h_disable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/prefer$"), "users", "h_prefer"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/reset-subscription$"), "users", "h_reset_sub"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/devices$"), "users", "h_device_add"),
     ("DELETE", re.compile(r"^/v1/users/([^/]+)/devices/([^/]+)$"), "users", "h_device_del"),
@@ -361,16 +362,21 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "invalid_devices", "devices: целое 0..1000")
         if not (is_int(rate) and 0 <= rate <= 100000):
             raise ApiError(400, "invalid_rate", "rate_mbps: целое 0..100000")
-        # prefer — какой ключ идёт в подписке первым, «host/протокол» (P-76).
-        # Поля нет в теле → выбор не трогаем; пустая строка или null → снимаем.
-        args = [user, str(devices), str(rate)]
-        if "prefer" in self.body:
-            prefer = self.body.get("prefer") or ""
-            if not isinstance(prefer, str) or (prefer and not RE_PREFER.match(prefer)):
-                raise ApiError(400, "invalid_prefer", "prefer: «host/протокол» или пусто")
-            args.append(prefer or "-")   # «-» = снять: пустой аргумент теряется в вызове
-        self.dispatch("set-limits", *args)
+        self.dispatch("set-limits", user, str(devices), str(rate))
         return {"username": user, "limits": user_limits(user)}
+
+    def h_prefer(self, name):
+        # Какой ключ идёт в подписке первым, «host/протокол» (P-76). Пустая
+        # строка или null — снять выбор. Отдельно от limits: там пересборка
+        # kernel-лимитов, которая к порядку ключей отношения не имеет и стоит
+        # секунд, а этот вызов делает клиент из кабинета и ждёт ответа.
+        user = need_username(name)
+        prefer = self.body.get("prefer") or ""
+        if not isinstance(prefer, str) or (prefer and not RE_PREFER.match(prefer)):
+            raise ApiError(400, "invalid_prefer", "prefer: «host/протокол» или пусто")
+        # «-» = снять: пустой аргумент потерялся бы в вызове dispatch.sh.
+        res = self.dispatch("set-prefer", user, prefer or "-")
+        return {"username": user, "prefer": res.get("prefer", "")}
 
     def h_reset_sub(self, name):
         # Новая ссылка + новый пароль (а значит и все производные ключи протоколов).
