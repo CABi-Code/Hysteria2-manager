@@ -361,7 +361,15 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "invalid_devices", "devices: целое 0..1000")
         if not (is_int(rate) and 0 <= rate <= 100000):
             raise ApiError(400, "invalid_rate", "rate_mbps: целое 0..100000")
-        self.dispatch("set-limits", user, str(devices), str(rate))
+        # prefer — какой ключ идёт в подписке первым, «host/протокол» (P-76).
+        # Поля нет в теле → выбор не трогаем; пустая строка или null → снимаем.
+        args = [user, str(devices), str(rate)]
+        if "prefer" in self.body:
+            prefer = self.body.get("prefer") or ""
+            if not isinstance(prefer, str) or (prefer and not RE_PREFER.match(prefer)):
+                raise ApiError(400, "invalid_prefer", "prefer: «host/протокол» или пусто")
+            args.append(prefer or "-")   # «-» = снять: пустой аргумент теряется в вызове
+        self.dispatch("set-limits", *args)
         return {"username": user, "limits": user_limits(user)}
 
     def h_reset_sub(self, name):

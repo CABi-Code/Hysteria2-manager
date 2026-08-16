@@ -90,7 +90,7 @@
 | [P-50](PROTOCOLS.md#p-50) | Trojan/TUIC/HY2 держались на insecure-флаге, которого у клиентов больше нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-49](OPS.md#p-49) | Модуль, выпавший из состава, остаётся на ноде навсегда | `install.sh` | [ops](OPS.md) | ✅ |
 | [P-51](PROTOCOLS.md#p-51) | Hysteria2 на ноде «жив», но снаружи её домен его не отдаёт | `lib/cluster.sh` | [protocols](PROTOCOLS.md) | 🟡 |
-| [P-76](CLUSTER.md#p-76) | Верхний ключ подписки один для всех, а клиент выбор не запоминает | `lib/sub_links.sh` | [cluster](CLUSTER.md) | 🟡 |
+| [P-76](CLUSTER.md#p-76) | Верхний ключ подписки один для всех, а клиент выбор не запоминает | `lib/sub_links.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-52](CLUSTER.md#p-52) | Нода без бесплатного тарифа отключала того, кто на бесплатном | `lib/expiry.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-53](BILLING.md#p-53) | Снятие дней рапортовалось как «Подписка активна» и глушило напоминания | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
 | [P-56](LIMITS.md#p-56) | Исчерпав месячную квоту free, бот обещал возврат доступа через неделю | `lib/freeplan.sh` | [limits](LIMITS.md) | ✅ |

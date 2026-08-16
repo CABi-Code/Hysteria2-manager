@@ -61,9 +61,13 @@ def user_limits(user):
             devices = int(r[1]) if r[1].isdigit() else 1
             hardcheck = 1 if len(r) > 2 and r[2] == "1" else 0
             rate = int(r[3]) if len(r) > 3 and r[3].isdigit() else 0
+            # prefer — «host/протокол», первый ключ подписки (пусто = порядок как
+            # собрался). Поле опциональное: записи старых нод короче.
+            prefer = r[4] if len(r) > 4 else ""
             return {"devices": devices, "hardcheck": bool(hardcheck),
-                    "rate_mbps": rate, "global_mbps": glob}
-    return {"devices": 1, "hardcheck": False, "rate_mbps": 0, "global_mbps": glob}
+                    "rate_mbps": rate, "global_mbps": glob, "prefer": prefer}
+    return {"devices": 1, "hardcheck": False, "rate_mbps": 0, "global_mbps": glob,
+            "prefer": ""}
 
 
 FREE_WEEK_SEC = 604800      # окна бесплатного тарифа — как в lib/freeplan.sh

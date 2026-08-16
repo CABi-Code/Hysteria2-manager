@@ -245,7 +245,7 @@ curl -H "$H" "$BASE/v1/users/alice"
 {"ok":true,"data":{
   "username":"alice","status":"active",
   "expiry":"2026-08-15","days_left":30,"unlimited":false,
-  "limits":{"devices":3,"hardcheck":false,"rate_mbps":200},
+  "limits":{"devices":3,"hardcheck":false,"rate_mbps":200,"prefer":"de.example.net/vless"},
   "traffic":{"tx_bytes":1000500,"rx_bytes":5000600,"total_bytes":6001100},
   "online_connections":2,"online":true,"devices_seen":2}}
 ```
@@ -368,12 +368,26 @@ curl -X POST -H "$H" "$BASE/v1/users/alice/disable"
 ### POST /v1/users/{name}/limits — лимиты (scope: users)
 
 `devices` (0 = глобальный лимит пула), `rate_mbps` (0 = без личного тарифа
-скорости). Непереданные поля сохраняют текущее значение; `hardcheck` через API
-не меняется (только в меню).
+скорости), `prefer` — какой ключ идёт в подписке первым. Непереданные поля
+сохраняют текущее значение; `hardcheck` через API не меняется (только в меню).
 
 ```bash
 curl -X POST -H "$H" -H 'Content-Type: application/json' \
      -d '{"devices":5,"rate_mbps":300}' "$BASE/v1/users/alice/limits"
+```
+
+`prefer` — строка `«host/протокол»`: `host` тот же, по которому кабинет
+группирует ключи по серверам (`host` из `GET /v1/users/{name}/links`), протокол —
+схема ссылки (`hysteria2`, `vless`, `ss`, `tuic`, `trojan`). Пустая строка или
+`null` снимает выбор. Ключа с таким адресом может не быть (нода отвалилась,
+протокол выключили) — подписка просто соберётся в обычном порядке.
+Зачем это нужно и почему выбор хранится на сервере — [SUB-PREFER.md](SUB-PREFER.md).
+
+```bash
+curl -X POST -H "$H" -H 'Content-Type: application/json' \
+     -d '{"prefer":"de.example.net/vless"}' "$BASE/v1/users/alice/limits"
+# {"ok":true,"data":{"username":"alice","limits":{"devices":5,"hardcheck":false,
+#  "rate_mbps":300,"global_mbps":0,"prefer":"de.example.net/vless"}}}
 ```
 
 ### POST /v1/demo — выдать демо-профиль (scope: users)
