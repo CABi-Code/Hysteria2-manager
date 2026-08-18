@@ -58,6 +58,9 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/users/([^/]+)$"), "read", "h_user"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/subscription$"), "read", "h_user_sub"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/devices$"), "read", "h_devices"),
+    # Адреса, которые нода помнит про юзера. Заведено для экрана «мои данные» в
+    # кабинете: человек вправе видеть, что о нём хранится (DATA-RETENTION.md).
+    ("GET", re.compile(r"^/v1/users/([^/]+)/ips$"), "read", "h_user_ips"),
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
     ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
     ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
@@ -287,6 +290,14 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             raise ApiError(404, "user_not_found", "пользователь не найден")
         return payload
+
+    def h_user_ips(self, name):
+        user = need_username(name)
+        # Существование проверяем тем же payload, что и h_user: несуществующему
+        # имени положен 404, а не пустой список (он читался бы как «чисто»).
+        if user_payload(user) is None:
+            raise ApiError(404, "user_not_found", "пользователь не найден")
+        return user_ips(user)
 
     def h_device_add(self, name):
         # Новая ссылка-устройство: свой пароль и свой слот в движке

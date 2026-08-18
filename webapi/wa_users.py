@@ -240,6 +240,67 @@ def total_traffic():
 DEVICES_WINDOW_SEC = 86400
 
 
+def user_ips(user):
+    """Все адреса, которые нода помнит про этого пользователя, — как есть.
+
+    Нужны не менеджеру, а самому человеку: надстройка показывает ему в кабинете
+    список того, что о нём хранится (docs/guide/DATA-RETENTION.md). Отдаём ровно
+    строки ips.dat и кэшей пиров: ip, когда увидели впервые, когда последний раз
+    и сколько подключений. Ничего, кроме адреса, тут и нет — куда он ходил, нода
+    не пишет.
+
+    Дубли между локальным файлом и кэшами пиров сливаем по адресу: один телефон
+    на трёх нодах — это один адрес, а не три строки.
+    """
+    seen = {}
+
+    def consider(row):
+        if len(row) < 4:
+            return
+        ip = row[1]
+        try:
+            first, last, count = int(row[2]), int(row[3]), int(row[4]) if len(row) > 4 else 1
+        except ValueError:
+            return
+        cur = seen.get(ip)
+        if cur is None:
+            seen[ip] = {"ip": ip, "first_seen": first, "last_seen": last, "count": count}
+            return
+        cur["first_seen"] = min(cur["first_seen"], first)
+        cur["last_seen"] = max(cur["last_seen"], last)
+        cur["count"] += count
+
+    for r in pipe_rows(data_path("ips.dat"), 2):
+        if r[0] == user:
+            consider(r)
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".ips"):
+            for r in pipe_rows(os.path.join(PEERS_DIR, name), 2):
+                if r[0] == user:
+                    consider(r)
+
+    rows = sorted(seen.values(), key=lambda x: x["last_seen"], reverse=True)
+
+    return {"username": user, "ips": rows, "retention_days": ips_retention_days()}
+
+
+def ips_retention_days():
+    """Сколько дней нода держит адрес — читаем из того же lib/ip_tracking.sh,
+    чтобы кабинет не обещал срок, который давно поменяли в коде."""
+    try:
+        with open(os.path.join(MANAGER_DIR, "lib", "ip_tracking.sh"), encoding="utf-8") as fh:
+            m = re.search(r'IPS_RETENTION_DAYS="\$\{IPS_RETENTION_DAYS:-(\d+)\}"', fh.read())
+            if m:
+                return int(m.group(1))
+    except OSError:
+        pass
+    return None
+
+
 def user_ip_count(user, window_sec=DEVICES_WINDOW_SEC):
     cutoff = time.time() - window_sec
     ips = set()
