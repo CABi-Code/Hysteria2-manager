@@ -32,6 +32,14 @@ DEMO_TTL_MIN="${DEMO_TTL_MIN:-60}"
 DEMO_KEEP_SEC="${DEMO_KEEP_SEC:-86400}"     # сколько держать строку после отбора
 DEMO_REMOTE_TIMEOUT="${DEMO_REMOTE_TIMEOUT:-15}"   # ждём ноду-приёмник, сек
 
+# Сколько демо разрешено держать живыми одновременно. Это ЕДИНСТВЕННЫЙ барьер,
+# который фармер не обходит ничем со своей стороны: все остальные (секрет
+# устройства, отпечаток, счётчик по IP+UA) стоят на данных, которые присылает он
+# сам, а капча по IP снимается прокси-пулом. Потолок считается по этой ноде и
+# держит фарм в известных рамках: TTL час, значит это же число — потолок выдач
+# в час. Упёрлись — гость получает отказ, а не бесконечную очередь профилей.
+DEMO_MAX_ACTIVE="${DEMO_MAX_ACTIVE:-50}"
+
 demo_enabled() { sub_enabled; }   # без подписки отдавать гостю нечего
 
 demo_row()   { awk -F'|' -v u="$1" '$1==u{print; exit}' "$DEMOS_DB" 2>/dev/null; }
@@ -51,6 +59,13 @@ demo_remove() { sed -i "/^${1}|/d" "$DEMOS_DB" 2>/dev/null; }
 
 # Сколько демо сейчас раздано (для лимита/статистики).
 demo_active_count() { awk -F'|' '$2=="active"' "$DEMOS_DB" 2>/dev/null | grep -c .; }
+
+# Потолок выбран. Считаем по строкам active: выдохшиеся demo_tick переводит в
+# expired раз в минуту, так что место освобождается само.
+demo_at_capacity() {
+    [ "${DEMO_MAX_ACTIVE:-0}" -gt 0 ] || return 1
+    [ "$(demo_active_count)" -ge "$DEMO_MAX_ACTIVE" ]
+}
 
 # ---- Выбор ноды-приёмника -------------------------------------------------
 # Кандидаты — DEMO_NODES из node.conf: «host,host». Пусто = только эта нода, то
@@ -95,6 +110,7 @@ demo_pick_node() {
 # Печатает key=value: user, sub_url, expires, cap, rate, node.
 demo_create() {
     demo_enabled || return 1
+    demo_at_capacity && return 2
     local node; node=$(demo_pick_node)
     if [ -n "$node" ] && [ "$node" != "$(node_host)" ]; then
         demo_create_remote "$node" && return 0

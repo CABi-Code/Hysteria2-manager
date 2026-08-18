@@ -223,7 +223,14 @@ case "$verb" in
         [ $# -eq 0 ] || fail 64 bad_args "demo-create"
         sub_enabled || fail 3 sub_disabled "подписка на ноде не настроена"
         take_lock
-        out=$(demo_create) || fail 1 demo_failed "не удалось выдать демо"
+        # Потолок живых демо (DEMO_MAX_ACTIVE) — не поломка, а сработавшая
+        # защита от фарма: отдаём 3 (конфликт состояния → 409 у Web API), чтобы
+        # код demo_capacity дошёл до гостя и тот увидел «попробуйте позже», а не
+        # «ошибка менеджера».
+        out=$(demo_create) || {
+            [ $? -eq 2 ] && fail 3 demo_capacity "демо сейчас все заняты, попробуйте позже"
+            fail 1 demo_failed "не удалось выдать демо"
+        }
         [ -n "$out" ] || fail 1 demo_failed "пустой ответ demo_create"
         printf '%s\n' "$out"
         ;;
