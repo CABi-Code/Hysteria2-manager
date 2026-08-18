@@ -27,6 +27,7 @@
 | [YOOMONEY.md](YOOMONEY.md) | **Приём рублей через ЮMoney**: продажа тарифов без платёжного провайдера (личный кошелёк, метка платежа, опрос истории) | `lib/yoomoney.sh`, `lib/tgbot_client.sh`, `lib/tgbot_menu.sh` |
 | [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи**: `demo_create()`, таблица `DEMOS_DB`, выбор ноды-приёмника (`DEMO_NODES`), выдача на соседней ноде, enforcement капов минутным тиком, грейс-сутки и авто-purge | `lib/demo.sh`, `webapi/hy2-webapi.py` |
 | [CRON.md](CRON.md) | **Периодические задачи и цена одного тика**: расписание кронов, замок `cron_lock` (один живой прогон на режим), правила против форков в циклах, отказ от лишней работы, ориентиры по времени | `lib/cron.sh`, `hy2-manager.sh`, `lib/config.sh`, `lib/online.sh` |
+| [DATA-RETENTION.md](DATA-RETENTION.md) | **Следы пользователя на ноде**: полный список того, что записывается про человека, и срок жизни каждой записи; чего не пишется вовсе (адреса назначения) и почему уровень лога ядер — не вопрос вкуса | `lib/ip_tracking.sh`, `lib/protocols.sh`, `lib/users.sh` |
 | [MAINTENANCE.md](MAINTENANCE.md) | **Эксплуатационная гигиена**: ротация логов, временные файлы с `$BASHPID`, retention истории IP, пин и сверка версий ядер | `install.sh`, `lib/ip_tracking.sh`, `lib/publish.sh`, `lib/protocols.sh` |
 
 ## Порядок чтения для нового человека

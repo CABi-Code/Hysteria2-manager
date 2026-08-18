@@ -6,8 +6,10 @@
 # Сколько держим запись об IP после последнего появления. Мобильный клиент
 # меняет адрес по нескольку раз в день, и без срока файл только рос — а всё,
 # что по нему считают (уникальные IP, «IP за неделю», антиабуз), смотрит
-# максимум на неделю назад.
-IPS_RETENTION_DAYS="${IPS_RETENTION_DAYS:-30}"
+# максимум на неделю назад. Отсюда и срок: 30 дней были данными, которые никто
+# не читает, а адрес пользователя — не тот остаток, который стоит хранить
+# «на всякий случай» (P-79).
+IPS_RETENTION_DAYS="${IPS_RETENTION_DAYS:-7}"
 
 # Сколько держим записи в ЖИВОМ маппинге user→IP (authmap.dat). Он не история, а
 # рабочая таблица: klimit_reconcile смотрит на час назад, счётчик устройств — на
@@ -25,6 +27,38 @@ AUTHMAP_RETENTION_DAYS="${AUTHMAP_RETENTION_DAYS:-2}"
 # чинится тем же способом. Держим короче: для решения «слот занят» нужна только
 # последняя запись, а история тут ни на что не влияет.
 SLOTMAP_RETENTION_HOURS="${SLOTMAP_RETENTION_HOURS:-6}"
+
+# Сколько живёт системный журнал ноды (P-79). Не косметика и не место на диске:
+# ядро Hysteria пишет в него «client connected {addr, id}» — связку «адрес ↔ имя
+# пользователя ↔ время», и без ограничения journald держит её месяцами. Выключить
+# эти строки нельзя: из них collect_ips и строит ips.dat. Значит единственный
+# рычаг — срок. Сбор идёт раз в 30 минут, инкрементально; трёх суток запаса
+# хватает на любой простой крона, а всё, что старше, сервису уже не нужно —
+# оно нужно только тому, кто придёт за журналом.
+JOURNAL_RETENTION_DAYS="${JOURNAL_RETENTION_DAYS:-3}"
+JOURNALD_DROPIN="/etc/systemd/journald.conf.d/10-hy2-retention.conf"
+
+# Ставит срок хранения журнала. Идемпотентна: файл на месте и совпадает —
+# выходим молча, поэтому её дёшево звать на каждом старте менеджера. Правит
+# журнал ноды целиком, а не только своих юнитов: journald нарезает срок на
+# хранилище, а не на отдельный сервис.
+journal_retention_ensure() {
+    command -v journalctl >/dev/null 2>&1 || return 0
+    local want
+    want="# Поставлено hy2-manager (P-79): в журнале лежат связки «IP ↔ юзер».
+# Срок — JOURNAL_RETENTION_DAYS в lib/ip_tracking.sh.
+[Journal]
+MaxRetentionSec=${JOURNAL_RETENTION_DAYS}d"
+
+    [ "$(cat "$JOURNALD_DROPIN" 2>/dev/null)" = "$want" ] && return 0
+
+    mkdir -p "$(dirname "$JOURNALD_DROPIN")" 2>/dev/null || return 0
+    printf '%s\n' "$want" > "$JOURNALD_DROPIN" 2>/dev/null || return 0
+    # MaxRetentionSec применяется на ротации, то есть к уже накопленному — не
+    # раньше следующего файла. Поэтому явный vacuum: он и подрезает прошлое.
+    systemctl restart systemd-journald >/dev/null 2>&1
+    journalctl --vacuum-time="${JOURNAL_RETENTION_DAYS}d" >/dev/null 2>&1
+}
 slotmap_trim() {
     [ -s "$SLOTMAP_FILE" ] || return 0
     local cut tmp owner group
