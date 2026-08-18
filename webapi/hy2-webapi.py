@@ -43,6 +43,7 @@ from wa_users import *  # noqa: E402,F403
 from wa_online import *  # noqa: E402,F403
 from wa_online import _stream_cv, _stream_subs, _stream_state, _stream_samples, _stream_watcher, stream_payload, user_nodes  # noqa: E402
 from wa_payload import *  # noqa: E402,F403
+from wa_footprint import footprint  # noqa: E402
 from wa_dispatch import *  # noqa: E402,F403
 
 # ---------- HTTP ----------
@@ -61,6 +62,10 @@ ROUTES = [
     # Адреса, которые нода помнит про юзера. Заведено для экрана «мои данные» в
     # кабинете: человек вправе видеть, что о нём хранится (DATA-RETENTION.md).
     ("GET", re.compile(r"^/v1/users/([^/]+)/ips$"), "read", "h_user_ips"),
+    # Полный след человека на узле — для экрана «Мои данные» в кабинете.
+    ("GET", re.compile(r"^/v1/users/([^/]+)/footprint$"), "read", "h_user_footprint"),
+    # Забыть адреса старше суток. Свежие не трогаются: на них счёт устройств.
+    ("DELETE", re.compile(r"^/v1/users/([^/]+)/ips$"), "users", "h_user_ips_forget"),
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
     ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
     ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
@@ -298,6 +303,20 @@ class Handler(BaseHTTPRequestHandler):
         if user_payload(user) is None:
             raise ApiError(404, "user_not_found", "пользователь не найден")
         return user_ips(user)
+
+    def h_user_footprint(self, name):
+        user = need_username(name)
+        if user_payload(user) is None:
+            raise ApiError(404, "user_not_found", "пользователь не найден")
+        return footprint(user)
+
+    def h_user_ips_forget(self, name):
+        user = need_username(name)
+        res = self.dispatch("ips-forget", user)
+
+        return {"username": user, "removed": int(res.get("removed") or 0),
+                "left": int(res.get("left") or 0),
+                "kept_newer_than_hours": 24}
 
     def h_device_add(self, name):
         # Новая ссылка-устройство: свой пароль и свой слот в движке

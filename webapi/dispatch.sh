@@ -295,6 +295,21 @@ case "$verb" in
         printf 'token=%s\n' "$tok"
         ;;
 
+    ips-forget)  # <user> — забыть адреса старше активного окна (просьба самого юзера)
+        # Свежие записи не трогаем намеренно: на них стоит счёт устройств и
+        # пер-IP шейпинг, и «забыть» стало бы кнопкой снятия лимита. Подробности
+        # и границы — в комментарии ips_forget (lib/ip_tracking.sh).
+        [ $# -eq 1 ] || fail 64 bad_args "ips-forget <user>"
+        valid_user "$1"
+        db_user_exists "$1" || fail 2 user_not_found "пользователь не найден"
+        take_lock
+        res=$(ips_forget "$1") || fail 1 forget_failed "не удалось переписать файл адресов"
+        # Публикация: соседи получат подрезанную копию ближайшей синхронизацией,
+        # иначе их копия так и осталась бы с уже забытыми адресами.
+        publish_ips >/dev/null 2>&1 || true
+        printf 'removed=%s\nleft=%s\n' "${res%%|*}" "${res##*|}"
+        ;;
+
     link-del)  # <user> <token> (основную ссылку снять нельзя)
         [ $# -eq 2 ] || fail 64 bad_args "link-del <user> <token>"
         valid_user "$1"
