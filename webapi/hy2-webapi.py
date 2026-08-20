@@ -43,6 +43,7 @@ from wa_users import *  # noqa: E402,F403
 from wa_online import *  # noqa: E402,F403
 from wa_online import _stream_cv, _stream_subs, _stream_state, _stream_samples, _stream_watcher, stream_payload, user_nodes  # noqa: E402
 from wa_payload import *  # noqa: E402,F403
+from wa_footprint import footprint  # noqa: E402
 from wa_dispatch import *  # noqa: E402,F403
 
 # ---------- HTTP ----------
@@ -58,6 +59,13 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/users/([^/]+)$"), "read", "h_user"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/subscription$"), "read", "h_user_sub"),
     ("GET", re.compile(r"^/v1/users/([^/]+)/devices$"), "read", "h_devices"),
+    # Адреса, которые нода помнит про юзера. Заведено для экрана «мои данные» в
+    # кабинете: человек вправе видеть, что о нём хранится (DATA-RETENTION.md).
+    ("GET", re.compile(r"^/v1/users/([^/]+)/ips$"), "read", "h_user_ips"),
+    # Полный след человека на узле — для экрана «Мои данные» в кабинете.
+    ("GET", re.compile(r"^/v1/users/([^/]+)/footprint$"), "read", "h_user_footprint"),
+    # Забыть адреса старше суток. Свежие не трогаются: на них счёт устройств.
+    ("DELETE", re.compile(r"^/v1/users/([^/]+)/ips$"), "users", "h_user_ips_forget"),
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
     ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
     ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
@@ -72,6 +80,7 @@ ROUTES = [
     ("POST", re.compile(r"^/v1/users/([^/]+)/enable$"), "users", "h_enable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/disable$"), "users", "h_disable"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/limits$"), "users", "h_limits"),
+    ("POST", re.compile(r"^/v1/users/([^/]+)/prefer$"), "users", "h_prefer"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/reset-subscription$"), "users", "h_reset_sub"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/devices$"), "users", "h_device_add"),
     ("DELETE", re.compile(r"^/v1/users/([^/]+)/devices/([^/]+)$"), "users", "h_device_del"),
@@ -287,6 +296,28 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, "user_not_found", "пользователь не найден")
         return payload
 
+    def h_user_ips(self, name):
+        user = need_username(name)
+        # Существование проверяем тем же payload, что и h_user: несуществующему
+        # имени положен 404, а не пустой список (он читался бы как «чисто»).
+        if user_payload(user) is None:
+            raise ApiError(404, "user_not_found", "пользователь не найден")
+        return user_ips(user)
+
+    def h_user_footprint(self, name):
+        user = need_username(name)
+        if user_payload(user) is None:
+            raise ApiError(404, "user_not_found", "пользователь не найден")
+        return footprint(user)
+
+    def h_user_ips_forget(self, name):
+        user = need_username(name)
+        res = self.dispatch("ips-forget", user)
+
+        return {"username": user, "removed": int(res.get("removed") or 0),
+                "left": int(res.get("left") or 0),
+                "kept_newer_than_hours": 24}
+
     def h_device_add(self, name):
         # Новая ссылка-устройство: свой пароль и свой слот в движке
         # (hy2-manager/docs/guide/SLOTS.md). Лимит — по числу устройств юзера,
@@ -363,6 +394,19 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "invalid_rate", "rate_mbps: целое 0..100000")
         self.dispatch("set-limits", user, str(devices), str(rate))
         return {"username": user, "limits": user_limits(user)}
+
+    def h_prefer(self, name):
+        # Какой ключ идёт в подписке первым, «host/протокол» (P-76). Пустая
+        # строка или null — снять выбор. Отдельно от limits: там пересборка
+        # kernel-лимитов, которая к порядку ключей отношения не имеет и стоит
+        # секунд, а этот вызов делает клиент из кабинета и ждёт ответа.
+        user = need_username(name)
+        prefer = self.body.get("prefer") or ""
+        if not isinstance(prefer, str) or (prefer and not RE_PREFER.match(prefer)):
+            raise ApiError(400, "invalid_prefer", "prefer: «host/протокол» или пусто")
+        # «-» = снять: пустой аргумент потерялся бы в вызове dispatch.sh.
+        res = self.dispatch("set-prefer", user, prefer or "-")
+        return {"username": user, "prefer": res.get("prefer", "")}
 
     def h_reset_sub(self, name):
         # Новая ссылка + новый пароль (а значит и все производные ключи протоколов).

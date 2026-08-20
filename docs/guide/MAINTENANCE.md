@@ -9,7 +9,8 @@
 |---|---|---|
 | Ротация логов | `install.sh` → `setup_log_dir()` | `/etc/logrotate.d/hy2-manager` |
 | Временные файлы | `lib/publish.sh`, `lib/cluster.sh`, `lib/traffic.sh`, `lib/sub_links.sh`, `lib/antiabuse.sh`, `lib/devlimits.sh`, `lib/protocols.sh` | суффикс `$BASHPID` |
-| Retention IP | `lib/ip_tracking.sh` → `_ips_merge()` | `IPS_RETENTION_DAYS` (30) |
+| Retention IP | `lib/ip_tracking.sh` → `_ips_merge()` | `IPS_RETENTION_DAYS` (7) |
+| Срок жизни журнала | `lib/ip_tracking.sh` → `journal_retention_ensure()` | `MaxRetentionSec` (3 дня) |
 | Версии ядер | `lib/protocols.sh` → `proto_install_*` | `XRAY_VERSION`, `SINGBOX_VERSION` |
 
 ---
@@ -66,9 +67,15 @@ awk писал в один файл, `mv` искал другой, `rates.dat` �
 
 `ips.dat` и `subips.dat` — «ключ|ip|first|last|count». Мобильный клиент меняет
 адрес по нескольку раз в день, поэтому без срока файлы только росли. `_ips_merge`
-выбрасывает записи, у которых `last` старше `IPS_RETENTION_DAYS` (30). Всё, что
+выбрасывает записи, у которых `last` старше `IPS_RETENTION_DAYS` (7). Всё, что
 по ним считают — уникальные IP в карточке, «IP за неделю» по ссылке, антиабуз —
-смотрит максимум на неделю назад, так что месяц с запасом.
+смотрит максимум на неделю назад; было 30 дней, то есть три недели данных,
+которые не читает никто ([P-79](../issues/OPS.md#p-79)).
+
+Полный список того, что нода вообще пишет про человека, и срок каждой записи —
+в [DATA-RETENTION.md](DATA-RETENTION.md). Там же журнал systemd: он держит
+связку «адрес ↔ имя профиля» и живёт три дня не сам по себе, а потому что это
+ставит `journal_retention_ensure()`.
 
 Заодно слияние стало **одним проходом awk**: раньше на каждую строку журнала шли
 `grep` + `sed -i`, то есть полная перезапись файла на каждое подключение.

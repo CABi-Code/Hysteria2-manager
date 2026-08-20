@@ -141,13 +141,32 @@ case "$verb" in
         valid_user "$1"; valid_num "$2"; valid_num "$3"
         db_user_exists "$1" || is_user_disabled "$1" || fail 2 user_not_found "пользователь не найден"
         take_lock
-        set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" "" "$3" >/dev/null 2>&1
+        set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" "" "$3" "$(get_user_prefer "$1")" >/dev/null 2>&1
         write_authlimits >/dev/null 2>&1 || true
         # Пересобрать kernel-лимит: гарантирует HTB-класс под назначенную скорость
         # (иначе тариф без совпадающего класса игнорируется klimit_reconcile) и
         # немедленно раскладывает пер-IP правила. Меню бота делает то же (ui.sh).
         klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1 || true
         printf 'devices=%s\nrate=%s\n' "$(get_user_devices "$1")" "$(get_user_rate "$1")"
+        ;;
+
+    set-prefer)  # <user> <«host/протокол»|-> — первый ключ подписки, «-» снять
+        # Отдельно от set-limits намеренно: там пересборка kernel-лимитов и
+        # снимок жёсткой проверки, к порядку ключей отношения не имеющие, а
+        # вместе это уже несколько секунд — дольше, чем клиент ждёт ответ.
+        [ $# -eq 2 ] || fail 64 bad_args "set-prefer <user> <host/протокол|->"
+        valid_user "$1"
+        _pref="$2"; [ "$_pref" = "-" ] && _pref=""
+        [ -z "$_pref" ] || prefer_valid "$_pref" || fail 64 bad_prefer "prefer: «host/протокол» или «-»"
+        db_user_exists "$1" || is_user_disabled "$1" || fail 2 user_not_found "пользователь не найден"
+        take_lock
+        if [ "$_pref" != "$(get_user_prefer "$1")" ]; then
+            set_user_prefer "$1" "$_pref" >/dev/null 2>&1
+            # Порядок живёт в файле подписки: без пересборки клиент увидел бы
+            # старый до ближайшего общего regen (десятки секунд на всех юзеров).
+            regen_user_subscription "$1" >/dev/null 2>&1 || true
+        fi
+        printf 'prefer=%s\n' "$(get_user_prefer "$1")"
         ;;
 
     reset-subscription)  # <user> → sub_url=… (новая ссылка + новые ключи везде)
@@ -204,7 +223,14 @@ case "$verb" in
         [ $# -eq 0 ] || fail 64 bad_args "demo-create"
         sub_enabled || fail 3 sub_disabled "подписка на ноде не настроена"
         take_lock
-        out=$(demo_create) || fail 1 demo_failed "не удалось выдать демо"
+        # Потолок живых демо (DEMO_MAX_ACTIVE) — не поломка, а сработавшая
+        # защита от фарма: отдаём 3 (конфликт состояния → 409 у Web API), чтобы
+        # код demo_capacity дошёл до гостя и тот увидел «попробуйте позже», а не
+        # «ошибка менеджера».
+        out=$(demo_create) || {
+            [ $? -eq 2 ] && fail 3 demo_capacity "демо сейчас все заняты, попробуйте позже"
+            fail 1 demo_failed "не удалось выдать демо"
+        }
         [ -n "$out" ] || fail 1 demo_failed "пустой ответ demo_create"
         printf '%s\n' "$out"
         ;;
@@ -274,6 +300,21 @@ case "$verb" in
         publish_subtokens >/dev/null 2>&1 || true
         write_sub_titles >/dev/null 2>&1 && systemctl reload caddy >/dev/null 2>&1 || true
         printf 'token=%s\n' "$tok"
+        ;;
+
+    ips-forget)  # <user> — забыть адреса старше активного окна (просьба самого юзера)
+        # Свежие записи не трогаем намеренно: на них стоит счёт устройств и
+        # пер-IP шейпинг, и «забыть» стало бы кнопкой снятия лимита. Подробности
+        # и границы — в комментарии ips_forget (lib/ip_tracking.sh).
+        [ $# -eq 1 ] || fail 64 bad_args "ips-forget <user>"
+        valid_user "$1"
+        db_user_exists "$1" || fail 2 user_not_found "пользователь не найден"
+        take_lock
+        res=$(ips_forget "$1") || fail 1 forget_failed "не удалось переписать файл адресов"
+        # Публикация: соседи получат подрезанную копию ближайшей синхронизацией,
+        # иначе их копия так и осталась бы с уже забытыми адресами.
+        publish_ips >/dev/null 2>&1 || true
+        printf 'removed=%s\nleft=%s\n' "${res%%|*}" "${res##*|}"
         ;;
 
     link-del)  # <user> <token> (основную ссылку снять нельзя)

@@ -1,7 +1,8 @@
 #!/bin/bash
 # ================================================
-# Персональные лимиты пользователя: кол-во устройств, «жёсткая проверка» и тариф
-# скорости. Хранятся в USERLIMITS_FILE «user|devices|hardcheck|rate», метки
+# Персональные лимиты пользователя: кол-во устройств, «жёсткая проверка», тариф
+# скорости и предпочитаемый ключ подписки.
+# Хранятся в USERLIMITS_FILE «user|devices|hardcheck|rate|prefer», метки
 # изменения — в USERLIMITS_TS_FILE «user|ts». Синхронизируются по кластеру
 # LWW-по-ts (как срок действия, см. lib/expiry.sh + cluster_apply_userlimits в
 # lib/cluster.sh) — то есть тариф это атрибут ПОДПИСКИ, единый на всех нодах.
@@ -9,6 +10,12 @@
 # hardcheck: 0/1 — отклонять новые устройства сверх лимита на этапе auth.
 # rate: тариф скорости в Мбит/с (0 = нет тарифа → глобальный kernel-лимит).
 #       Применяется на уровне ядра пер-IP через tc (см. klimit_reconcile в perf.sh).
+# prefer: «host/протокол» — какой ключ идёт в подписке первым (пусто = как
+#       собралось). Клиенты вроде Happ при каждом включении берут верхний ключ и
+#       выбор пользователя не помнят, поэтому «мой сервер» — это позиция в
+#       подписке, а не состояние в приложении (P-76, docs/guide/SUB-PREFER.md).
+#       Здесь же, а не отдельным файлом: поле подписки, и кластерная синхронизация
+#       у него ровно та же — иначе выбор терялся бы при перегенерации на пире.
 # ================================================
 
 DEFAULT_DEVICES=1
@@ -47,26 +54,37 @@ get_user_rate() {
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 
+# Предпочитаемый ключ подписки: «host/протокол» (пусто = предпочтения нет).
+# Поле опциональное, старые записи без 5-го поля → пусто.
+prefer_valid() { [[ "$1" =~ ^[A-Za-z0-9._-]+/[a-z0-9]+$ ]]; }
+get_user_prefer() {
+    local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 5)
+    prefer_valid "$v" && echo "$v" || echo ""
+}
+
 # Записать все настройки разом (+ метка времени; пустой ts = «сейчас» + публикация).
 # Аргумент ts — внутренний (применение записи с другой ноды, чтобы не зациклить
 # синхронизацию). Из UI не передаётся → ts=now + публикация. rate опционален —
 # если не передан, берётся текущий (обёртки ниже сохраняют неизменяемые поля).
-set_user_limits() {   # user devices hardcheck [ts] [rate]
-    local user="$1" devices="$2" hard="$3" ts="$4" rate="$5"
+set_user_limits() {   # user devices hardcheck [ts] [rate] [prefer]
+    local user="$1" devices="$2" hard="$3" ts="$4" rate="${5:-}" prefer="${6:-}"
     [[ "$devices" =~ ^[0-9]+$ ]] || devices="$DEFAULT_DEVICES"
     [ "$hard" = "1" ] || hard=0
     [[ "$rate" =~ ^[0-9]+$ ]] || rate=0
+    prefer_valid "$prefer" || prefer=""
     touch "$USERLIMITS_FILE" 2>/dev/null
     sed -i "/^${user}|/d" "$USERLIMITS_FILE" 2>/dev/null
-    echo "${user}|${devices}|${hard}|${rate}" >> "$USERLIMITS_FILE"
+    echo "${user}|${devices}|${hard}|${rate}|${prefer}" >> "$USERLIMITS_FILE"
     userlimits_set_ts "$user" "$ts"
     [ -z "$ts" ] && declare -F publish_cluster_userlimits >/dev/null && publish_cluster_userlimits
 }
 
 # Удобные обёртки: меняем одно поле, остальные берём текущими.
-set_user_devices()   { set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" "" "$(get_user_rate "$1")"; }
-set_user_hardcheck() { set_user_limits "$1" "$(get_user_devices "$1")" "$2" "" "$(get_user_rate "$1")"; }
-set_user_rate()      { set_user_limits "$1" "$(get_user_devices "$1")" "$(get_user_hardcheck "$1")" "" "$2"; }
+set_user_devices()   { set_user_limits "$1" "$2" "$(get_user_hardcheck "$1")" "" "$(get_user_rate "$1")" "$(get_user_prefer "$1")"; }
+set_user_hardcheck() { set_user_limits "$1" "$(get_user_devices "$1")" "$2" "" "$(get_user_rate "$1")" "$(get_user_prefer "$1")"; }
+set_user_rate()      { set_user_limits "$1" "$(get_user_devices "$1")" "$(get_user_hardcheck "$1")" "" "$2" "$(get_user_prefer "$1")"; }
+# Пустая строка — снять предпочтение (клиент вернулся к «как собралось»).
+set_user_prefer()    { set_user_limits "$1" "$(get_user_devices "$1")" "$(get_user_hardcheck "$1")" "" "$(get_user_rate "$1")" "$2"; }
 
 # Поднять лимит устройств до тарифного, НЕ опуская уже имеющийся (P-42).
 # Тариф обещает «не меньше N устройств»; всё, что сверх, человек мог докупить

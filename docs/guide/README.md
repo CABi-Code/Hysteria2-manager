@@ -18,6 +18,7 @@
 | [PEER-HEALTH.md](PEER-HEALTH.md) | **Здоровье пиров**: почему недоступная нода была не видна в TUI, диагноз пира (DNS / TLS / секрет), `.health`, баннер в главном меню | `lib/cluster.sh`, `lib/config.sh`, `hy2-manager.sh` |
 | [CLUSTER-PROTOCOLS.md](CLUSTER-PROTOCOLS.md) | **Состояние протоколов по кластеру**: снимок «включён / слушает / порт» с каждой ноды, обмен через `/cluster/protocols`, экран в меню протоколов и почему внешней пробы портов нет | `lib/protocols.sh`, `lib/cluster.sh`, `lib/ui_protocols.sh` |
 | [CLUSTER-SCOPE.md](CLUSTER-SCOPE.md) | **Область действия настроек в кластере**: локальный профиль против кластерного, что уезжает на другие ноды, правила для нового синхронизируемого поля | `lib/cluster.sh`, `lib/limits.sh`, `lib/ui_users.sh` |
+| [SUB-PREFER.md](SUB-PREFER.md) | **Предпочитаемый ключ подписки**: клиент выбирает сервер позицией в списке (верхний ключ), поле `prefer` рядом с лимитами, `sub_prefer_sort`, выставление через API | `lib/limits.sh`, `lib/sub_links.sh`, `webapi/dispatch.sh` |
 | [NOTIFICATIONS.md](NOTIFICATIONS.md) | **Уведомления бота**: подписка (менеджер) и баланс (надстройка), кастомные эмодзи, канал-DM, как добавить новое уведомление | `lib/notify.sh`, `lib/tgbot*.sh` |
 | [SALES.md](SALES.md) | **Границы продажи**: менеджер — источник правды по каталогу и ценам, надстройка владеет деньгами покупателя; что решает оператор, а что код | `lib/tariffs.sh`, `lib/tgbot*.sh`, `webapi/*` |
 | [TARIFF-PRICING.md](TARIFF-PRICING.md) | **Цена тарифа**: где живёт, мультивалютность, два режима звёздной цены (`fixed` / из рублёвой по курсу) — одна формула для бота и API | `lib/tariffs.sh`, `lib/tgbot_client.sh`, `webapi/wa_dispatch.py` |
@@ -26,6 +27,7 @@
 | [YOOMONEY.md](YOOMONEY.md) | **Приём рублей через ЮMoney**: продажа тарифов без платёжного провайдера (личный кошелёк, метка платежа, опрос истории) | `lib/yoomoney.sh`, `lib/tgbot_client.sh`, `lib/tgbot_menu.sh` |
 | [DEMO-KEYS.md](DEMO-KEYS.md) | **Демо-ключи**: `demo_create()`, таблица `DEMOS_DB`, выбор ноды-приёмника (`DEMO_NODES`), выдача на соседней ноде, enforcement капов минутным тиком, грейс-сутки и авто-purge | `lib/demo.sh`, `webapi/hy2-webapi.py` |
 | [CRON.md](CRON.md) | **Периодические задачи и цена одного тика**: расписание кронов, замок `cron_lock` (один живой прогон на режим), правила против форков в циклах, отказ от лишней работы, ориентиры по времени | `lib/cron.sh`, `hy2-manager.sh`, `lib/config.sh`, `lib/online.sh` |
+| [DATA-RETENTION.md](DATA-RETENTION.md) | **Следы пользователя на ноде**: полный список того, что записывается про человека, и срок жизни каждой записи; чего не пишется вовсе (адреса назначения) и почему уровень лога ядер — не вопрос вкуса | `lib/ip_tracking.sh`, `lib/protocols.sh`, `lib/users.sh` |
 | [MAINTENANCE.md](MAINTENANCE.md) | **Эксплуатационная гигиена**: ротация логов, временные файлы с `$BASHPID`, retention истории IP, пин и сверка версий ядер | `install.sh`, `lib/ip_tracking.sh`, `lib/publish.sh`, `lib/protocols.sh` |
 
 ## Порядок чтения для нового человека

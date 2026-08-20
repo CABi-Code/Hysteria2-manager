@@ -87,6 +87,7 @@ if [ "$1" = "--collect" ]; then
     setup_stats_api
     collect_traffic          # Hysteria + Xray (VLESS/SS2022/Trojan) в общий учёт
     collect_ips
+    journal_retention_ensure  # срок журнала: в нём связка «IP ↔ юзер» (P-79)
     authmap_trim       # живой маппинг user→IP: выбросить записи старше двух суток
     slotmap_trim       # карта занятых слотов: там нужна только последняя запись
     collect_sub_ips    # IP по токенам подписки из access-лога Caddy
@@ -189,6 +190,7 @@ migrate_device_limit        # старый device_limit -> общекласте�
 rates_timer_ensure          # таймер тика скорости (спидометр мини-аппа)
 setup_stats_api
 collect_traffic
+journal_retention_ensure    # срок жизни журнала: в нём связки «IP ↔ юзер» (P-79)
 collect_ips
 collect_sub_ips
 check_expired_users

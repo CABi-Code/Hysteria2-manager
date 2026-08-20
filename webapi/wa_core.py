@@ -33,6 +33,8 @@ RE_USERNAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 RE_TG_ID = re.compile(r"^\d{1,20}$")
 RE_CODE = re.compile(r"^[A-Za-z0-9]{4,64}$")
 RE_CHARGE = re.compile(r"^[A-Za-z0-9_\-.:]{1,128}$")
+# Предпочитаемый ключ подписки: «host/протокол» (prefer_valid в lib/limits.sh).
+RE_PREFER = re.compile(r"^[A-Za-z0-9._-]{1,253}/[a-z0-9]{1,16}$")
 
 _log_lock = threading.Lock()
 _rate_lock = threading.Lock()

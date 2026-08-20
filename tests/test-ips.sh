@@ -91,6 +91,27 @@ else
     echo "  ⏭  jq не установлен — пропуск"
 fi
 
+echo "── забвение адресов по просьбе пользователя (ips_forget)"
+now=$(date +%s)
+old=$(( now - 3 * 86400 ))
+fresh=$(( now - 3600 ))
+cat > "$IPS_FILE" <<EOF
+alice|203.0.113.10|$old|$old|5
+alice|203.0.113.11|$old|$fresh|9
+bob|203.0.113.12|$old|$old|3
+EOF
+printf 'alice:tok1\n' > "$SUBTOKENS_DB"
+cat > "$SUBIPS_FILE" <<EOF
+tok1|203.0.113.30|$old|$old|1
+tok1|203.0.113.31|$old|$fresh|2
+EOF
+res=$(ips_forget alice)
+check "удалена только старая запись" "$res" "1|1"
+check "свежий адрес на месте (на нём счёт устройств)" "$(grep -c '^alice|203.0.113.11|' "$IPS_FILE")" "1"
+check "чужие записи не тронуты" "$(grep -c '^bob|' "$IPS_FILE")" "1"
+check "старый адрес подписки забыт" "$(grep -c '^tok1|203.0.113.30|' "$SUBIPS_FILE")" "0"
+check "свежий адрес подписки остался" "$(grep -c '^tok1|203.0.113.31|' "$SUBIPS_FILE")" "1"
+
 echo ""
 [ "$FAIL" = 0 ] && echo "✅ Все проверки пройдены" || echo "❌ Есть ошибки"
 exit "$FAIL"

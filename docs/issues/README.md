@@ -30,10 +30,10 @@
 | Файл | О чём | Проблем |
 |---|---|:--:|
 | [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 10 |
-| [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 15 |
+| [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 17 |
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 11 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 6 |
-| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 14 |
+| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 17 |
 
 ## Сводка
 
@@ -41,10 +41,12 @@
 
 | # | Проблема | Где | Тема | Статус |
 |:--:|---|---|---|:--:|
+| [P-79](OPS.md#p-79) | Журнал ноды хранил связку «адрес ↔ имя пользователя ↔ куда ходил» | `lib/protocols.sh` | [ops](OPS.md) | ✅ |
 | [P-37](OPS.md#p-37) | Сбор трафика обнулял счётчики движков — спидометр падал в ноль при открытом TUI | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
 | [P-38](CLUSTER.md#p-38) | По кластеру ездил только Hysteria-онлайн: VLESS/TUIC-юзеры офлайн для соседей | `lib/publish.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-71](LIMITS.md#p-71) | Глобальный лимит скорости — один на всю ноду, а не на клиента | `lib/perf.sh` | [limits](LIMITS.md) | ✅ |
 | [P-70](LIMITS.md#p-70) | Нода без `SHAPE` шейпила один Hysteria — остальные протоколы мимо лимита | `lib/perf.sh` | [limits](LIMITS.md) | ✅ |
+| [P-80](CLUSTER.md#p-80) | Имя профиля нельзя сменить: в кластере оно ничем не переносится | `lib/users.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-32](CLUSTER.md#p-32) | Нода с самоподписанным сертификатом не лечится сама | `lib/caddy.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-01](PROTOCOLS.md#p-01) | TUIC рестартует при любом изменении состава юзеров | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-03](CLUSTER.md#p-03) | Нельзя снять юзера с одной ноды — только со всего кластера | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🔴 |
@@ -90,6 +92,9 @@
 | [P-50](PROTOCOLS.md#p-50) | Trojan/TUIC/HY2 держались на insecure-флаге, которого у клиентов больше нет | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-49](OPS.md#p-49) | Модуль, выпавший из состава, остаётся на ноде навсегда | `install.sh` | [ops](OPS.md) | ✅ |
 | [P-51](PROTOCOLS.md#p-51) | Hysteria2 на ноде «жив», но снаружи её домен его не отдаёт | `lib/cluster.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-84](OPS.md#p-84) | `footprint` отдаёт наружу имена нераспознанных файлов `DATA_DIR` | `webapi/wa_footprint.py` | [ops](OPS.md) | 🟡 |
+| [P-77](OPS.md#p-77) | `POST /v1/users/{name}/limits` отвечает ~5,5 с — потребитель срывается по таймауту | `webapi/dispatch.sh` | [ops](OPS.md) | 🟡 |
+| [P-76](CLUSTER.md#p-76) | Верхний ключ подписки один для всех, а клиент выбор не запоминает | `lib/sub_links.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-52](CLUSTER.md#p-52) | Нода без бесплатного тарифа отключала того, кто на бесплатном | `lib/expiry.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-53](BILLING.md#p-53) | Снятие дней рапортовалось как «Подписка активна» и глушило напоминания | `lib/tgbot_client.sh` | [billing](BILLING.md) | ✅ |
 | [P-56](LIMITS.md#p-56) | Исчерпав месячную квоту free, бот обещал возврат доступа через неделю | `lib/freeplan.sh` | [limits](LIMITS.md) | ✅ |
@@ -98,7 +103,7 @@
 | [P-74](PROTOCOLS.md#p-74) | sing-box JSON-конфиг выдавался с SNI маскарада — клиент не подключался | `lib/users.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-75](OPS.md#p-75) | `get_port` не читал порт из `listen` с адресом | `lib/config.sh` | [ops](OPS.md) | ✅ |
 
-Следующий свободный номер — **P-76**.
+Следующий свободный номер — **P-94**.
 
 Номера **P-74** и **P-75** выданы задним числом: обе линии — `main` и
 `integration-multiprotocol` — независимо заняли `P-52` и `P-53` под разные

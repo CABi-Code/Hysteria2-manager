@@ -230,7 +230,7 @@ generate_user_config() {
     local jq_filter
     if [ "$mode" = "socks" ]; then
         jq_filter='{
-            log: { level: "info", timestamp: true },
+            log: { level: "warn", timestamp: true },   # не "info": на нём sing-box пишет в лог каждый посещённый адрес (P-79)
             dns: {
                 servers: [ { type: "udp", tag: "dns_local", server: "1.1.1.1" } ]
             },
@@ -257,7 +257,7 @@ generate_user_config() {
         }'
     else
         jq_filter='{
-            log: { level: "info", timestamp: true },
+            log: { level: "warn", timestamp: true },   # не "info": на нём sing-box пишет в лог каждый посещённый адрес (P-79)
             dns: {
                 servers: [
                     { type: "https", tag: "dns_remote", server: "8.8.8.8", detour: "proxy_out" },

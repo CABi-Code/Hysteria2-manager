@@ -409,9 +409,17 @@ proto_write_xray_config() {
         comma=","
     fi
     # Локальный gRPC API для статистики и hot-add (только 127.0.0.1).
+    #
+    # access:none обязателен (P-79). Без него Xray пишет access-лог в stdout, а
+    # оттуда в журнал systemd — строкой «источник → назначение → имя клиента» на
+    # КАЖДОЕ соединение. Это полный журнал посещений с привязкой к человеку,
+    # который сервису не нужен ни для чего: трафик и онлайн считаются через
+    # gRPC API (statsquery/statsonlineiplist), а не разбором лога. dnsLog=false
+    # по той же причине — резолвы туда же. error-лог на warning оставлен: по нему
+    # видно, что сервис не поднялся.
     cat > "$XRAY_CONFIG" <<EOF
 {
-  "log": { "loglevel": "warning" },
+  "log": { "loglevel": "warning", "access": "none", "dnsLog": false },
   "api": { "tag": "api", "services": ["HandlerService", "StatsService"] },
   "stats": {},
   "policy": {
@@ -436,9 +444,14 @@ proto_write_singbox_config() {
     proto_gen_tuic_cert || return 1
     local secret; secret=$(cat "$SINGBOX_API_SECRET_FILE" 2>/dev/null)
     [ -n "$secret" ] || { secret=$(pwgen -s 24 1); echo "$secret" > "$SINGBOX_API_SECRET_FILE"; chmod 600 "$SINGBOX_API_SECRET_FILE"; }
+    # level=fatal, а не error (P-79): на error sing-box пишет в журнал строку
+    # «open connection to <хост>:<порт>» на каждый сорвавшийся коннект — то есть
+    # адреса, куда ходят клиенты. Ничего из этого сервис не читает (трафик TUIC
+    # берётся из Clash API), а причина, по которой сервис не стартовал, остаётся
+    # видна: конфиг с ошибкой роняет sing-box с FATAL.
     cat > "$SINGBOX_CONFIG" <<EOF
 {
-  "log": { "level": "error" },
+  "log": { "level": "fatal" },
   "inbounds": [
     {
       "type": "tuic",

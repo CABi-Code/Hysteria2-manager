@@ -85,4 +85,20 @@ NODE_CONF_DEMO_NODES="self.example,live.example"
 picked=$(for _ in $(seq 30); do demo_pick_node; echo; done | sort -u | tr '\n' ' ')
 [ "$picked" = "live.example self.example " ] || fail "случайный выбор дал: '$picked'"
 
-echo "✅ demo: TTL, трафик-кап, уборка, чужая нода и выбор ноды ок"
+# --- потолок живых демо: единственный барьер, который не обходится со стороны
+#     клиента, поэтому проверяем именно его, а не только счётчик ---
+: > "$DEMOS_DB"
+DEMO_MAX_ACTIVE=3
+for i in 1 2; do demo_set "cap$i" active "$now" "$((now + 600))" "$((500*MB))" 0 0; done
+demo_at_capacity && fail "потолок сработал раньше времени (активных 2 из 3)"
+demo_set cap3 active "$now" "$((now + 600))" "$((500*MB))" 0 0
+demo_at_capacity || fail "потолок не сработал на 3 из 3"
+# expired место не занимают: demo_tick освобождает его сам
+demo_set cap3 expired "$now" "$((now - 60))" "$((500*MB))" 0 0
+demo_at_capacity && fail "expired-строка считается за живое демо"
+# нулём потолок выключается — так ведут себя ноды, где его не выставляли
+DEMO_MAX_ACTIVE=0
+demo_set cap4 active "$now" "$((now + 600))" "$((500*MB))" 0 0
+demo_at_capacity && fail "нулевой DEMO_MAX_ACTIVE должен выключать потолок"
+
+echo "✅ demo: TTL, трафик-кап, уборка, чужая нода, выбор ноды и потолок ок"
