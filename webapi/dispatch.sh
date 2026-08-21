@@ -180,6 +180,15 @@ case "$verb" in
         printf 'sub_url=%s\n' "$url"
         ;;
 
+    erase)       # <user> — стереть ВСЕ следы человека (право на забвение)
+        [ $# -eq 1 ] || fail 64 bad_args "erase <user>"
+        valid_user "$1"
+        take_lock
+        # Профиля может уже не быть: стирают и остатки после обычного удаления.
+        erase_user "$1" >/dev/null || fail 1 erase_failed "не удалось стереть следы"
+        printf 'erased=1\n'
+        ;;
+
     free-activate)  # <user> — подключить бесплатный тариф по кнопке
         [ $# -eq 1 ] || fail 64 bad_args "free-activate <user>"
         valid_user "$1"

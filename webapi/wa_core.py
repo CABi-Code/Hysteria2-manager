@@ -172,6 +172,11 @@ def rate_ok(key_name, rpm):
 
 
 def audit(key_name, method, path, status, ms):
+    # Стирание следов не должно оставлять след в аудите: сам факт операции
+    # записываем, имя профиля — нет, иначе журнал переживёт удаление и вернёт
+    # в данные ровно то, что человек просил убрать (docs/guide/DATA-RETENTION.md).
+    if path.endswith("/erase"):
+        path = "/v1/users/-/erase"
     line = f"{int(time.time())}|{key_name}|{method}|{path}|{status}|{ms}\n"
     with _log_lock:
         try:

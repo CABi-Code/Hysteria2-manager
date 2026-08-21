@@ -176,6 +176,125 @@ reset_user_stats() {
     echo "  ✅ Статистика $user сброшена"
 }
 
+# ---------- право на забвение: стереть все следы человека ----------
+# delete_user убирает доступ и профиль, но данные о человеке этим не
+# исчерпываются: привязка Telegram, адреса в authmap/subips, окна бесплатного
+# тарифа, слоты-устройства, строки в журналах. Их удаляет erase_user — по
+# ЯВНОМУ запросу человека, а не в обычном порядке работы.
+#
+# Список файлов НЕ ведём руками: обходим все *.dat/*.db/*.log каталога данных и
+# копии соседей. Хранилище растёт (см. реестр в webapi/wa_footprint.py), а
+# рукописный список к следующей фиче устареет молча — и забытая строка с адресом
+# переживёт удаление аккаунта.
+#
+# Два файла из обхода исключены НАМЕРЕННО — это метки удаления, а не данные:
+#   • cluster_state.dat и peers/*.state — «имя|deleted|ts». Без метки манифест
+#     соседа воскресит профиль;
+#   • tgusers.dat — туда tg_unbind пишет «tg_id||ts». Без неё привязка вернётся
+#     с соседа по last-write-wins.
+# См. docs/guide/DATA-RETENTION.md.
+erase_user() {   # user
+    local user="$1"
+    [ -n "$user" ] || { echo "  ❌ Не указан пользователь"; return 1; }
+    [[ "$user" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "  ❌ Недопустимое имя"; return 1; }
+
+    # 1) Что ещё принадлежит человеку, кроме имени: токены подписки (по ним
+    #    записаны адреса в subips.dat) и слоты-устройства «имя.хвост».
+    local -a needles=("$user")
+    local tok slot u _p
+    if [ -f "$SUBTOKENS_DB" ]; then
+        while IFS=: read -r u tok; do
+            [ "$u" = "$user" ] && [ -n "$tok" ] && needles+=("$tok")
+        done < "$SUBTOKENS_DB"
+    fi
+    if [ -f "$SLOTPASS_DB" ]; then
+        while IFS='|' read -r u _p tok slot; do
+            [ "$u" = "$user" ] || continue
+            [ -n "$tok" ] && needles+=("$tok")
+            [ -n "$slot" ] && needles+=("$slot")
+        done < "$SLOTPASS_DB"
+    fi
+    # Привязанные аккаунты Telegram: их id встречается и вне tgusers.dat
+    # (очередь уведомлений бота, выбранный срок покупки).
+    local -a chats=()
+    if declare -F tg_user_chats >/dev/null; then
+        while read -r u; do [ -n "$u" ] && { chats+=("$u"); needles+=("$u"); }; done < <(tg_user_chats "$user")
+    fi
+
+    # 2) Профиль и доступ — существующим путём, чтобы кластерная метка,
+    #    пересборка подписок и кик прошли ровно как при обычном удалении.
+    if db_user_exists "$user" || is_user_disabled "$user"; then
+        delete_user "$user" >/dev/null
+    fi
+
+    # 3) Привязка Telegram — только tombstone'ом (иначе вернётся с соседа).
+    if declare -F tg_unbind >/dev/null; then
+        for u in "${chats[@]}"; do tg_unbind "$u"; done
+    fi
+
+    # 4) Обход хранилища. Строку убираем, если она НАЧИНАЕТСЯ с имени/слота/
+    #    токена (файлы данных «ключ|…» и «ключ:…») либо упоминает их где угодно
+    #    (журналы: путь запроса, событие лимита).
+    local file removed=0 n
+    for file in "$DATA_DIR"/*.dat "$DATA_DIR"/*.db "$DATA_DIR"/*.log "$PEERS_DIR"/* /var/log/hy2-manager/*.log; do
+        [ -f "$file" ] || continue
+        case "$(basename "$file")" in
+            cluster_state.dat | tgusers.dat) continue ;;      # метки удаления
+            *.state) continue ;;
+        esac
+        n=$(erase_from_file "$file" "${needles[@]}") || true
+        removed=$(( removed + ${n:-0} ))
+    done
+
+    # 5) Опубликовать почищенные наборы: соседи забирают их сами.
+    declare -F publish_cluster_freeplan >/dev/null && publish_cluster_freeplan
+    declare -F publish_cluster_expiry   >/dev/null && publish_cluster_expiry
+    declare -F publish_cluster_ips      >/dev/null && publish_cluster_ips
+
+    echo "  ✅ Все следы $user стёрты (строк удалено: $removed)"
+    echo "  ℹ️  Остались только метки удаления: «имя|deleted» и «tg_id||ts» — без них профиль и привязка вернутся с соседних нод."
+    echo "  🌐 На соседних нодах их копии чистятся своим erase_user: одинаковой командой там же."
+    return 0
+}
+
+# Вычистить из файла все строки, относящиеся к перечисленным меткам. Печатает
+# число удалённых строк. Права и владельца файла сохраняем: пишем через тот же
+# inode (cat >), а не mv.
+erase_from_file() {   # file needle...
+    local file="$1"; shift
+    [ -f "$file" ] || { echo 0; return 0; }
+    local tmp before after islog=0
+    case "$file" in *.log) islog=1 ;; esac
+    tmp=$(mktemp) || { echo 0; return 0; }
+    before=$(wc -l < "$file" 2>/dev/null || echo 0)
+    NEEDLES="$*" ISLOG="$islog" awk '
+        BEGIN { n = split(ENVIRON["NEEDLES"], a, " "); islog = (ENVIRON["ISLOG"] == "1") }
+        {
+            for (i = 1; i <= n; i++) {
+                p = index($0, a[i])
+                if (p == 0) continue
+                if (p == 1) {
+                    # Файл данных: метка стоит первым полем — «ключ|…», «ключ:…»
+                    # или слот-устройство «имя.хвост».
+                    c = substr($0, length(a[i]) + 1, 1)
+                    if (c == "|" || c == ":" || c == ".") next
+                }
+                # Журнал: метка встречается где угодно в строке события. Границы
+                # обязательны, иначе имя «cab» унесло бы строки «cabi».
+                if (islog) {
+                    l = (p == 1) ? "" : substr($0, p - 1, 1)
+                    r = substr($0, p + length(a[i]), 1)
+                    if (l !~ /[A-Za-z0-9_.-]/ && r !~ /[A-Za-z0-9_-]/) next
+                }
+            }
+            print
+        }' "$file" > "$tmp" 2>/dev/null
+    after=$(wc -l < "$tmp" 2>/dev/null || echo "$before")
+    cat "$tmp" > "$file" 2>/dev/null
+    rm -f "$tmp"
+    echo $(( before - after ))
+}
+
 # Генерирует клиентский конфиг (JSON) для sing-box и сохраняет его во
 # временный файл. Путь к файлу печатается в stdout (пустой вывод = ошибка).
 # Файл создаётся через mktemp с правами 0600 — пароль виден только владельцу.

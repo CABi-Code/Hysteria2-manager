@@ -91,6 +91,9 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/demo/([^/]+)$"), "read", "h_demo_state"),
     ("POST", re.compile(r"^/v1/demo/([^/]+)/refresh$"), "read", "h_demo_state_fresh"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/free-plan$"), "users", "h_free_plan"),
+    # Право на забвение: стирает все следы человека на этом узле. Отдельным
+    # scope не гейтится — это разновидность удаления (см. docs/guide/DATA-RETENTION.md).
+    ("POST", re.compile(r"^/v1/users/([^/]+)/erase$"), "users", "h_erase"),
     ("POST", re.compile(r"^/v1/telegram/bind$"), "telegram", "h_bind"),
     ("POST", re.compile(r"^/v1/codes/redeem$"), "telegram", "h_redeem"),
     # SSE: выдача тикета — по Bearer (Laravel); сам поток — по тикету (браузер).
@@ -421,6 +424,14 @@ class Handler(BaseHTTPRequestHandler):
         user = need_username(name)
         res = self.dispatch("free-activate", user)
         return {"username": user, "state": res.get("state"), "free": free_status(user, sum(local_traffic(user)) + sum(peer_stats(user)[1:]))}
+
+    def h_erase(self, name):
+        """Стереть все следы пользователя: профиль, привязку Telegram, адреса,
+        окна бесплатного тарифа, строки журналов. Идемпотентно: профиля может
+        уже не быть, тогда чистятся только остатки."""
+        user = need_username(name)
+        self.dispatch("erase", user)
+        return {"username": user, "erased": True}
 
     def h_demo(self):
         # Демо-профиль гостю (idea 13): рабочий доступ до регистрации, жёстко
