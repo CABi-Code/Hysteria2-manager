@@ -54,7 +54,10 @@ case "$info_a" in
     *) fail "расход платного юзера не тот: $info_a" ;;
 esac
 case "$info_a" in *"expire=$(date -d "$(date -d '+3 days' +%Y-%m-%d) 23:59:59" +%s)"*) ;; *) fail "срок платного не попал в userinfo: $info_a" ;; esac
-case "$info_a" in *'total=0'*) ;; *) fail "у платного не должно быть лимита трафика: $info_a" ;; esac
+# Безлимит — большим числом, а не нулём: на total=0 Hiddify рисует «Квота
+# исчерпана». Порог «∞» у клиентов — 10 ТиБ, значение обязано быть выше.
+case "$info_a" in *"total=$SUB_UNLIMITED_BYTES"*) ;; *) fail "у платного безлимит должен быть большим числом: $info_a" ;; esac
+[ "$SUB_UNLIMITED_BYTES" -gt $((10 * 1099511627776)) ] || fail "безлимит ниже порога «∞» (10 ТиБ)"
 case "$info_d" in *'total=524288000'*) ;; *) fail "лимит демо не тот: $info_d" ;; esac
 case "$info_d" in *"expire=$DEMO_EXP"*) ;; *) fail "срок демо не тот: $info_d" ;; esac
 case "$(hval sub_info tokF)" in *'total=5368709120'*) ;; *) fail "недельный лимит бесплатного не тот" ;; esac

@@ -16,7 +16,7 @@
 | Заголовок | Значение | Персональный? |
 |---|---|:--:|
 | `profile-title` | название профиля (`SUB_TITLE`), base64 | да, если в шаблоне есть плейсхолдеры |
-| `subscription-userinfo` | `upload=0; download=<расход>; total=<лимит>; expire=<ts>` | **да** |
+| `subscription-userinfo` | `upload=0; download=<расход>; total=<лимит или 1000 ТиБ>; expire=<ts>` | **да** |
 | `announce` | текст под план юзера (демо / бесплатный / платный), base64 | **да** |
 | `profile-update-interval` | как часто клиент обновляет подписку, часы (`SUB_UPDATE_HOURS`) | нет |
 | `support-url` | кнопка «поддержка» (`SUB_SUPPORT_URL`) | нет |
@@ -37,12 +37,20 @@ Caddyfile импортирует:
 
 ```
 map {path} {sub_info} {
-    /sub/<токен-юзера-А> "upload=0; download=1048576; total=0; expire=1790000000"
+    /sub/<токен-юзера-А> "upload=0; download=1048576; total=1099511627776000; expire=1790000000"
     /sub/<токен-юзера-Б> "upload=0; download=524288000; total=524288000"
-    default "upload=0; download=0; total=0"
+    default "upload=0; download=0; total=1099511627776000"
 }
 header subscription-userinfo "{sub_info}"
 ```
+
+**«Без лимита» — это большое число, а не ноль.** Ноль клиенты трактуют
+по-разному: Hiddify подставляет вместо него собственный синтетический безлимит
+(в сборках до 2.5.7 — ~857 ГиБ), рисует обычную шкалу и при расходе выше неё
+печатает красным «Квота исчерпана» — при живом безлимитном доступе. Поэтому
+`sub_userinfo_line` отдаёт `SUB_UNLIMITED_BYTES` = 1000 ТиБ: порог «показывать
+∞» у клиентов — 10 ТиБ, выше него шкалы нет вовсе. Разбор —
+[issues/CLUSTER.md#p-97](../issues/CLUSTER.md#p-97).
 
 Следствия, которые надо помнить:
 

@@ -583,10 +583,18 @@ sub_refresh() {
 # «map {path}» по токену подписки: /sub/* раздаёт статику сам Caddy, и другого
 # способа привязать заголовок к юзеру без своего HTTP-демона нет.
 
+# «Без лимита трафика» отдаём заведомо огромным числом, а не нулём. total=0
+# клиенты трактуют по-разному: Hiddify подставляет вместо нуля свой синтетический
+# «безлимит», и в сборках до 2.5.7 он был ~857 ГиБ — шкала расхода рисовалась
+# почти полной, а у кого расход перевалил за неё, показывалось «Квота исчерпана»
+# при живом безлимитном доступе. Порог «показать ∞» у Hiddify — 10 ТиБ, так что
+# 1000 ТиБ читается как безлимит и там, и у остальных клиентов.
+SUB_UNLIMITED_BYTES=1099511627776000
+
 # Строка subscription-userinfo для юзера: расход и срок ЭТОГО доступа. Расход
-# кладём целиком в download (клиент показывает сумму upload+download), лимит и
-# срок пропускаем, когда их нет: total=0 в клиентах означает «без лимита», а
-# нулевой expire часть клиентов рисует как «просрочено».
+# кладём целиком в download (клиент показывает сумму upload+download), срок
+# пропускаем, когда его нет: нулевой expire часть клиентов рисует как
+# «просрочено».
 sub_userinfo_line() {   # user -> строка заголовка
     local kind exp used total out
     IFS='|' read -r kind exp used total <<< "$(user_plan_facts "$1")"
@@ -594,6 +602,7 @@ sub_userinfo_line() {   # user -> строка заголовка
     # любое изменение цифры стоит reload. Молчащий (но подключённый) клиент
     # набирает килобайты — с округлением он не дёргает reload каждые 5 минут.
     used=$(( ${used:-0} / 1048576 * 1048576 ))
+    [ "${total:-0}" -gt 0 ] 2>/dev/null || total=$SUB_UNLIMITED_BYTES
     out="upload=0; download=${used}; total=${total}"
     [ "${exp:-0}" -gt 0 ] 2>/dev/null && out="${out}; expire=${exp}"
     printf '%s' "$out"
@@ -657,7 +666,7 @@ write_sub_titles() {
         # default "" не годится: пустой блок просто не пишем.
         if [ -s "$m_info" ]; then
             printf '\tmap {path} {sub_info} {\n'; cat "$m_info"
-            printf '\t\tdefault "upload=0; download=0; total=0"\n\t}\n'
+            printf '\t\tdefault "upload=0; download=0; total=%s"\n\t}\n' "$SUB_UNLIMITED_BYTES"
             printf '\theader subscription-userinfo "{sub_info}"\n'
         fi
         if [ -s "$m_ann" ]; then
