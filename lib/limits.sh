@@ -77,6 +77,11 @@ set_user_limits() {   # user devices hardcheck [ts] [rate] [prefer]
     echo "${user}|${devices}|${hard}|${rate}|${prefer}" >> "$USERLIMITS_FILE"
     userlimits_set_ts "$user" "$ts"
     [ -z "$ts" ] && declare -F publish_cluster_userlimits >/dev/null && publish_cluster_userlimits
+    # Лимит упал — снять лишние ссылки-устройства (P-100). Здесь, а не у
+    # вызывающих: лимит меняют TUI, бот, Web API и синхронизация кластера, и
+    # ссылка, пережившая своё устройство, — это бесплатный доступ у любого из
+    # них. Внутри — no-op, если ссылок и так не больше лимита.
+    declare -F sub_links_prune >/dev/null && sub_links_prune "$user" >/dev/null 2>&1
 }
 
 # Удобные обёртки: меняем одно поле, остальные берём текущими.

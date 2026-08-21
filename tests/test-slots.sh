@@ -173,3 +173,33 @@ kill $STUB 2>/dev/null; wait $STUB 2>/dev/null
 "$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null || fail "API молчит, а вход закрылся"
 
 echo "✅ test-slots (фаза D): ok"
+
+# ---------- P-100: упавший лимит снимает лишние ссылки ----------
+# Продали устройство — ссылка от него не должна пережить продажу: до P-100
+# лимит проверялся только при выдаче, и снятая с оплаты ссылка работала вечно.
+set_user_limits ann 2 0 "" 0
+sub_tokens_all ann | grep -qxF "$extra2" && fail "лимит упал до 2, а самая новая ссылка осталась"
+sub_tokens_all ann | grep -qxF "$extra1" || fail "срезали лишнюю ссылку вместе с оплаченной"
+[ -f "$WEBROOT/sub/$extra2" ] && fail "файл подписки снятой ссылки остался на диске"
+grep -qF "|$extra2" "$SLOTPASS_DB" && fail "пароль снятой ссылки остался в справочнике auth"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p2" 0 >/dev/null 2>&1 && fail "снятая ссылка всё ещё пускает в сеть"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:$p1" 0 >/dev/null || fail "оставшаяся оплаченная ссылка перестала пускать"
+
+set_user_limits ann 1 0 "" 0
+[ "$(sub_tokens_all ann | grep -c .)" = 1 ] || fail "лимит 1, а ссылок осталось больше"
+[ "$(sub_token_for ann)" = "$primary" ] || fail "срезали основную ссылку — человек остался без подписки"
+grep -qF "ann:$peertok" "$PEERS_DIR/other.subtokens" || fail "тронули токен чужой ноды: он не наш"
+"$AUTH_SCRIPT" "10.0.0.2:100" "ann:basepass123" 0 >/dev/null || fail "основная ссылка перестала пускать"
+
+# ---------- P-101: основной токен пира не съедает оплаченное устройство ----------
+# У каждой ноды свой основной токен на того же юзера. Считать их за устройства
+# нельзя, а вот доп. ссылку, выданную соседом, — надо.
+printf 'ann:%s\nann:peerextra00000000000000000000000000\n' "$peertok" > "$PEERS_DIR/other.subtokens"
+set_user_limits ann 3 0 "" 0
+[ "$(sub_links_used ann)" = 2 ] || fail "занято $(sub_links_used ann) ссылок, а занято 2: своя основная + доп. соседа"
+extra3=$(sub_link_add ann)
+[ -n "$extra3" ] || fail "лимит 3, занято 2 — оплаченное устройство не добавилось"
+set_user_limits ann 2 0 "" 0
+sub_tokens_all ann | grep -qxF "$extra3" && fail "лимит 2 при доп. ссылке соседа — своя лишняя не снялась"
+
+echo "✅ test-slots (лимит ссылок): ok"

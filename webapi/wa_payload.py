@@ -26,17 +26,27 @@ from wa_online import *  # noqa: F403
 
 
 def sub_tokens(user):
-    """Локальные + пировые токены подписки (первый локальный — основной)."""
+    """Ссылки-устройства юзера: свои (первая — основная) + доп. ссылки пиров.
+
+    ПЕРВЫЙ токен юзера в файле пира — основной токен ТОЙ ноды: свой основной
+    заводит каждая нода кластера, и это копия той же подписки, а не купленная
+    ссылка. В устройства такие копии не идут — иначе человек «занимал» бы N−1
+    устройств, которых не покупал (P-101). То же правило на стороне менеджера —
+    sub_links_used (lib/sub_links.sh); считать надо одинаково, иначе кабинет и
+    нода разойдутся в том, сколько устройств занято.
+    """
     tokens = list(colon_db(data_path("subtokens.db")).get(user, []))
     try:
-        names = os.listdir(PEERS_DIR)
+        names = sorted(os.listdir(PEERS_DIR))
     except OSError:
         names = []
     for name in names:
-        if name.endswith(".subtokens"):
-            for t in colon_db(os.path.join(PEERS_DIR, name)).get(user, []):
-                if t not in tokens:
-                    tokens.append(t)
+        if not name.endswith(".subtokens"):
+            continue
+        peer = [t for t in colon_db(os.path.join(PEERS_DIR, name)).get(user, []) if t not in tokens]
+        # Своих токенов нет вовсе (юзера завела другая нода) — её основной
+        # становится основным и здесь, иначе список остался бы пустым.
+        tokens.extend(peer[1:] if tokens else peer)
     return tokens
 
 
