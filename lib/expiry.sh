@@ -71,8 +71,12 @@ expiry_is_over() {   # expiry_date
 # Остаток до конца дня истечения в виде «Nд Чч Мм».
 # Срок хранится как дата (без времени), поэтому считаем до 23:59:59 этого дня.
 # Возвращает «истёк», если дата в прошлом. Код 1 — если дата не задана.
+#
+# Секунды округляем ВВЕРХ до минуты и нулевые части не печатаем. Иначе ровно
+# сутки (86399 с из-за 23:59:59) превращались в «0д 23ч 59м» — час, которого
+# человеку не выдавали, и «1 минута», которой он не терял.
 format_remaining() {
-    local exp="$1" exp_ts now_ts diff d h m
+    local exp="$1" exp_ts now_ts diff mins d h m out=""
     [ -z "$exp" ] && return 1
     exp_ts=$(date -d "$exp 23:59:59" +%s 2>/dev/null) || return 1
     now_ts=$(date +%s)
@@ -81,16 +85,12 @@ format_remaining() {
         echo "истёк"
         return 0
     fi
-    d=$(( diff / 86400 ))
-    h=$(( (diff % 86400) / 3600 ))
-    m=$(( (diff % 3600) / 60 ))
-    if [ "$d" -gt 0 ]; then
-        echo "${d}д ${h}ч ${m}м"
-    elif [ "$h" -gt 0 ]; then
-        echo "${h}ч ${m}м"
-    else
-        echo "${m}м"
-    fi
+    mins=$(( (diff + 59) / 60 ))
+    d=$(( mins / 1440 )); h=$(( (mins % 1440) / 60 )); m=$(( mins % 60 ))
+    [ "$d" -gt 0 ] && out="${d}д"
+    [ "$h" -gt 0 ] && out="${out:+$out }${h}ч"
+    [ "$m" -gt 0 ] && out="${out:+$out }${m}м"
+    echo "${out:-меньше минуты}"
 }
 
 remove_user_expiry() {

@@ -222,8 +222,12 @@ ${tl:-нет тарифов}
             local code="${text#/start }" u
             code=$(printf '%s' "$code" | tr -d '[:space:]')
             # ref_<КОД> — реферальная ссылка мини-аппа (не код привязки);
-            # wl_<id> — подтверждение входа в веб-версию (карточку шлёт мини-апп).
-            if [ "${code#ref_}" != "$code" ] || [ "${code#wl_}" != "$code" ]; then
+            # wl_<id> — подтверждение входа в веб-версию (карточку шлёт мини-апп);
+            # tariffs/balance — ссылка «продлить» из директа канала: мини-апп по
+            # прямой ссылке оттуда не открывается, поэтому ведём через /start, а
+            # нужный экран открывает кнопка приветствия мини-аппа.
+            if [ "${code#ref_}" != "$code" ] || [ "${code#wl_}" != "$code" ] \
+               || [ "$code" = "tariffs" ] || [ "$code" = "balance" ]; then
                 bot_miniapp_start "$chat" "$from" "$code" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
                     "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
                     || bot_client_menu "$chat"
@@ -393,40 +397,42 @@ bot_notify_expired() {   # user
     bot_enabled || return 0
     bot_mod_on notify || return 0
     BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
-    local user="$1" c
-    for c in $(tg_user_chats "$user"); do
-        tg_send "$c" "⛔ Срок действия вашего доступа (<b>$(tg_esc "$user")</b>) истёк — доступ отключён.$( bot_sales_on && echo "
-Продлить и включить снова: /buy" )"
-    done
-    bot_notify_admins "⏰ Автоотключение по сроку: $(tg_esc "$user")"
+    # Через notify_user: один канал доставки (личка, иначе директ канала) и
+    # кнопки «куда идти продлевать» вместо команды /buy, которой у бота без
+    # модуля sales всё равно нет (см. lib/notify.sh).
+    notify_user "$1" "⛔ Срок действия вашего доступа (<b>$(tg_esc "$1")</b>) истёк — доступ отключён.
+Продлите, чтобы включить снова." "$(bot_renew_kb)" "$(bot_renew_link)"
+    bot_notify_admins "⏰ Автоотключение по сроку: $(tg_esc "$1")"
 }
 
 # ---------- бесплатный тариф (lib/freeplan.sh) ----------
 # Единая отправка клиенту: у бесплатного тарифа четыре события — перевод,
 # «осталось немного» (три порога), исчерпание и обновление лимита.
-_bot_free_send() {   # user html
-    bot_enabled || return 0
-    bot_mod_on notify || return 0
-    BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
-    local c
-    for c in $(tg_user_chats "$1"); do tg_send "$c" "$2"; done
+# Второй аргумент «1» — под сообщением нужны кнопки «продлить/пополнить»
+# (lib/notify.sh): у трёх событий из четырёх выход один — оплатить.
+_bot_free_send() {   # user html [with_cta]
+    if [ -n "${3:-}" ]; then
+        notify_user "$1" "$2" "$(bot_renew_kb)" "$(bot_renew_link)"
+    else
+        notify_user "$1" "$2"
+    fi
 }
 
 bot_notify_free_entered() {   # user
     _bot_free_send "$1" "🆓 Платный доступ закончился — вы переведены на <b>бесплатный тариф</b>.
 Интернет продолжает работать в пределах лимита трафика; лимит обновляется автоматически.
-Вернуть полную скорость и объём: /buy"
+Вернуть полную скорость и объём — продлите подписку." 1
 }
 
 bot_notify_free_low() {   # user left_bytes
     _bot_free_send "$1" "⚠️ Бесплатный трафик заканчивается: осталось <b>$(format_bytes "$2")</b>.
-Когда закончится — доступ приостановится до обновления лимита. Продлить: /buy"
+Когда закончится — доступ приостановится до обновления лимита." 1
 }
 
 bot_notify_free_blocked() {   # user reset_ts
     _bot_free_send "$1" "⛔ Бесплатный трафик закончился — доступ приостановлен.
 Лимит обновится: <b>$(date -d "@$2" '+%d.%m %H:%M' 2>/dev/null)</b>.
-Не ждать и подключиться сразу: /buy"
+Не ждать и подключиться сразу — продлите подписку." 1
 }
 
 bot_notify_free_reset() {   # user left_bytes

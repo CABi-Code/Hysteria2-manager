@@ -92,16 +92,20 @@ tg_api() {   # method [curl args...] -> JSON
 # Экранирование для parse_mode=HTML.
 tg_esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
+# Возвращает 1, если Telegram не принял сообщение (человек не начинал диалог с
+# ботом или заблокировал его — «403 Forbidden»). Это не мелочь: по этому ответу
+# notify_user решает, слать ли копию в директ канала (см. lib/notify.sh).
 tg_send() {   # chat_id text [reply_markup_json]
-    local chat="$1" text="$2" kb="$3"
+    local chat="$1" text="$2" kb="$3" resp
     if [ -n "$kb" ]; then
-        tg_api sendMessage --data-urlencode "chat_id=$chat" --data-urlencode "text=$text" \
+        resp=$(tg_api sendMessage --data-urlencode "chat_id=$chat" --data-urlencode "text=$text" \
             --data-urlencode "parse_mode=HTML" --data-urlencode "disable_web_page_preview=true" \
-            --data-urlencode "reply_markup=$kb" >/dev/null
+            --data-urlencode "reply_markup=$kb")
     else
-        tg_api sendMessage --data-urlencode "chat_id=$chat" --data-urlencode "text=$text" \
-            --data-urlencode "parse_mode=HTML" --data-urlencode "disable_web_page_preview=true" >/dev/null
+        resp=$(tg_api sendMessage --data-urlencode "chat_id=$chat" --data-urlencode "text=$text" \
+            --data-urlencode "parse_mode=HTML" --data-urlencode "disable_web_page_preview=true")
     fi
+    [[ "$resp" == *'"ok":true'* ]]
 }
 
 # Переписать своё сообщение. Возвращает 1, если Telegram не дал (сообщение

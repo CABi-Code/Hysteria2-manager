@@ -60,12 +60,15 @@ period_days_get() {   # user -> days (0 если нет)
     [[ "$d" =~ ^[0-9]+$ ]] && printf '%s' "$d" || printf '0'
 }
 
-# ---------- доставка: личка бота + (best-effort) канал-DM ----------
-# Личные копии идут от бота как есть; канальная копия получает пометку «перейти
-# в бота». chandm работает только если у нас есть topic для этого пользователя
-# (он уже писал в чат канала) и бот — админ канала с can_post_messages.
-notify_user() {   # user  html_text
-    local user="$1" text="$2" c
+# ---------- доставка: ОДИН канал на человека ----------
+# Приоритет — личка бота: она интерактивна (кнопки, мини-апп), директ канала
+# такого не умеет. В директ уходит только то, что в личку не прошло: человек не
+# начинал диалог с ботом или заблокировал его (tg_send вернёт 1). Раньше слали в
+# оба — клиент с двумя чатами получал каждое уведомление дважды.
+# chandm работает только если у нас есть topic для этого пользователя (он уже
+# писал в чат канала) и бот — админ канала с can_post_messages.
+notify_user() {   # user  html_text  [kb_json]  [channel_cta_html]
+    local user="$1" text="$2" kb="$3" cta="$4" c
     bot_enabled || return 0
     # Модуль notify (lib/tgbot.sh): выключается отдельно от продажи — надстройка
     # со своими уведомлениями глушит бота, не теряя привязку и фулфилмент.
@@ -73,15 +76,15 @@ notify_user() {   # user  html_text
     BOT_TOKEN=${BOT_TOKEN:-$(bot_token)}; [ -n "$BOT_TOKEN" ] || return 0
     for c in $(tg_user_chats "$user"); do
         [ -n "$c" ] || continue
-        tg_send "$c" "$text"
-        chandm_send "$c" "$text"
+        tg_send "$c" "$text" "$kb" || chandm_send "$c" "$text" "$cta"
     done
 }
 
-# Отправить копию «от лица канала» в персональный топик пользователя, добавив
-# рекомендацию перейти в бота. tg_id → (dm_chat_id, topic_id) из CHANDM_MAP_FILE.
-chandm_send() {   # tg_id  html_text
-    local tgid="$1" text="$2" row dm topic bu note
+# Отправить «от лица канала» в персональный топик пользователя, добавив призыв
+# перейти в бота (кнопок в директе канала нет — только ссылка текстом).
+# tg_id → (dm_chat_id, topic_id) из CHANDM_MAP_FILE.
+chandm_send() {   # tg_id  html_text  [cta_html]
+    local tgid="$1" text="$2" cta="$3" row dm topic bu note
     [ -f "$CHANDM_MAP_FILE" ] || return 0
     row=$(awk -F'|' -v id="$tgid" '$1==id{print; exit}' "$CHANDM_MAP_FILE" 2>/dev/null)
     [ -n "$row" ] || return 0
@@ -91,7 +94,7 @@ chandm_send() {   # tg_id  html_text
     bu=$(bot_username)
     note="
 
-$(ce "💬") Управляйте подпиской в боте${bu:+: @$bu}"
+${cta:-$(ce "💬") Управляйте подпиской в боте${bu:+: https://t.me/$bu}}"
     tg_api sendMessage \
         --data-urlencode "chat_id=$dm" \
         --data-urlencode "direct_messages_topic_id=$topic" \
@@ -123,10 +126,42 @@ bot_notify_activated() {   # user expiry_ymd
 Ваша подписка действует до <b>${dmy:-без срока}</b>."
 }
 
+# ---------- куда идти продлевать ----------
+# Ссылка на мини-апп (MINIAPP_URL в bot.conf = https://t.me/<бот>/<апп>) с
+# ?startapp=<экран>. Пусто — мини-апп не настроен, зовущий обходится без него.
+miniapp_screen_url() {   # screen
+    local app; app=$(bot_get MINIAPP_URL)
+    [ -n "$app" ] || return 1
+    printf '%s?startapp=%s' "${app%/}" "$1"
+}
+
+# Кнопки под напоминанием (только личка бота: в директе канала кнопок нет).
+# Мини-апп есть → ведём прямо на тарифы и баланс; нет, но бот продаёт сам →
+# его витрина; ни того ни другого → без клавиатуры.
+bot_renew_kb() {
+    local t b
+    if t=$(miniapp_screen_url tariffs); then
+        b=$(miniapp_screen_url balance)
+        jq -nc --arg t "$t" --arg b "$b" \
+            '{inline_keyboard:[[{text:"💳 Продлить подписку",url:$t}],[{text:"💰 Пополнить баланс",url:$b}]]}'
+    elif bot_sales_on; then
+        printf '%s' '{"inline_keyboard":[[{"text":"💳 Купить / продлить","callback_data":"m:buy"}]]}'
+    fi
+}
+
+# То же для директа канала: команду там не наберёшь и мини-апп по ссылке не
+# откроется (баг Telegram) — только ссылка на /start бота с параметром экрана.
+# Бот, получив «/start tariffs», откроет тарифы (lib/tgbot_daemon.sh).
+bot_renew_link() {
+    local bu; bu=$(bot_username)
+    [ -n "$bu" ] || return 0
+    printf '%s Продлить: https://t.me/%s?start=tariffs' "$(ce "⭐")" "$bu"
+}
+
 # ---------- ступенчатые напоминания об истечении ----------
-# Пороги: за 7д (если период >8д), 3д, 1д (если период >2д), 12ч, 1ч, 30мин.
+# Пороги: за 7д (если период >8д), 3д, 1д (если период >2д), 1ч, 10мин.
 # Дедуп по (user|end_ts|label) — новая покупка меняет end_ts и сбрасывает пороги.
-# Гонять из cron часто (каждые ~5 мин), иначе поймать 30мин/1ч нельзя.
+# Гонять из cron часто (каждые ~5 мин), иначе поймать 10мин/1ч нельзя.
 bot_notify_sweep() {
     bot_enabled || return 0
     BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
@@ -139,9 +174,10 @@ bot_notify_sweep() {
     # идёт, молча выходим — он всех обойдёт.
     { exec 8>"$DATA_DIR/.notify_sweep.lock"; } 2>/dev/null || true
     flock -n 8 2>/dev/null || return 0
-    local now user exp end_ts left pdays label secs bu
+    local now user exp end_ts left pdays label secs human kb cta
     now=$(date +%s)
-    bu=$(bot_username)
+    kb=$(bot_renew_kb)
+    cta=$(bot_renew_link)
 
     # Пороги: «label secs» по убыванию. Гейты 7д/1д — по длине периода (в днях).
     while IFS='|' read -r user exp; do
@@ -156,9 +192,9 @@ bot_notify_sweep() {
         # отправленный порог, а все пройденные молча помечаем отправленными.
         # Так исключаем «пачку» (7д+3д+1д разом) при первом проходе на дозревшей
         # подписке: одно напоминание на каждый переход через порог.
-        local crossed="" have_new=""
-        for pair in "7d:604800" "3d:259200" "1d:86400" "12h:43200" "1h:3600" "30m:1800"; do
-            label="${pair%%:*}"; secs="${pair##*:}"
+        local crossed="" have_new="" last_human=""
+        for pair in "7d:604800:7 дней" "3d:259200:3 дня" "1d:86400:24 часа" "1h:3600:1 час" "10m:600:10 минут"; do
+            IFS=':' read -r label secs human <<< "$pair"
             [ "$left" -le "$secs" ] || continue         # порог ещё не пройден
             case "$label" in                            # гейты по длине периода
                 7d) [ "$pdays" -gt 8 ] 2>/dev/null || continue ;;
@@ -166,14 +202,18 @@ bot_notify_sweep() {
                 1d) [ "$pdays" -gt 2 ] 2>/dev/null || continue ;;
             esac
             crossed="$crossed $label"
+            last_human="$human"                         # самый срочный пройденный
             grep -qxF "${user}|${end_ts}|${label}" "$NOTIFY_STATE_FILE" 2>/dev/null || have_new=1
         done
         [ -n "$crossed" ] || continue
         # Отправляем только если появился новый (ещё не отправленный) порог.
+        # Остаток пишем словами порога («24 часа»), а не точным счётчиком: срок
+        # кончается в 23:59:59, и до порога всегда не хватает секунд — точный
+        # счётчик показывал бы «23ч 59м» там, где человек ждёт «24 часа».
         if [ -n "$have_new" ]; then
             notify_user "$user" "$(ce "⭐") <b>Подписка скоро закончится</b>
-Действует до <b>$(fmt_date_dmy "$exp")</b> — осталось $(format_remaining "$exp").
-Продлите заранее, чтобы не потерять доступ${bu:+ — /buy}."
+Действует до <b>$(fmt_date_dmy "$exp")</b> — осталось <b>${last_human}</b>.
+Продлите заранее, чтобы не потерять доступ." "$kb" "$cta"
         fi
         # Помечаем отправленными ВСЕ пройденные пороги (в т.ч. более крупные —
         # чтобы они не «выстрелили» задним числом на следующих проходах).
