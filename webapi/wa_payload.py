@@ -50,6 +50,67 @@ def sub_tokens(user):
     return tokens
 
 
+def served_tokens(user):
+    """ВСЕ токены, по которым наша нода отдаёт подписку этого юзера.
+
+    Отличается от sub_tokens: там устройства (основные токены пиров не в счёт,
+    P-101), здесь — по каким путям к нам вообще ходят за подпиской. Наш Caddy
+    отдаёт и токены, выданные соседями, значит их скачивания тоже записаны в
+    subapps.dat нашим сборщиком.
+    """
+    tokens = list(colon_db(data_path("subtokens.db")).get(user, []))
+    try:
+        names = sorted(os.listdir(PEERS_DIR))
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".subtokens"):
+            tokens.extend(t for t in colon_db(os.path.join(PEERS_DIR, name)).get(user, [])
+                          if t not in tokens)
+    return tokens
+
+
+def user_clients(user):
+    """Чем скачивали подписку: приложение, версия, ОС, устройство.
+
+    Источник — subapps.dat (docs/guide/SUB-CLIENTS.md), заполняется разбором
+    заголовков запроса за подпиской. На туннеле приложение не видно ни одному
+    движку, поэтому других источников у этих полей нет.
+
+    Сам X-Hwid наружу НЕ отдаём — это отпечаток устройства, и место ему там же,
+    где паролю профиля: нигде. Наружу идёт хвост, которого хватает отличить одну
+    запись от другой и не хватает опознать аппарат. Клиент, не приславший hwid
+    (Hiddify, v2rayNG), помечен identified=false: это не устройство, а «кто-то с
+    таким приложением», и считать по нему устройства нельзя.
+    """
+    tokens = set(served_tokens(user))
+    if not tokens:
+        return []
+    out = []
+    for r in pipe_rows(data_path("subapps.dat"), 9):
+        if r[0] not in tokens:
+            continue
+        hwid = r[1]
+        synthetic = hwid.startswith("~")
+        try:
+            first, last, hits = int(r[6]), int(r[7]), int(r[8])
+        except ValueError:
+            continue
+        out.append({
+            "id": None if synthetic else hwid[-6:],
+            "identified": not synthetic,
+            "app": r[2] or None,
+            "version": r[3] or None,
+            "os": r[4] or None,
+            "model": r[5] or None,
+            "first_seen": first,
+            "last_seen": last,
+            "fetches": hits,
+        })
+    out.sort(key=lambda c: c["last_seen"], reverse=True)
+    return out
+
+
 def tg_username(tg_id):
     for r in pipe_rows(data_path("tgusers.dat"), 2):
         if r[0] == tg_id:
@@ -90,5 +151,8 @@ def user_payload(user):
         "online_connections": (lonline or 0) + ponline if lonline is not None else ponline,
         "online": is_online(user),
         "devices_seen": user_ip_count(user),
+        # Чем человек пользуется (docs/guide/SUB-CLIENTS.md). Пустой список —
+        # не «нет устройств», а «за подпиской ещё не приходили с этой ноды».
+        "clients": user_clients(user),
     }
 

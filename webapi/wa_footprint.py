@@ -43,6 +43,8 @@ KNOWN = {
     "authmap.dat": ("Живая таблица «профиль → адрес» последних подключений", True),
     "slotmap.dat": ("Какой слот занят каким адресом", True),
     "subips.dat": ("Адреса, с которых скачивали подписку по ссылке", True),
+    "subapps.dat": ("Чем скачивали подписку: приложение, его версия, ОС и модель устройства", True),
+    "subapps_seen.dat": ("О каком устройстве вам уже присылали предупреждение", True),
     "expiry.dat": ("До какого числа действует доступ", True),
     "expiry_ts.dat": ("Когда срок выставили в последний раз", True),
     "disabled.dat": ("Отключён ли профиль вручную", True),
@@ -275,6 +277,23 @@ def footprint(user):
         if parts[0] in tokens:
             subips += 1
     add("subips.dat", subips, "адресов, скачивавших вашу подписку: %d" % subips)
+
+    # Токены соседей тоже наши: их подписку отдаёт наш же Caddy, и разбор
+    # заголовков записал их сюда (docs/guide/SUB-CLIENTS.md).
+    all_tokens = set(tokens)
+    try:
+        for name in sorted(os.listdir(PEERS_DIR)):
+            if name.endswith(".subtokens"):
+                all_tokens.update(
+                    line.partition(":")[2]
+                    for line in read_lines(os.path.join(PEERS_DIR, name))
+                    if line.startswith(user + ":"))
+    except OSError:
+        pass
+    subapps = sum(1 for parts in pipe_rows(data_path("subapps.dat"), 9) if parts[0] in all_tokens)
+    add("subapps.dat", subapps, "устройств и приложений, скачивавших вашу подписку: %d" % subapps)
+    seen = sum(1 for parts in pipe_rows(data_path("subapps_seen.dat"), 3) if parts[0] in all_tokens)
+    add("subapps_seen.dat", seen, "устройств, о которых вам уже писали: %d" % seen)
 
     add("demos.db", _colon_has(data_path("demos.db"), user) or _row_field(data_path("demos.db"), user, 0) is not None)
 

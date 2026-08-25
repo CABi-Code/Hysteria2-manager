@@ -247,11 +247,21 @@ curl -H "$H" "$BASE/v1/users/alice"
   "expiry":"2026-08-15","days_left":30,"unlimited":false,
   "limits":{"devices":3,"hardcheck":false,"rate_mbps":200,"prefer":"de.example.net/vless"},
   "traffic":{"tx_bytes":1000500,"rx_bytes":5000600,"total_bytes":6001100},
-  "online_connections":2,"online":true,"devices_seen":2}}
+  "online_connections":2,"online":true,"devices_seen":2,
+  "clients":[{"id":"E74AC1","identified":true,"app":"v2raytun","version":"5.25.81",
+              "os":"Android 11","model":"Redmi M2004J19C",
+              "first_seen":1787600000,"last_seen":1787690000,"fetches":42}]}}
 ```
 
 Поле `free` — `null` у того, кто не на бесплатном тарифе. Состояние демо-ключа
 живёт отдельно, см. `GET /v1/demo/{name}`.
+
+Поле `clients` — чем человек скачивает подписку ([SUB-CLIENTS.md](SUB-CLIENTS.md)).
+Пустой список означает «за подпиской ещё не приходили с этой ноды», а не
+«устройств нет». `identified:false` — клиент не прислал `X-Hwid` (Hiddify,
+v2rayNG): это не аппарат, а «кто-то с таким приложением», и **считать по таким
+записям устройства нельзя**. Сам `X-Hwid` наружу не отдаётся никогда — только
+хвост в `id`, которого хватает отличить запись и не хватает опознать аппарат.
 
 ### GET /v1/users/{name}/devices — устройства (scope: read)
 

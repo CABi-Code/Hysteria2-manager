@@ -398,6 +398,25 @@ _render_user_action() {
     local ipc
     ipc=$(get_user_ip_count "$user")
     echo "  Уникальных IP: $ipc  (роуминг/смена IP — это норма, не признак шаринга)"
+
+    # Чем человек пользуется (docs/guide/SUB-CLIENTS.md). Первый вопрос любого
+    # разбора «не работает» — какое приложение и какой версии; до этой строки
+    # он стоил переписки с клиентом.
+    if declare -F get_user_apps >/dev/null 2>&1; then
+        local apps line hwid app ver os model last
+        apps=$(get_user_apps "$user")
+        if [ -n "$apps" ]; then
+            echo "  Приложения:"
+            while IFS='|' read -r hwid app ver os model _first last _cnt; do
+                [ -n "$app" ] || continue
+                # «~» — клиент не назвал устройство (Hiddify, v2rayNG): это не
+                # аппарат, а «кто-то с таким приложением», см. SUB-CLIENTS §3.
+                printf "    %s %-13s %-9s %-15s %s\n" \
+                    "$([ "${hwid#\~}" = "$hwid" ] && echo "📱" || echo "· ")" \
+                    "$app" "${ver:-—}" "${os:-—}" "${model:-}"
+            done <<< "$apps"
+        fi
+    fi
     # Подозрение на шаринг теперь считается по ОДНОВРЕМЕННОМУ активному трафику на
     # разных нодах (балл анти-абуза), а не по числу IP (оно ложно срабатывало у
     # роуминга и семьи). См. lib/antiabuse.sh.
