@@ -70,8 +70,10 @@ secure_web_files() {
     chown -R "root:${cg}" "$WEBROOT" 2>/dev/null || true
     chmod 750 "$WEBROOT" "$WEBROOT/sub" "$WEBROOT/cluster" 2>/dev/null || true
     find "$WEBROOT/sub" -type f -exec chmod 640 {} + 2>/dev/null || true
-    [ -f "$WEBROOT/cluster/manifest" ]   && chmod 640 "$WEBROOT/cluster/manifest" 2>/dev/null || true
-    [ -f "$WEBROOT/cluster/peers.list" ] && chmod 640 "$WEBROOT/cluster/peers.list" 2>/dev/null || true
+    # Весь cluster/ — 640, а не поимённо: раздел, который забыли перечислить,
+    # наследует режим источника, и `cp -f` секретного файла (subtokens.db, 600)
+    # оставлял его нечитаемым для Caddy — пир получал 403 вместо данных (P-112).
+    find "$WEBROOT/cluster" -type f -exec chmod 640 {} + 2>/dev/null || true
 }
 
 # Собирает клиентскую ссылку hysteria2:// для юзера. ip/port/obfs/sni можно
