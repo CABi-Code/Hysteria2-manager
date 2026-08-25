@@ -158,6 +158,138 @@ bot_renew_link() {
     printf '%s Продлить: https://t.me/%s?start=tariffs' "$(ce "⭐")" "$bu"
 }
 
+# ---------- чужое устройство в подписке ----------
+# Разбор темы — docs/guide/SUB-ALERTS.md. Здесь коротко о трёх правилах, потому
+# что нарушить их легко, а стоит это доверия к каждому следующему уведомлению.
+#
+# 1. Тревожим ТОЛЬКО по опознанным устройствам (`X-Hwid`). Клиент, не приславший
+#    его (Hiddify, v2rayNG, браузер, бот предпросмотра ссылки), неотличим от
+#    любого другого такого же — сказать «это новое устройство» про него нельзя
+#    честно. Молчим: пропущенная утечка дешевле обвинения в пустоту.
+# 2. Одно сообщение на устройство НАВСЕГДА (SUBAPPS_SEEN_FILE). Подписка
+#    обновляется раз в час у всех — без отметки то же самое устройство поднимало
+#    бы тревогу 24 раза в сутки. Отметка ставится ДО отправки: сбой доставки не
+#    должен превращаться в вечный цикл попыток.
+# 3. Тревога — только когда устройств БОЛЬШЕ, чем оплачено. Второй телефон
+#    человека, купившего два устройства, — не чужой.
+FOREIGN_COOLDOWN_SEC="${FOREIGN_COOLDOWN_SEC:-86400}"   # не чаще раза в сутки на человека
+SUBAPPS_SEEN_KEEP_DAYS="${SUBAPPS_SEEN_KEEP_DAYS:-30}"
+
+# Кнопка «сбросить ссылку»: экран подписки мини-аппа, там же живёт перевыпуск.
+bot_subscription_kb() {
+    local s
+    s=$(miniapp_screen_url subscription) || return 0
+    jq -nc --arg s "$s" \
+        '{inline_keyboard:[[{text:"🔑 Сбросить ссылку",url:$s}]]}'
+}
+bot_subscription_link() {
+    local bu; bu=$(bot_username)
+    [ -n "$bu" ] || return 0
+    printf '%s Сбросить ссылку: https://t.me/%s?start=subscription' "$(ce "🚫")" "$bu"
+}
+
+# Отметка «об этом устройстве уже писали»: «основной_токен|hwid|ts».
+# Ключ — ОСНОВНОЙ токен человека, а не тот, по которому пришли: одно устройство
+# может качать подписку по двум его ссылкам, и это всё равно одно устройство.
+# Строка начинается с токена, поэтому erase_user стирает её своим обходом
+# DATA_DIR — отдельный список файлов не нужен (docs/guide/DATA-RETENTION.md).
+_seen_has() {   # primary hwid
+    grep -qF "$1|$2|" "$SUBAPPS_SEEN_FILE" 2>/dev/null
+}
+_seen_add() {   # primary hwid ts
+    _seen_has "$1" "$2" || printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$SUBAPPS_SEEN_FILE"
+}
+
+_foreign_check_user() {   # user now
+    local user="$1" now="$2" allowed primary apps ids count new_line="" new_count=0 cool=""
+    allowed=$(get_user_devices "$user" 2>/dev/null)
+    # Безлимит — тревожить не о чем: «больше, чем оплачено» недостижимо.
+    [ "${allowed:-0}" -gt 0 ] 2>/dev/null || return 0
+    primary=$(sub_token_for "$user" 2>/dev/null) || return 0
+    [ -n "$primary" ] || return 0
+
+    apps=$(get_user_apps "$user" 2>/dev/null) || return 0
+    [ -n "$apps" ] || return 0
+    # Только опознанные: «~…» это не устройство, а «кто-то с таким приложением».
+    ids=$(printf '%s\n' "$apps" | awk -F'|' '$1 !~ /^~/ && $1 != "" { print }')
+    [ -n "$ids" ] || return 0
+    count=$(printf '%s\n' "$ids" | wc -l)
+
+    # Первый взгляд на человека: всё, что уже есть, — не новость. Без этого
+    # первый же прогон после обновления разослал бы «новое устройство» всем.
+    if ! grep -qF "$primary|" "$SUBAPPS_SEEN_FILE" 2>/dev/null; then
+        printf '%s\n' "$ids" | while IFS='|' read -r hwid _rest; do
+            _seen_add "$primary" "$hwid" "$now"
+        done
+        return 0
+    fi
+
+    local hwid app ver os model _first _last _cnt
+    while IFS='|' read -r hwid app ver os model _first _last _cnt; do
+        _seen_has "$primary" "$hwid" && continue
+        _seen_add "$primary" "$hwid" "$now"
+        new_count=$(( new_count + 1 ))
+        # Самое свежее устройство идёт первым (get_user_apps сортирует по last),
+        # его и показываем в сообщении.
+        [ -n "$new_line" ] || new_line="${model:-${os:-Неизвестное устройство}} · ${os:-—} · ${app:-—}${ver:+ $ver}"
+    done <<< "$ids"
+
+    [ "$new_count" -gt 0 ] || return 0
+    # Новое устройство в пределах оплаченного — это просто новое устройство.
+    [ "$count" -gt "$allowed" ] 2>/dev/null || return 0
+
+    # Кулдаун: ссылку выложили в общий чат — новые устройства будут капать
+    # часами, а человеку нужно одно сообщение, а не поток.
+    cool=$(awk -F'|' -v t="$primary" '$1 == t && $2 == "=alert" { print $3 }' \
+           "$SUBAPPS_SEEN_FILE" 2>/dev/null | tail -1)
+    [ -n "$cool" ] && [ $(( now - cool )) -lt "$FOREIGN_COOLDOWN_SEC" ] 2>/dev/null && return 0
+    sed -i "/^${primary}|=alert|/d" "$SUBAPPS_SEEN_FILE" 2>/dev/null
+    printf '%s|=alert|%s\n' "$primary" "$now" >> "$SUBAPPS_SEEN_FILE"
+
+    local more="" kb cta
+    [ "$new_count" -gt 1 ] && more=" и ещё $(( new_count - 1 ))"
+    kb=$(bot_subscription_kb); cta=$(bot_subscription_link)
+    notify_user "$user" "$(ce "❗️") <b>Новое устройство в вашей подписке</b>
+Вашу ссылку добавили там, где её раньше не было:
+📱 <b>${new_line}</b>${more}
+
+Сейчас подписку скачивают <b>${count}</b> устройств, а оплачено <b>${allowed}</b>.
+
+Если это вы — ничего делать не нужно. Если нет — сбросьте ссылку: старая
+перестанет работать, и её надо будет заново добавить на своих устройствах." \
+        "$kb" "$cta"
+}
+
+# Проход по всем: у кого появилось устройство сверх оплаченного.
+# Зовётся из --notify-sweep (раз в ~5 мин), данные готовит collect_sub_ips.
+notify_foreign_devices() {
+    bot_enabled || return 0
+    bot_mod_on notify || return 0
+    BOT_TOKEN=${BOT_TOKEN:-$(bot_token)}; [ -n "$BOT_TOKEN" ] || return 0
+    [ -s "$SUBAPPS_FILE" ] || return 0
+    declare -F get_user_apps >/dev/null 2>&1 || return 0
+    touch "$SUBAPPS_SEEN_FILE" 2>/dev/null || return 0
+
+    # Свой замок: проверка «писали ли» и отметка не атомарны, два параллельных
+    # прохода прислали бы одно и то же дважды (та же причина, что у sweep выше).
+    { exec 9>"$DATA_DIR/.foreign_sweep.lock"; } 2>/dev/null || true
+    flock -n 9 2>/dev/null || return 0
+
+    local now user; now=$(date +%s)
+    while IFS= read -r user; do
+        [ -n "$user" ] || continue
+        _foreign_check_user "$user" "$now"
+    done < <(sub_all_users 2>/dev/null)
+
+    # Уборка: отметка живёт дольше самих записей о скачивании (те 7 дней), иначе
+    # устройство, помолчавшее неделю, вернулось бы как «новое». Но не вечно —
+    # через месяц тишины тревога по нему оправданна, а файл не растёт.
+    local cut=$(( now - SUBAPPS_SEEN_KEEP_DAYS * 86400 )) tmp
+    tmp="${SUBAPPS_SEEN_FILE}.tmp.$BASHPID"
+    awk -F'|' -v cut="$cut" 'NF >= 3 && $3 + 0 >= cut' "$SUBAPPS_SEEN_FILE" > "$tmp" \
+        && mv "$tmp" "$SUBAPPS_SEEN_FILE" || rm -f "$tmp"
+}
+
 # ---------- ступенчатые напоминания об истечении ----------
 # Пороги: за 7д (если период >8д), 3д, 1д (если период >2д), 1ч, 10мин.
 # Дедуп по (user|end_ts|label) — новая покупка меняет end_ts и сбрасывает пороги.

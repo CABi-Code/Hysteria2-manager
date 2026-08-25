@@ -79,6 +79,10 @@ fi
 if [ "$1" = "--notify-sweep" ]; then
     cron_lock notify-sweep
     bot_notify_sweep
+    # Чужое устройство в подписке (docs/guide/SUB-ALERTS.md). Здесь, а не в
+    # --collect: данные готовит сбор раз в полчаса, а сообщение должно уйти
+    # ближайшим проходом бота, у которого уже есть и токен, и свой замок.
+    notify_foreign_devices
     exit 0
 fi
 
