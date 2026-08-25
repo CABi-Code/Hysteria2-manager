@@ -100,29 +100,44 @@ authmap_trim() {
 # Одним awk: старый файл читается один раз, новые пары досчитываются в памяти,
 # протухшие записи выбрасываются. Раньше на КАЖДУЮ строку журнала делались grep
 # + sed -i, то есть полная перезапись файла на каждое подключение.
-_ips_merge() {   # файл  now
-    local file="$1" now="$2" tmp="$1.tmp.$BASHPID"
+#
+# Третий аргумент — сколько СВОЙСТВ ключа идёт после двух ключевых колонок
+# (по умолчанию 0, формат старых файлов не меняется). Свойство — не часть
+# ключа: оно перезаписывается при каждой встрече. Так «версия приложения» у
+# того же устройства обновляется сама, не плодя вторую строку (subapps.dat).
+# Формат с nattr: «key1|key2|свойства...|first|last|count».
+_ips_merge() {   # файл  now  [nattr]
+    local file="$1" now="$2" nattr="${3:-0}" tmp="$1.tmp.$BASHPID"
     touch "$file" 2>/dev/null || return 0
-    awk -v old="$file" -v now="$now" -v cut=$(( now - IPS_RETENTION_DAYS * 86400 )) '
+    awk -v old="$file" -v now="$now" -v na="$nattr" \
+        -v cut=$(( now - IPS_RETENTION_DAYS * 86400 )) '
         BEGIN {
             FS = "\t"
+            need = 5 + na            # key1 key2 [свойства] first last count
             while ((getline line < old) > 0) {
                 n = split(line, p, "|")
-                if (n < 5 || p[1] == "" || p[4] + 0 < cut) continue
+                if (n < need || p[1] == "" || p[4 + na] + 0 < cut) continue
                 k = p[1] "|" p[2]
                 if (k in cnt) continue
-                first[k] = p[3]; last[k] = p[4]; cnt[k] = p[5]; ord[++total] = k
+                a = ""
+                for (i = 3; i < 3 + na; i++) a = a p[i] "|"
+                attr[k] = a
+                first[k] = p[3 + na]; last[k] = p[4 + na]; cnt[k] = p[5 + na]
+                ord[++total] = k
             }
         }
         $1 != "" && $2 != "" {
             k = $1 "|" $2
+            a = ""
+            for (i = 3; i < 3 + na; i++) a = a $i "|"
+            attr[k] = a              # свойства всегда от последней встречи
             if (k in cnt) { last[k] = now; cnt[k] = cnt[k] + 1 }
             else { first[k] = now; last[k] = now; cnt[k] = 1; ord[++total] = k }
         }
         END {
             for (i = 1; i <= total; i++) {
                 k = ord[i]; split(k, p, "|")
-                printf "%s|%s|%s|%s|%s\n", p[1], p[2], first[k], last[k], cnt[k]
+                printf "%s|%s|%s%s|%s|%s\n", p[1], p[2], attr[k], first[k], last[k], cnt[k]
             }
         }' > "$tmp" && mv "$tmp" "$file" || rm -f "$tmp"
 }
@@ -217,6 +232,36 @@ ips_forget() {   # user
     printf '%s|%s\n' "$removed" "$left"
 }
 
+# Забыть, какими приложениями скачивали подписку (кабинет, «Мои данные»).
+#
+# Здесь, в отличие от ips_forget, удаляем ВСЁ, а не только старое: на этих
+# записях ничего не стоит. Лимит устройств считается по адресам и слотам, кик и
+# анти-абуз их не читают, тариф от них не зависит — стереть можно без дыры.
+# Правило экрана «Мои данные» ровно такое: не стоит ничего — удаляем целиком,
+# половинчатое «сотрём, но данные ещё поработают» и есть дыра в лимитах.
+#
+# Отметки «об этом устройстве уже писали» (SUBAPPS_SEEN_FILE) НЕ трогаем: это не
+# сведения о человеке, а предохранитель от спама. Сотри их вместе со строками —
+# и следующее же обновление подписки принесёт владельцу заново то самое
+# уведомление, от которого он только что избавился. Полное забвение (erase_user)
+# чистит и их: там человека не остаётся вовсе, спамить некому.
+#
+# Печатает число удалённых строк.
+apps_forget() {   # user
+    local user="$1" tokens tmp before after
+    [ -n "$user" ] || return 1
+    [ -s "$SUBAPPS_FILE" ] || { echo 0; return 0; }
+    tokens=$(sub_tokens_cluster "$user" 2>/dev/null | tr '\n' ' ')
+    [ -n "${tokens// /}" ] || { echo 0; return 0; }
+
+    before=$(grep -c . "$SUBAPPS_FILE" 2>/dev/null || echo 0)
+    tmp="${SUBAPPS_FILE}.tmp.$BASHPID"
+    awk -F'|' -v toks=" $tokens " '!index(toks, " " $1 " ")' "$SUBAPPS_FILE" > "$tmp" \
+        && mv "$tmp" "$SUBAPPS_FILE" || { rm -f "$tmp"; return 1; }
+    after=$(grep -c . "$SUBAPPS_FILE" 2>/dev/null || echo 0)
+    echo $(( before - after ))
+}
+
 get_user_ip_count() {
     local count
     count=$(grep -c "^${1}|" "$IPS_FILE" 2>/dev/null || true)
@@ -228,17 +273,30 @@ get_user_ips() {
     grep "^${1}|" "$IPS_FILE" 2>/dev/null
 }
 
-# Собирает IP, скачавшие подписку по КОНКРЕТНОМУ токену, из access-лога Caddy.
+# Собирает из access-лога Caddy ДВА файла разом: кто скачивал подписку по
+# конкретному токену (SUBIPS_FILE, «token|ip|...») и чем скачивал
+# (SUBAPPS_FILE, «token|hwid|приложение|версия|ОС|модель|...»).
+#
 # Caddy пишет access-лог в stderr → journald (в файл /var/log/caddy писать нельзя:
 # процессу caddy под systemd туда нет доступа, и это роняет старт Caddy). Читаем
 # журнал так же, как collect_ips читает лог hysteria. Инкрементально по метке
-# SUBLOG_TS (человекочитаемая дата --since). Формат SUBIPS_FILE — как IPS_FILE:
-# «token|ip|first|last|count». Время — момент сбора (как в collect_ips).
+# SUBLOG_TS (человекочитаемая дата --since). Время — момент сбора (как в collect_ips).
+#
+# Почему приложение видно ТОЛЬКО здесь: на туннеле клиента не опознать вовсе.
+# Hysteria зовёт auth-скрипт с тремя аргументами (адрес, кред, tx), у Xray
+# клиентской идентичности нет, у sing-box в метаданных нет даже юзера (P-17),
+# а TLS-отпечаток REALITY специально мимикрирует под браузер. Единственный
+# момент, когда приложение само себя называет, — HTTP-запрос за подпиской.
+#
+# Что реально присылают (замерено на живом логе): Happ, v2raytun и INCY шлют
+# X-Hwid + модель + версию ОС; Hiddify и v2rayNG — только User-Agent. Поэтому
+# hwid может быть пустым, и «-» тут не «неизвестное устройство», а «клиент не
+# представился»: все такие запросы по одному токену сливаются в одну строку.
 collect_sub_ips() {
     command -v jq >/dev/null 2>&1 || return 0
     command -v journalctl >/dev/null 2>&1 || return 0
-    touch "$SUBIPS_FILE" 2>/dev/null
-    local since now
+    touch "$SUBIPS_FILE" "$SUBAPPS_FILE" 2>/dev/null
+    local since now raw
     if [ -s "$SUBLOG_TS" ]; then
         since=$(cat "$SUBLOG_TS")
     else
@@ -247,21 +305,94 @@ collect_sub_ips() {
     date '+%Y-%m-%d %H:%M:%S' > "$SUBLOG_TS"
     now=$(date +%s)
 
-    # Одним проходом jq: из журнала Caddy берём JSON access-записи к /sub/*.
+    # Один проход по журналу на оба файла: journalctl по трём суткам лога — самая
+    # дорогая часть сбора, и делать её дважды только ради второй проекции нельзя.
+    raw=$(mktemp) || return 0
+
     # fromjson? пропускает не-JSON и служебные строки Caddy. remote_ip (новые
-    # версии) или remote_addr «ip:port» (старые). Печатаем «ip<TAB>uri».
+    # версии) или remote_addr «ip:port» (старые). Значения заголовков у Caddy —
+    # массивы, отсюда `// [""] | .[0]`.
     journalctl -u caddy --no-pager -o cat --since="$since" 2>/dev/null \
       | grep -F '/sub/' \
       | jq -rR 'fromjson?
                 | select(.request?.uri != null)
                 | select(.request.uri | startswith("/sub/"))
-                | [ (.request.remote_ip // ((.request.remote_addr // "") | split(":")[0]) // ""),
-                    (.request.uri) ] | @tsv' 2>/dev/null \
-      | awk -F'\t' '{
-            ip = $1; uri = $2
-            if (ip == "" || ip == "127.0.0.1") next
-            sub(/^\/sub\//, "", uri); sub(/[?\/].*$/, "", uri)
-            if (uri ~ /^[A-Za-z0-9]+$/) printf "%s\t%s\n", uri, ip
-        }' \
+                | .request as $r | ($r.headers // {}) as $h
+                | [ ($r.remote_ip // (($r.remote_addr // "") | split(":")[0]) // ""),
+                    $r.uri,
+                    (($h["User-Agent"]     // [""]) | .[0]),
+                    (($h["X-Hwid"]         // [""]) | .[0]),
+                    (($h["X-Client"]       // [""]) | .[0]),
+                    (($h["X-App-Version"]  // [""]) | .[0]),
+                    (($h["X-Device-Os"]    // [""]) | .[0]),
+                    (($h["X-Ver-Os"]       // [""]) | .[0]),
+                    (($h["X-Device-Model"] // [""]) | .[0]) ] | @tsv' 2>/dev/null \
+      | awk -F'\t' -v OFS='\t' '
+            # «|» — наш разделитель полей, таб — разделитель на входе слияния.
+            # Всё, что пришло от клиента, обязано их лишиться до записи в файл.
+            function clean(s) { gsub(/[|\t]/, " ", s); gsub(/^ +| +$/, "", s); return s }
+            function word(s) { sub(/ .*$/, "", s); return s }
+            {
+                ip = $1; uri = $2; ua = $3; hwid = $4
+                xclient = $5; xappver = $6; xos = $7; xosver = $8; model = $9
+                sub(/^\/sub\//, "", uri); sub(/[?\/].*$/, "", uri)
+                if (uri !~ /^[A-Za-z0-9]+$/) next
+                if (ip != "" && ip != "127.0.0.1") print "IP", uri, ip
+
+                # Имя приложения: заголовок X-Client честнее UA (INCY),
+                # иначе — часть UA до первого «/».
+                n = split(ua, u, "/")
+                app = xclient != "" ? xclient : word(u[1])
+                # Версия: свой заголовок, иначе второй кусок UA, если он похож
+                # на версию («v2raytun/android» — это ОС, а не версия).
+                # Только первое СЛОВО: у Hiddify весь хвост идёт без слэша
+                # («4.1.1 (windows) like ClashMeta …»), и целиком он не версия.
+                ver = xappver
+                if (ver == "" && n >= 2 && word(u[2]) ~ /^[0-9][0-9.]*$/) ver = word(u[2])
+                # ОС: свой заголовок; иначе скобки Hiddify «(windows)»;
+                # иначе третий кусок UA (Happ, INCY); иначе второй, если он
+                # не версия (v2raytun).
+                os = xos
+                if (os == "" && match(ua, /\([A-Za-z]+\)/))
+                    os = substr(ua, RSTART + 1, RLENGTH - 2)
+                if (os == "" && n >= 3) os = word(u[3])
+                if (os == "" && n >= 2 && u[2] !~ /^[0-9][0-9.]*$/) os = word(u[2])
+                # Версия ОС: Happ шлёт голое «15», v2raytun — «Android 11».
+                if (xosver != "") os = (xosver ~ /^[0-9]/) ? os " " xosver : xosver
+
+                if (app == "") app = "-"
+                app = clean(app); ver = clean(ver); os = clean(os)
+                # Клиент не назвал устройство — ключом становится «~приложение/ОС».
+                # Просто «-» на всех сразу нельзя: ключ строки — токен+hwid, и
+                # Hiddify на ноутбуке с Hiddify на телефоне слились бы в одну
+                # запись, где выигрывает последний увиденный. «~» помечает, что
+                # это НЕ идентификатор устройства: два одинаковых Hiddify на
+                # одной ОС так и останутся одной строкой, различить их нечем.
+                # Поэтому такие строки не считаются устройствами и никогда не
+                # поднимают тревогу (lib/notify.sh).
+                if (hwid == "") hwid = "~" app (os != "" ? "/" os : "")
+                print "APP", uri, clean(hwid), app, ver, os, clean(model)
+            }' > "$raw"
+
+    awk -F'\t' -v OFS='\t' '$1 == "IP" { print $2, $3 }' "$raw" \
       | _ips_merge "$SUBIPS_FILE" "$now"
+    awk -F'\t' -v OFS='\t' '$1 == "APP" { print $2, $3, $4, $5, $6, $7 }' "$raw" \
+      | _ips_merge "$SUBAPPS_FILE" "$now" 4
+    rm -f "$raw"
+}
+
+# Чем юзер скачивал подписку: строки SUBAPPS_FILE по всем его токенам.
+# Печатает «hwid|приложение|версия|ОС|модель|first|last|count», свежие сверху.
+#
+# Токены берём КЛАСТЕРНЫЕ, а не только свои: наша нода отдаёт подписку и по
+# токенам, выданным соседями (regen_user_subscription), — значит их скачивания
+# тоже попали в наш лог и в SUBAPPS_FILE.
+get_user_apps() {   # user
+    local tokens
+    tokens=$(sub_tokens_cluster "$1" 2>/dev/null | tr '\n' ' ')
+    [ -n "${tokens// /}" ] || return 0
+    [ -s "$SUBAPPS_FILE" ] || return 0
+    awk -F'|' -v toks=" $tokens " 'NF >= 9 && index(toks, " " $1 " ") {
+            sub(/^[^|]*\|/, ""); print
+        }' "$SUBAPPS_FILE" 2>/dev/null | sort -t'|' -k7,7nr
 }

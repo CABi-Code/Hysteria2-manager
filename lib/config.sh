@@ -184,6 +184,18 @@ AUTHMAP_FILE="$DATA_DIR/authmap.dat"
 # collect_sub_ips читает его через journalctl -u caddy. SUBLOG_TS — метка «since».
 SUBIPS_FILE="$DATA_DIR/subips.dat"
 SUBLOG_TS="$DATA_DIR/sublog_ts"
+# Чем скачивали подписку по токену: «token|hwid|приложение|версия|ОС|модель|first|last|count».
+# Заполняется тем же проходом по логу Caddy, что и SUBIPS_FILE (collect_sub_ips):
+# приложение называет себя в заголовках HTTP и больше нигде — на туннеле его не
+# видно ни одному движку. Срок жизни общий с адресами, IPS_RETENTION_DAYS.
+SUBAPPS_FILE="$DATA_DIR/subapps.dat"
+# О каких устройствах владельцу уже написали. «token|hwid|ts» — одна строка на
+# устройство: подписка обновляется раз в час, и без этой отметки человек получал
+# бы одно и то же сообщение каждый час (lib/notify.sh, notify_foreign_devices).
+# Ключ начинается с ТОКЕНА не случайно: erase_user обходит весь DATA_DIR и режет
+# строки по токенам юзера, поэтому «кому мы писали» стирается вместе с человеком
+# само, без ещё одного рукописного списка файлов (docs/guide/DATA-RETENTION.md).
+SUBAPPS_SEEN_FILE="$DATA_DIR/subapps_seen.dat"
 
 # Значение поля «КЛЮЧ=значение» из конфига-файла (node.conf, protocols.conf,
 # klimit.conf, webapi.conf, bot.conf — формат у всех один). Первое совпадение,
