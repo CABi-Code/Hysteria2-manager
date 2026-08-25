@@ -66,6 +66,9 @@ ROUTES = [
     ("GET", re.compile(r"^/v1/users/([^/]+)/footprint$"), "read", "h_user_footprint"),
     # Забыть адреса старше суток. Свежие не трогаются: на них счёт устройств.
     ("DELETE", re.compile(r"^/v1/users/([^/]+)/ips$"), "users", "h_user_ips_forget"),
+    # Забыть, чем скачивали подписку. В отличие от адресов — целиком: на этих
+    # записях не стоит ни лимит, ни шейпинг (docs/guide/SUB-CLIENTS.md).
+    ("DELETE", re.compile(r"^/v1/users/([^/]+)/clients$"), "users", "h_user_clients_forget"),
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
     ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
     ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
@@ -320,6 +323,11 @@ class Handler(BaseHTTPRequestHandler):
         return {"username": user, "removed": int(res.get("removed") or 0),
                 "left": int(res.get("left") or 0),
                 "kept_newer_than_hours": 24}
+
+    def h_user_clients_forget(self, name):
+        user = need_username(name)
+        res = self.dispatch("apps-forget", user)
+        return {"username": user, "removed": int(res.get("removed") or 0)}
 
     def h_device_add(self, name):
         # Новая ссылка-устройство: свой пароль и свой слот в движке

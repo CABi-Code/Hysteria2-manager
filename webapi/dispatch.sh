@@ -326,6 +326,18 @@ case "$verb" in
         printf 'removed=%s\nleft=%s\n' "${res%%|*}" "${res##*|}"
         ;;
 
+    apps-forget)  # <user> — забыть, чем скачивали подписку (просьба самого юзера)
+        # Здесь, в отличие от ips-forget, удаляем ВСЁ: на этих записях не стоит
+        # ничего — ни лимит устройств, ни шейпинг, ни анти-абуз. Разбор границы
+        # «что удалять можно» — в комментарии apps_forget (lib/ip_tracking.sh).
+        [ $# -eq 1 ] || fail 64 bad_args "apps-forget <user>"
+        valid_user "$1"
+        db_user_exists "$1" || fail 2 user_not_found "пользователь не найден"
+        take_lock
+        res=$(apps_forget "$1") || fail 1 forget_failed "не удалось переписать файл"
+        printf 'removed=%s\n' "$res"
+        ;;
+
     link-del)  # <user> <token> (основную ссылку снять нельзя)
         [ $# -eq 2 ] || fail 64 bad_args "link-del <user> <token>"
         valid_user "$1"
