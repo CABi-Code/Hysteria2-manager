@@ -118,6 +118,13 @@ CLUSTER_STATE_FILE="$DATA_DIR/cluster_state.dat"
 # на каждой ноде СВОЙ, поэтому «сбросить всё утёкшее» = попросить все ноды
 # прокрутить свой пароль. См. pwreset_mark/cluster_apply_pwreset в lib/cluster.sh.
 PWRESET_FILE="$DATA_DIR/cluster_pwreset.dat"
+# Право на забвение по кластеру (LWW по ts): строки «user|ts». Стереть следы
+# можно только локально — у каждой ноды свои файлы, — поэтому нода, где человек
+# попросил его забыть, объявляет это здесь, а остальные стирают у себя на своём
+# sync. Запись остаётся навсегда: она же tombstone, который не даёт зеркалу
+# пира вернуть строки удалённого (cluster_scrub_erased). В ней только имя
+# профиля — ни tg_id, ни ключей. См. erase_mark/cluster_apply_erase.
+ERASE_FILE="$DATA_DIR/cluster_erase.dat"
 # Бесплатный тариф с лимитами трафика (см. lib/freeplan.sh). Строки:
 # «user|state|start|wk_start|wk_base|mo_start|mo_base|notified|ts».
 # Файл кластерный (LWW по ts): окна и базы считаются от ОБЩЕГО трафика по всем

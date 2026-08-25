@@ -206,13 +206,14 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state pwreset freeplan ips expiry settings userlimits subips abuse tgbind version protocols"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset freeplan ips expiry settings userlimits subips abuse tgbind version protocols"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
         subtokens)  echo "токены подписки" ;;
         roster)     echo "реестр юзеров" ;;
         state)      echo "состояния (вкл/выкл/удал.)" ;;
+        erase)      echo "забвение (стёртые)" ;;
         pwreset)    echo "сбросы ключей" ;;
         freeplan)   echo "бесплатный тариф (квоты)" ;;
         ips)        echo "IP-адреса" ;;
@@ -246,6 +247,7 @@ cluster_sync() {
     publish_subtokens
     publish_roster
     publish_cluster_state
+    publish_cluster_erase
     publish_cluster_pwreset
     declare -F publish_cluster_freeplan >/dev/null 2>&1 && publish_cluster_freeplan
     publish_cluster_expiry
@@ -321,6 +323,10 @@ cluster_sync() {
 
     _vp ""
     _vp "  🔧 Применяю изменения локально..."
+    # Забвение — первым: всё остальное ниже сливает данные с пиров, и стёртого
+    # человека нельзя ни воскресить (roster/freeplan), ни привезти обратно.
+    cluster_apply_erase      # стереть следы тех, кого забыли на другой ноде
+    cluster_scrub_erased     # выкинуть их строки из зеркал до слияния
     cluster_apply_state      # точка правды: вкл/выкл/удаление с других нод
     cluster_apply_pwreset    # сброс ключей, начатый на другой ноде
     declare -F cluster_apply_freeplan >/dev/null 2>&1 && cluster_apply_freeplan   # окна/расход бесплатного тарифа
@@ -446,6 +452,85 @@ cluster_apply_pwreset() {
     done <<< "$merged"
     [ "$changed" = 1 ] && publish_cluster_pwreset
     return 0
+}
+
+# ---- ПРАВО НА ЗАБВЕНИЕ ПО КЛАСТЕРУ ----
+# erase_user стирает следы только у себя: файлы данных у каждой ноды свои, а
+# активного CRUD между нодами в кластере нет. Раньше это значило «выполните ту
+# же команду руками на каждой ноде», и до конца её не доводил никто: профиль
+# исчезал, а freeplan/expiry/ips оставались жить у соседей — и возвращались
+# обратно первой же синхронизацией (P-109).
+# Поэтому нода, где человек попросил его забыть, пишет «user|ts» и публикует;
+# остальные на своём sync видят ts новее применённого и стирают следы у себя.
+# LWW и порядок ровно как у pwreset.
+erase_get_ts() { local t; t=$(awk -F'|' -v u="$1" '$1==u{print $2; exit}' "$ERASE_FILE" 2>/dev/null); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
+erase_set() {   # user ts
+    mkdir -p "$DATA_DIR"; touch "$ERASE_FILE"
+    sed -i "/^${1}|/d" "$ERASE_FILE" 2>/dev/null
+    printf '%s|%s\n' "$1" "$2" >> "$ERASE_FILE"
+}
+
+# Объявить забвение: у нас следы уже стёрты (erase_user), пиры узнают на sync.
+erase_mark() {   # user
+    sub_enabled || return 0
+    erase_set "$1" "$(date +%s)"
+    publish_cluster_erase
+}
+
+publish_cluster_erase() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"; touch "$ERASE_FILE"
+    cp -f "$ERASE_FILE" "$WEBROOT/cluster/erase" 2>/dev/null || : > "$WEBROOT/cluster/erase"
+    chmod 640 "$WEBROOT/cluster/erase" 2>/dev/null || true
+    secure_web_files
+}
+
+cluster_apply_erase() {
+    sub_enabled || return 0
+    declare -F erase_user >/dev/null || return 0
+    local merged u t changed=0
+    merged=$(
+        { [ -f "$ERASE_FILE" ] && cat "$ERASE_FILE"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.erase 2>/dev/null; } \
+        | awk -F'|' 'NF>=2 && $1!="" { if (($2+0) > (ts[$1]+0)) ts[$1]=$2 }
+                     END { for (u in ts) printf "%s|%s\n", u, ts[u] }'
+    )
+    [ -n "$merged" ] || return 0
+    while IFS='|' read -r u t; do
+        [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        [ "${t:-0}" -gt "$(erase_get_ts "$u")" ] 2>/dev/null || continue
+        # nomark: пришедший ts запоминаем как есть. Свежий ts здесь означал бы
+        # обратную волну — сосед принял бы наше «забвение» за новое событие.
+        erase_user "$u" nomark >/dev/null 2>&1
+        erase_set "$u" "$t"
+        changed=1
+    done <<< "$merged"
+    [ "$changed" = 1 ] && publish_cluster_erase
+    return 0
+}
+
+# Вычистить из зеркал пиров строки про уже стёртых людей — ДО того, как их
+# сольют apply-функции. Одного разового erase_user мало: пир, ещё не применивший
+# забвение, продолжает публиковать свои строки, а cluster_apply_freeplan и
+# соседи сливают LWW, не спрашивая, жив ли человек. Без этого фильтра стёртый
+# freeplan возвращается на каждой синхронизации — и так до бесконечности, потому
+# что мы публикуем его обратно.
+# Файлы .state и .tgbind не трогаем: там метки удаления и свои tombstone'ы,
+# без них профиль и привязка воскреснут (см. erase_user).
+cluster_scrub_erased() {
+    [ -d "$PEERS_DIR" ] && [ -s "$ERASE_FILE" ] || return 0
+    declare -F erase_from_file >/dev/null || return 0
+    local -a users=()
+    local u t f
+    while IFS='|' read -r u t; do
+        [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] && users+=("$u")
+    done < "$ERASE_FILE"
+    [ ${#users[@]} -gt 0 ] || return 0
+    for f in "$PEERS_DIR"/*; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in *.state | *.tgbind | *.erase) continue ;; esac
+        erase_from_file "$f" "${users[@]}" >/dev/null
+    done
 }
 
 # --- Обмен версиями между нодами ---
@@ -920,6 +1005,7 @@ cluster_rates_sync() {
           mv "$PEERS_DIR/${name}.rates.tmp.$BASHPID" "$PEERS_DIR/${name}.rates" 2>/dev/null; } &
     done < <(cluster_peers)
     wait
+    cluster_scrub_erased   # спидометр тоже носит имена: стёртого не показываем
 }
 
 # Частая синхронизация СТАТИСТИКИ (онлайн/трафик/скорость по кластеру + лимит
@@ -971,6 +1057,7 @@ cluster_online_sync() {
     done < <(cluster_peers)
     wait
 
+    cluster_scrub_erased       # стёртых — вон из зеркал, пока их не слили ниже
     cluster_apply_userlimits   # применить лимиты, пришедшие с пиров
     abuse_apply                # слить состояние анти-абуза с пирами (окно авто-HC)
     enforce_device_limits      # внутри: refresh_online + traffic-based жёсткая проверка

@@ -187,14 +187,17 @@ reset_user_stats() {
 # рукописный список к следующей фиче устареет молча — и забытая строка с адресом
 # переживёт удаление аккаунта.
 #
-# Два файла из обхода исключены НАМЕРЕННО — это метки удаления, а не данные:
+# Три файла из обхода исключены НАМЕРЕННО — это метки удаления, а не данные:
 #   • cluster_state.dat и peers/*.state — «имя|deleted|ts». Без метки манифест
 #     соседа воскресит профиль;
 #   • tgusers.dat — туда tg_unbind пишет «tg_id||ts». Без неё привязка вернётся
-#     с соседа по last-write-wins.
+#     с соседа по last-write-wins;
+#   • cluster_erase.dat и peers/*.erase — «имя|ts», объявление забвения по
+#     кластеру. Стереть его = отменить забвение на соседях и позвать их данные
+#     обратно (cluster_scrub_erased).
 # См. docs/guide/DATA-RETENTION.md.
-erase_user() {   # user
-    local user="$1"
+erase_user() {   # user [nomark]
+    local user="$1" nomark="${2:-}"
     [ -n "$user" ] || { echo "  ❌ Не указан пользователь"; return 1; }
     [[ "$user" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "  ❌ Недопустимое имя"; return 1; }
 
@@ -239,21 +242,29 @@ erase_user() {   # user
     for file in "$DATA_DIR"/*.dat "$DATA_DIR"/*.db "$DATA_DIR"/*.log "$PEERS_DIR"/* /var/log/hy2-manager/*.log; do
         [ -f "$file" ] || continue
         case "$(basename "$file")" in
-            cluster_state.dat | tgusers.dat) continue ;;      # метки удаления
-            *.state) continue ;;
+            cluster_state.dat | tgusers.dat | cluster_erase.dat) continue ;;   # метки удаления
+            *.state | *.erase) continue ;;
         esac
         n=$(erase_from_file "$file" "${needles[@]}") || true
         removed=$(( removed + ${n:-0} ))
     done
 
-    # 5) Опубликовать почищенные наборы: соседи забирают их сами.
+    # 5) Объявить забвение кластеру: соседи сотрут следы у себя на своём sync.
+    #    Без метки чистка была бы бессмысленной — их строки вернулись бы к нам
+    #    первой же синхронизацией (см. cluster_scrub_erased). nomark — мы сами
+    #    применяем чужое объявление, второй раз объявлять нечего.
+    if [ "$nomark" != nomark ] && declare -F erase_mark >/dev/null; then
+        erase_mark "$user"
+    fi
+
+    # 6) Опубликовать почищенные наборы: соседи забирают их сами.
     declare -F publish_cluster_freeplan >/dev/null && publish_cluster_freeplan
     declare -F publish_cluster_expiry   >/dev/null && publish_cluster_expiry
     declare -F publish_cluster_ips      >/dev/null && publish_cluster_ips
 
     echo "  ✅ Все следы $user стёрты (строк удалено: $removed)"
-    echo "  ℹ️  Остались только метки удаления: «имя|deleted» и «tg_id||ts» — без них профиль и привязка вернутся с соседних нод."
-    echo "  🌐 На соседних нодах их копии чистятся своим erase_user: одинаковой командой там же."
+    echo "  ℹ️  Остались только метки удаления: «имя|deleted», «tg_id||ts» и «имя|ts» в реестре забвения — без них профиль, привязка и данные вернутся с соседних нод."
+    echo "  🌐 Соседние ноды сотрут свои копии сами на ближайшей синхронизации (полная ~5 мин, или кнопкой «Синхронизировать»)."
     return 0
 }
 
@@ -275,9 +286,10 @@ erase_from_file() {   # file needle...
                 if (p == 0) continue
                 if (p == 1) {
                     # Файл данных: метка стоит первым полем — «ключ|…», «ключ:…»
-                    # или слот-устройство «имя.хвост».
+                    # или слот-устройство «имя.хвост». Пустой хвост — строка,
+                    # равная метке целиком: так устроен roster (имя на строку).
                     c = substr($0, length(a[i]) + 1, 1)
-                    if (c == "|" || c == ":" || c == ".") next
+                    if (c == "|" || c == ":" || c == "." || c == "") next
                 }
                 # Журнал: метка встречается где угодно в строке события. Границы
                 # обязательны, иначе имя «cab» унесло бы строки «cabi».

@@ -12,6 +12,19 @@
 # относительно этой базы.
 TRAFFIC_PREV_FILE="$DATA_DIR/traffic_prev.dat"
 
+# Отбросить из потока «user|…» тех, кого попросили забыть (ERASE_FILE).
+# Счётчик в ПАМЯТИ ядра переживает удаление профиля: сбор давно неразрушающий
+# (см. выше), а per-user записи в Hysteria/Xray нет — имя висит там до рестарта
+# протокола. Без этого фильтра стёртый человек возвращался в rates.dat/stats.dat
+# каждые 15 секунд и уезжал пирам, сколько ни чисти файлы (P-109).
+# Обычный случай — пустой файл: тогда это просто cat, стоимость тика не растёт.
+traffic_drop_erased() {
+    [ -s "$ERASE_FILE" ] || { cat; return 0; }
+    awk -F'|' -v ef="$ERASE_FILE" '
+        BEGIN { while ((getline l < ef) > 0) { split(l, p, "|"); if (p[1] != "") gone[p[1]] = 1 } }
+        !($1 in gone)'
+}
+
 # Блокировка вокруг stats.dat: read-modify-write делают три сборщика + TUI, и
 # пересечение теряло дельту целиком (P-21).
 _stats_lock()   { { exec 9>"${DATA_DIR}/.stats.lock"; } 2>/dev/null || return 1; flock 9 2>/dev/null || { exec 9>&-; return 1; }; }
@@ -105,7 +118,8 @@ collect_traffic() {
                 if (!($1 in tx)) { ord[++n] = $1; tx[$1] = 0; rx[$1] = 0 }
                 tx[$1] += $2 + 0; rx[$1] += $3 + 0
             }
-            END { for (i = 1; i <= n; i++) printf "%s|%.0f|%.0f\n", ord[i], tx[ord[i]], rx[ord[i]] }'
+            END { for (i = 1; i <= n; i++) printf "%s|%.0f|%.0f\n", ord[i], tx[ord[i]], rx[ord[i]] }' \
+          | traffic_drop_erased
     )
     [ -n "$merged" ] || return 0
 
@@ -155,7 +169,8 @@ collect_activity() {
         {
             echo "$response" | jq -r 'to_entries[] | (.key | sub("\\.[0-9a-f]{8}$"; "")) as $u | "\($u)|\((.value.tx // 0) + (.value.rx // 0))"' 2>/dev/null
             declare -F proto_activity_cum_lines >/dev/null 2>&1 && proto_activity_cum_lines 2>/dev/null
-        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%.0f\n", u, s[u]}'   # %.0f: mawk иначе пишет 2^31+ как «1.42856e+09»
+        } | awk -F'|' 'NF>=2 && $1!="" {s[$1]+=$2} END{for(u in s) printf "%s|%.0f\n", u, s[u]}' \
+          | traffic_drop_erased   # %.0f: mawk иначе пишет 2^31+ как «1.42856e+09»
     )
 
     now=$(date +%s)
@@ -240,7 +255,8 @@ collect_rates() {
         {
             echo "$hy" | jq -r 'to_entries[] | (.key | sub("\\.[0-9a-f]{8}$"; "")) as $u | "\($u)|\(.value.tx // 0)|\(.value.rx // 0)"' 2>/dev/null
             declare -F proto_xray_split_lines >/dev/null 2>&1 && proto_xray_split_lines 2>/dev/null
-        } | awk -F'|' 'NF>=3 && $1!="" {d[$1]+=$2; u[$1]+=$3} END{for(x in d) printf "%s|%.0f|%.0f\n", x, d[x], u[x]}'   # %.0f: mawk иначе пишет 2^31+ научной нотацией
+        } | awk -F'|' 'NF>=3 && $1!="" {d[$1]+=$2; u[$1]+=$3} END{for(x in d) printf "%s|%.0f|%.0f\n", x, d[x], u[x]}' \
+          | traffic_drop_erased   # %.0f: mawk иначе пишет 2^31+ научной нотацией
     )
     [ -n "$merged" ] || return 0
 
