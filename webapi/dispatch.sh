@@ -323,6 +323,11 @@ case "$verb" in
         # Публикация: соседи получат подрезанную копию ближайшей синхронизацией,
         # иначе их копия так и осталась бы с уже забытыми адресами.
         publish_ips >/dev/null 2>&1 || true
+        # И объявляем просьбу кластеру: у СОСЕДЕЙ свои файлы адресов, наша
+        # подрезка их не касается. Без объявления копия соседа доживала свой
+        # срок и возвращалась к нам синхронизацией — человек нажимал «удалить»,
+        # а данные оставались (cluster_apply_ipforget в lib/cluster.sh).
+        declare -F ipforget_mark >/dev/null 2>&1 && ipforget_mark "$1" || true
         printf 'removed=%s\nleft=%s\n' "${res%%|*}" "${res##*|}"
         ;;
 
@@ -335,6 +340,9 @@ case "$verb" in
         db_user_exists "$1" || fail 2 user_not_found "пользователь не найден"
         take_lock
         res=$(apps_forget "$1") || fail 1 forget_failed "не удалось переписать файл"
+        # Та же просьба покрывает и записи об устройствах: cluster_apply_ipforget
+        # зовёт у соседей обе чистки разом.
+        declare -F ipforget_mark >/dev/null 2>&1 && ipforget_mark "$1" || true
         printf 'removed=%s\n' "$res"
         ;;
 

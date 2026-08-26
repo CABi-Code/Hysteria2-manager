@@ -127,10 +127,15 @@ def _count_matching(path, user):
 def ips_by_node(user):
     """Адреса пользователя по узлам: сначала этот, потом копии соседей.
 
-    Разделение принципиальное. Строки этого узла мы можем удалить по просьбе
-    человека; строки соседа — его копия, удалить её здесь бессмысленно (вернётся
-    ближайшей синхронизацией), она уйдёт сама по сроку на своём узле. Свалив всё
-    в один список, мы бы обещали удаление там, где его нет.
+    Раньше разделение было принципиальным: удалить можно было только строки
+    этого узла, а копия соседа возвращалась ближайшей синхронизацией. С
+    появлением кластерной просьбы «забыть адреса» (ipforget_mark в
+    lib/cluster.sh) удаление доезжает до всех узлов, поэтому self здесь — уже
+    не «можно ли удалить», а просто «чей это узел».
+
+    Название узла берём человеческое (метка вроде «🇫🇮 Фин-2»), а не доменное
+    имя файла-кэша: кабинет показывает это ЧЕЛОВЕКУ, и хост узла ему ничего не
+    говорит, зато лишний раз выдаёт устройство сети.
     """
     out = []
     local = [_ip_row(r) for r in pipe_rows(data_path("ips.dat"), 4) if r[0] == user]
@@ -140,15 +145,37 @@ def ips_by_node(user):
         names = sorted(os.listdir(PEERS_DIR))
     except OSError:
         names = []
+    seq = 1
     for name in names:
         if not name.endswith(".ips"):
             continue
         rows = [_ip_row(r) for r in pipe_rows(os.path.join(PEERS_DIR, name), 4) if r[0] == user]
         rows = [r for r in rows if r]
         if rows:
-            out.append({"node": name[:-4], "self": False, "rows": rows})
+            seq += 1
+            out.append({"node": _peer_label(name[:-4], seq), "self": False, "rows": rows})
 
     return out
+
+
+def _peer_label(host, seq):
+    """Метка соседа из его же объявления (cluster/nodeinfo → peers/<host>.nodeinfo).
+
+    Сосед старой версии ничего не объявляет. Тогда берём имя из реестра пиров, а
+    если и там записан хост — отдаём «Узел N».
+
+    Доменное имя узла наружу не уходит НИКОГДА. Это ответ ЧЕЛОВЕКУ на вопрос
+    «что вы обо мне храните»: адрес сервера ему ничего не объясняет, зато
+    описывает устройство сети тому, кто спрашивает не из любопытства.
+    """
+    from wa_core import read_kv
+    label = read_kv(os.path.join(PEERS_DIR, host + ".nodeinfo")).get("LABEL")
+    if label:
+        return label
+    for parts in pipe_rows(data_path("cluster.conf"), 2):
+        if parts[1] == host and parts[0] and parts[0] != host:
+            return parts[0]
+    return "Узел %d" % seq
 
 
 def _ip_row(parts):

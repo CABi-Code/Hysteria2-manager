@@ -206,7 +206,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset freeplan ips expiry settings userlimits subips abuse tgbind version protocols"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -215,6 +215,8 @@ _section_label() {
         state)      echo "состояния (вкл/выкл/удал.)" ;;
         erase)      echo "забвение (стёртые)" ;;
         pwreset)    echo "сбросы ключей" ;;
+        ipforget)   echo "просьбы забыть адреса" ;;
+        nodeinfo)   echo "метка узла" ;;
         freeplan)   echo "бесплатный тариф (квоты)" ;;
         ips)        echo "IP-адреса" ;;
         expiry)     echo "сроки действия" ;;
@@ -249,6 +251,8 @@ cluster_sync() {
     publish_cluster_state
     publish_cluster_erase
     publish_cluster_pwreset
+    publish_cluster_ipforget
+    publish_cluster_nodeinfo
     declare -F publish_cluster_freeplan >/dev/null 2>&1 && publish_cluster_freeplan
     publish_cluster_expiry
     publish_cluster_settings
@@ -329,6 +333,7 @@ cluster_sync() {
     cluster_scrub_erased     # выкинуть их строки из зеркал до слияния
     cluster_apply_state      # точка правды: вкл/выкл/удаление с других нод
     cluster_apply_pwreset    # сброс ключей, начатый на другой ноде
+    cluster_apply_ipforget   # просьба забыть адреса, поданная на другой ноде
     declare -F cluster_apply_freeplan >/dev/null 2>&1 && cluster_apply_freeplan   # окна/расход бесплатного тарифа
     cluster_apply_roster     # завести у себя кластерных юзеров, которых нет
     cluster_apply_expiry     # подтянуть единый срок действия по кластеру
@@ -452,6 +457,80 @@ cluster_apply_pwreset() {
     done <<< "$merged"
     [ "$changed" = 1 ] && publish_cluster_pwreset
     return 0
+}
+
+# ---- «ЗАБЫТЬ АДРЕСА» ПО КЛАСТЕРУ ----
+# Кнопка «забыть адреса» в кабинете чистила только ту ноду, что ответила на
+# запрос. Копии у соседей (peers/*.ips) жили свой срок и возвращались обратно
+# ближайшей синхронизацией — человек нажимал «удалить», получал «удалено N» и
+# данные оставались. Обещание экрана «Мои данные» не выполнялось.
+#
+# Поэтому нода, где нажали, пишет «user|ts» и публикует; остальные на своём sync
+# видят ts новее применённого и зовут ips_forget у себя. LWW и порядок — ровно
+# как у pwreset и забвения. Границу «что можно удалять» каждая нода применяет
+# свою (ips_forget режет только старше суток) — решение о лимитах остаётся у
+# той ноды, на которой лимит и считается.
+ipforget_get_ts() { local t; t=$(awk -F'|' -v u="$1" '$1==u{print $2; exit}' "$IPFORGET_FILE" 2>/dev/null); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
+ipforget_set() {   # user ts
+    mkdir -p "$DATA_DIR"; touch "$IPFORGET_FILE"
+    sed -i "/^${1}|/d" "$IPFORGET_FILE" 2>/dev/null
+    printf '%s|%s\n' "$1" "$2" >> "$IPFORGET_FILE"
+}
+
+# Объявить просьбу: у нас адреса уже вычищены (ips_forget), пиры узнают на sync.
+ipforget_mark() {   # user
+    sub_enabled || return 0
+    ipforget_set "$1" "$(date +%s)"
+    publish_cluster_ipforget
+}
+
+publish_cluster_ipforget() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"; touch "$IPFORGET_FILE"
+    cp -f "$IPFORGET_FILE" "$WEBROOT/cluster/ipforget" 2>/dev/null || : > "$WEBROOT/cluster/ipforget"
+    secure_web_files
+}
+
+cluster_apply_ipforget() {
+    sub_enabled || return 0
+    declare -F ips_forget >/dev/null 2>&1 || return 0
+    local merged u t changed=0
+    merged=$(
+        { [ -f "$IPFORGET_FILE" ] && cat "$IPFORGET_FILE"
+          [ -d "$PEERS_DIR" ] && cat "$PEERS_DIR"/*.ipforget 2>/dev/null; } \
+        | awk -F'|' 'NF>=2 && $1!="" { if (($2+0) > (ts[$1]+0)) ts[$1]=$2 }
+                     END { for (u in ts) printf "%s|%s\n", u, ts[u] }'
+    )
+    [ -n "$merged" ] || return 0
+    while IFS='|' read -r u t; do
+        [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        [ "${t:-0}" -gt "$(ipforget_get_ts "$u")" ] 2>/dev/null || continue
+        # Юзера у нас нет — только запоминаем ts: иначе просьба сработала бы
+        # задним числом, когда профиль появится (как у pwreset).
+        if db_user_exists "$u" || is_user_disabled "$u"; then
+            ips_forget "$u" >/dev/null 2>&1
+            declare -F apps_forget >/dev/null 2>&1 && apps_forget "$u" >/dev/null 2>&1
+            publish_ips >/dev/null 2>&1 || true
+            publish_subips >/dev/null 2>&1 || true
+            changed=1
+        fi
+        ipforget_set "$u" "$t"
+    done <<< "$merged"
+    [ "$changed" = 1 ] && publish_cluster_ipforget
+    return 0
+}
+
+# ---- МЕТКА УЗЛА ДЛЯ СОСЕДЕЙ ----
+# NODE_LABEL намеренно НЕ входит в SETTING_KEYS: настройки там общекластерные с
+# last-write-wins, и метка «🇫🇮 Фин-2» уехала бы на все ноды сразу. Но соседям
+# её знать надо — иначе человек в кабинете видит вместо узлов доменные имена
+# (часть P-06: паспорта ноды у нас нет). Публикуем отдельной строкой: каждая
+# нода объявляет СВОЮ метку, слияния и конфликтов тут нет по устройству.
+publish_cluster_nodeinfo() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    printf 'LABEL=%s\n' "$(node_label)" > "$WEBROOT/cluster/nodeinfo" 2>/dev/null || true
+    secure_web_files
 }
 
 # ---- ПРАВО НА ЗАБВЕНИЕ ПО КЛАСТЕРУ ----

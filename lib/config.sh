@@ -125,6 +125,11 @@ PWRESET_FILE="$DATA_DIR/cluster_pwreset.dat"
 # пира вернуть строки удалённого (cluster_scrub_erased). В ней только имя
 # профиля — ни tg_id, ни ключей. См. erase_mark/cluster_apply_erase.
 ERASE_FILE="$DATA_DIR/cluster_erase.dat"
+# Объявление «забыть адреса юзера» по кластеру: «user|ts», LWW как у pwreset.
+# Без него кнопка «забыть адреса» в кабинете чистила только ту ноду, что
+# ответила на запрос, а копии у соседей жили свой срок и возвращались
+# синхронизацией. Человек нажимал «удалить» и данные не удалялись.
+IPFORGET_FILE="$DATA_DIR/cluster_ipforget.dat"
 # Бесплатный тариф с лимитами трафика (см. lib/freeplan.sh). Строки:
 # «user|state|start|wk_start|wk_base|mo_start|mo_base|notified|ts».
 # Файл кластерный (LWW по ts): окна и базы считаются от ОБЩЕГО трафика по всем
