@@ -133,9 +133,9 @@ def ips_by_node(user):
     lib/cluster.sh) удаление доезжает до всех узлов, поэтому self здесь — уже
     не «можно ли удалить», а просто «чей это узел».
 
-    Название узла берём человеческое (метка вроде «🇫🇮 Фин-2»), а не доменное
-    имя файла-кэша: кабинет показывает это ЧЕЛОВЕКУ, и хост узла ему ничего не
-    говорит, зато лишний раз выдаёт устройство сети.
+    Узлы наружу нумеруются («Узел 1», «Узел 2», …), а не называются: кабинет
+    показывает это ЧЕЛОВЕКУ, и ни хост узла, ни его метка со страной ему ничего
+    не объясняют, зато лишний раз выдают устройство сети.
     """
     out = []
     local = [_ip_row(r) for r in pipe_rows(data_path("ips.dat"), 4) if r[0] == user]
@@ -153,29 +153,9 @@ def ips_by_node(user):
         rows = [r for r in rows if r]
         if rows:
             seq += 1
-            out.append({"node": _peer_label(name[:-4], seq), "self": False, "rows": rows})
+            out.append({"node": "Узел %d" % seq, "self": False, "rows": rows})
 
     return out
-
-
-def _peer_label(host, seq):
-    """Метка соседа из его же объявления (cluster/nodeinfo → peers/<host>.nodeinfo).
-
-    Сосед старой версии ничего не объявляет. Тогда берём имя из реестра пиров, а
-    если и там записан хост — отдаём «Узел N».
-
-    Доменное имя узла наружу не уходит НИКОГДА. Это ответ ЧЕЛОВЕКУ на вопрос
-    «что вы обо мне храните»: адрес сервера ему ничего не объясняет, зато
-    описывает устройство сети тому, кто спрашивает не из любопытства.
-    """
-    from wa_core import read_kv
-    label = read_kv(os.path.join(PEERS_DIR, host + ".nodeinfo")).get("LABEL")
-    if label:
-        return label
-    for parts in pipe_rows(data_path("cluster.conf"), 2):
-        if parts[1] == host and parts[0] and parts[0] != host:
-            return parts[0]
-    return "Узел %d" % seq
 
 
 def _ip_row(parts):
@@ -187,9 +167,13 @@ def _ip_row(parts):
 
 
 def _node_label():
-    from wa_core import read_kv
-    node = read_kv(data_path("node.conf"))
-    return node.get("NODE_LABEL") or node.get("NODE_NAME") or "этот узел"
+    """«Узел 1» — по тому же правилу, что и _peer_label: наружу не уходит ни имя
+    узла, ни его человеческая метка. Метка вроде «🇫🇮 Фин-2» называет страну и
+    номер площадки — это устройство сети, а на вопрос «что вы обо мне храните»
+    она не отвечает ничем. Соседи нумеруются с двойки, так что список читается
+    «Узел 1, Узел 2, …».
+    """
+    return "Узел 1"
 
 
 def ips_retention_days():
