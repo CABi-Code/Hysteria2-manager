@@ -688,18 +688,24 @@ write_sub_titles() {
 
     # Один проход по юзерам: факты плана считаются на юзера один раз (кэш в
     # user_plan_facts), а не на каждый заголовок и каждый токен.
-    local user tok title info ann
+    local user tok title info ann title_b64 ann_b64
     while IFS= read -r user; do
         [ -n "$user" ] || continue
         # {online} в названии — тот же онлайн ЭТОЙ ноды, что и в подписи ключа.
         [ "$static_title" = 1 ] || title=$(render_title "$user")
         info=$(sub_userinfo_line "$user")
         ann=$(sub_announce_for "$user")
+        # base64 названия и анонса считаем ОДИН раз на юзера, а не на каждый его
+        # токен: оба зависят только от юзера, а токенов у него столько, сколько
+        # нод в кластере ×  доп. ссылок. Внутри цикла это было по два лишних
+        # форка на токен (P-119).
+        [ "$static_title" = 1 ] || title_b64=$(_sub_b64 "$title")
+        [ -n "$ann" ] && ann_b64=$(_sub_b64 "$ann")
         while IFS= read -r tok; do
             [ -n "$tok" ] || continue
-            [ "$static_title" = 1 ] || printf '\t\t/sub/%s "base64:%s"\n' "$tok" "$(_sub_b64 "$title")" >> "$m_title"
+            [ "$static_title" = 1 ] || printf '\t\t/sub/%s "base64:%s"\n' "$tok" "$title_b64" >> "$m_title"
             [ -n "$info" ] && printf '\t\t/sub/%s "%s"\n' "$tok" "$info" >> "$m_info"
-            [ -n "$ann" ]  && printf '\t\t/sub/%s "base64:%s"\n' "$tok" "$(_sub_b64 "$ann")" >> "$m_ann"
+            [ -n "$ann" ]  && printf '\t\t/sub/%s "base64:%s"\n' "$tok" "$ann_b64" >> "$m_ann"
         done <<< "$(sub_tokens_cluster "$user")"
     done <<< "$(sub_all_users)"
 

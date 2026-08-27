@@ -59,9 +59,19 @@ setup_cron() {
         (echo "$current_cron"; echo "*/5 * * * * /bin/bash \"$script_path\" --cluster-sync >/dev/null 2>&1") | crontab -
         current_cron=$(crontab -l 2>/dev/null || true)
     fi
-    # Частый обмен онлайном + лимит устройств по кластеру (раз в минуту).
+    # Каденс --online-sync поднят с 1 минуты до 2 (P-119). На 1 vCPU минутный тик
+    # в свою минуту не укладывался и всё равно пропускался по cron_lock — до 120
+    # раз в сутки, то есть фактическая частота давно не была минутной. Проверки
+    # ниже только ДОБАВЛЯЮТ недостающие строки, поэтому уже установленную минутную
+    # переписываем отдельно — иначе она осталась бы минутной навсегда.
+    if echo "$current_cron" | grep -q '^\* \* \* \* \* .*hy2-manager.*--online-sync'; then
+        printf '%s\n' "$current_cron" \
+            | sed 's|^\* \* \* \* \* \(.*--online-sync.*\)$|*/2 * * * * \1|' | crontab -
+        current_cron=$(crontab -l 2>/dev/null || true)
+    fi
+    # Частый обмен онлайном + лимит устройств по кластеру (раз в 2 минуты).
     if ! echo "$current_cron" | grep -q "hy2-manager.*--online-sync"; then
-        (echo "$current_cron"; echo "* * * * * /bin/bash \"$script_path\" --online-sync >/dev/null 2>&1") | crontab -
+        (echo "$current_cron"; echo "*/2 * * * * /bin/bash \"$script_path\" --online-sync >/dev/null 2>&1") | crontab -
         current_cron=$(crontab -l 2>/dev/null || true)
     fi
     # Оплаты ЮMoney (если настроены): опрос истории по меткам ждущих счетов —
