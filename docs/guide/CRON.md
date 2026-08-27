@@ -111,7 +111,53 @@ b=$(awk '/^processes/{print $2}' /proc/stat); echo $(( (b-a)/5 ))
 Проверка после правок: `time bash /opt/hy2-manager/hy2-manager.sh --online-sync`
 (с закрытым меню и, при желании, со снятой на время строкой крона).
 
-## 6. Тесты
+## 6. Приоритет: фон уступает интерактиву
+
+Ориентиры §5 — это «сколько работы влезает». Отдельный вопрос — **кто ждёт кого,
+когда работы больше, чем ядер.** По умолчанию systemd даёт всем юнитам
+`CPUWeight=100`, то есть пакетный тик крона конкурирует с вебаппом, API и ядрами
+протоколов **на равных**. На одном vCPU это читается как «сайт завис в начале
+загрузки» и «меню менеджера открывалось десять секунд»: обработчик отвечает
+быстро, но своей доли ядра ждёт секундами.
+
+Лечится дропинами (это настройка ноды, менеджер её не ставит):
+
+```
+/etc/systemd/system/cron.service.d/zz-cibpn-batch.conf
+/etc/systemd/system/hy2-rates.service.d/zz-cibpn-batch.conf
+    [Service]
+    CPUWeight=10
+```
+
+Вес 10 против 100 — это не квота и не отмена работы: тик получает всё свободное
+ядро и уступает его, как только просыпается интерактивный процесс. Проверка:
+
+```
+cat /sys/fs/cgroup/system.slice/cron.service/cpu.weight        # 10
+cat /sys/fs/cgroup/system.slice/php8.3-fpm.service/cpu.weight  # 100
+```
+
+Куда на самом деле уходит ядро — смотреть по cgroup, а не по `top`: работу дают
+сотни коротких форков, ни один из них в `top` не виден.
+
+```
+c0=$(awk '/usage_usec/{print $2}' /sys/fs/cgroup/system.slice/cron.service/cpu.stat); sleep 60
+c1=$(awk '/usage_usec/{print $2}' /sys/fs/cgroup/system.slice/cron.service/cpu.stat)
+echo $(( (c1-c0)/600000 ))%   # доля ядра, съеденная кроном за минуту
+```
+
+Применять вес живьём, **не перезапуская `cron`**: рестарт юнита убивает его
+cgroup вместе с тиком на полпути, а тик пишет файлы подписки.
+
+```
+systemctl daemon-reload
+echo 10 > /sys/fs/cgroup/system.slice/cron.service/cpu.weight
+```
+
+Открытая проблема — [P-119](../issues/OPS.md#p-119): приоритет убирает очередь,
+но объём фоновой работы всё ещё занимает ядро целиком.
+
+## 7. Тесты
 
 * `tests/test-forkdiet.sh` — `conf_get`/`row_by_key`/`fld_by_key`/`_proto_urlenc`
   дают те же значения, что старые реализации на `grep|head|cut`, и не форкают
