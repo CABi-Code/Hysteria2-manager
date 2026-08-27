@@ -115,6 +115,10 @@ sub_update_hours() { local h; h=$(node_get SUB_UPDATE_HOURS); [[ "$h" =~ ^[0-9]+
 sub_support_url()  { node_get SUB_SUPPORT_URL; }
 # Кнопка «страница подписки». По умолчанию — корень домена ноды.
 sub_page_url()     { local u; u=$(node_get SUB_PAGE_URL); [ -n "$u" ] && printf '%s' "$u" || printf 'https://%s/' "$(node_host)"; }
+# Куда уводить БРАУЗЕР, открывший /sub/<token> (см. docs/guide/SUB-BROWSER.md).
+# Пусто — не уводить никуда: браузер получит тот же текст, что и клиент.
+# Хвостовой слэш срезаем: к значению дописывается путь запроса целиком.
+sub_web_url()      { local u; u=$(node_get SUB_WEB_URL); printf '%s' "${u%/}"; }
 # Куда ведёт клик по тексту анонса (v2RayTun; Happ показывает анонс без ссылки).
 sub_announce_url() { node_get SUB_ANN_URL; }
 # Тексты анонса по типу плана. Плейсхолдеры: те же, что у названия профиля, плюс
@@ -244,7 +248,7 @@ plan_apply_ph() {   # text user -> text
 # НЕ входит — она у каждой ноды своя. POOL_LIMIT/NODE_LIMIT — глобальные лимиты
 # подключений (см. ниже), синхронизируются тем же LWW-механизмом.
 SETTING_KEYS="SUB_TITLE SUB_TAG_TMPL SUB_UPDATE_HOURS POOL_LIMIT NODE_LIMIT
-SUB_SUPPORT_URL SUB_PAGE_URL SUB_ANN_URL SUB_ANN_DEMO SUB_ANN_FREE SUB_ANN_PAID SUB_HEADERS"
+SUB_SUPPORT_URL SUB_PAGE_URL SUB_WEB_URL SUB_ANN_URL SUB_ANN_DEMO SUB_ANN_FREE SUB_ANN_PAID SUB_HEADERS"
 
 setting_ts() { local t; t=$(node_get "${1}_TS"); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
 

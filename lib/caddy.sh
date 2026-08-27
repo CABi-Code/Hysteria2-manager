@@ -60,6 +60,24 @@ setup_caddy() {
 "
     done <<< "$(printf '%s' "$(sub_headers_extra)" | tr '|' '\n')"
 
+    # Ссылку-подписку регулярно вставляют не в клиент, а в адресную строку
+    # браузера — и человек видел простыню base64. Уводим такой заход на страницу
+    # подписки кабинета (SUB_WEB_URL), путь запроса дописывается целиком, так что
+    # страница знает токен. Признак браузера — Sec-Fetch-Mode: navigate: его шлёт
+    # любой современный браузер при переходе по адресу и не шлёт ни один клиент
+    # (они ходят обычным HTTP-запросом за файлом). Подробности и что делать со
+    # старыми браузерами — docs/guide/SUB-BROWSER.md.
+    local web_url sub_redir=""
+    web_url=$(sub_web_url)
+    [ -n "$web_url" ] && sub_redir="    @sub_browser {
+        path /sub/*
+        header Sec-Fetch-Mode navigate
+    }
+    handle @sub_browser {
+        redir \"$(_caddy_hval "$web_url"){uri}\" 302
+    }
+"
+
     # Web API для внешних приложений (lib/webapi.sh): когда включён — проксируем
     # /api/* на локальный демон. Блок генерируется здесь, а не дописывается извне:
     # setup_caddy полностью перезаписывает Caddyfile, и внешняя правка потерялась бы.
@@ -112,7 +130,7 @@ ${bind_line}
         file_server
     }
 ${api_block}
-    handle /sub/* {
+${sub_redir}    handle /sub/* {
         header Content-Type "text/plain; charset=utf-8"
         import ${CADDY_SUBTITLES}
         header profile-update-interval "${upd}"

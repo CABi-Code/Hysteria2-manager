@@ -491,6 +491,10 @@ subscription_menu() {
                            case "$v" in '') ;; '-') setting_set SUB_SUPPORT_URL ''; glob_changed=1 ;; *) setting_set SUB_SUPPORT_URL "$v"; glob_changed=1 ;; esac
                            ask v "  Страница подписки (Enter — корень домена ноды): "
                            case "$v" in '') ;; '-') setting_set SUB_PAGE_URL ''; glob_changed=1 ;; *) setting_set SUB_PAGE_URL "$v"; glob_changed=1 ;; esac
+                           echo "    Страница подписки в кабинете: туда уводится БРАУЗЕР, открывший"
+                           echo "    ссылку-подписку (docs/guide/SUB-BROWSER.md). Пусто — не уводить."
+                           ask v "  Кабинет для браузера (база адреса): "
+                           case "$v" in '') ;; '-') setting_set SUB_WEB_URL ''; glob_changed=1 ;; *) setting_set SUB_WEB_URL "$v"; glob_changed=1 ;; esac
                            ask v "  Куда ведёт клик по анонсу: "
                            case "$v" in '') ;; '-') setting_set SUB_ANN_URL ''; glob_changed=1 ;; *) setting_set SUB_ANN_URL "$v"; glob_changed=1 ;; esac ;;
                         7) echo "    Любые прочие параметры клиента — списком «имя: значение», через «|»."

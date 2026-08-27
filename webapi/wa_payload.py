@@ -70,6 +70,28 @@ def served_tokens(user):
     return tokens
 
 
+def subtoken_user(token):
+    """Обратный поиск: чей это токен подписки.
+
+    Смотрим и свою базу, и кэши токенов пиров: у каждой ноды кластера для одного
+    человека свой токен, а ссылку он мог получить с любой из них — искать только
+    у себя значило бы «не наш токен» для половины живых ссылок.
+    """
+    if not token:
+        return None
+    paths = [data_path("subtokens.db")]
+    try:
+        paths += [os.path.join(PEERS_DIR, n) for n in sorted(os.listdir(PEERS_DIR))
+                  if n.endswith(".subtokens")]
+    except OSError:
+        pass
+    for path in paths:
+        for user, tokens in colon_db(path).items():
+            if token in tokens:
+                return user
+    return None
+
+
 def user_clients(user):
     """Чем скачивали подписку: приложение, версия, ОС, устройство.
 

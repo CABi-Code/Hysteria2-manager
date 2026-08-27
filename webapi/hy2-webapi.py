@@ -70,6 +70,9 @@ ROUTES = [
     # записях не стоит ни лимит, ни шейпинг (docs/guide/SUB-CLIENTS.md).
     ("DELETE", re.compile(r"^/v1/users/([^/]+)/clients$"), "users", "h_user_clients_forget"),
     ("GET", re.compile(r"^/v1/users/by-telegram/([^/]+)$"), "read", "h_user_by_tg"),
+    # Кто владелец ссылки-подписки. Нужно приложению, чтобы показать человеку
+    # страницу подписки, когда ссылку открыли браузером (docs/guide/SUB-BROWSER.md).
+    ("GET", re.compile(r"^/v1/users/by-subtoken/([^/]+)$"), "read", "h_user_by_subtoken"),
     ("GET", re.compile(r"^/v1/telegram/([^/]+)$"), "read", "h_tg"),
     ("GET", re.compile(r"^/v1/payments$"), "payments", "h_payments"),
     # Каталог на запись (scope tariffs): менеджер — источник правды по продаже,
@@ -351,6 +354,19 @@ class Handler(BaseHTTPRequestHandler):
         payload = user_payload(user)
         if payload is None:
             raise ApiError(404, "user_not_found", "привязка есть, но пользователь удалён")
+        return payload
+
+    def h_user_by_subtoken(self, token):
+        """Юзер по токену подписки. Токен — секрет самого человека: предъявивший
+        его и так скачивает по нему ключи, ничего нового мы не открываем."""
+        if not re.fullmatch(r"[A-Za-z0-9]{16,64}", token or ""):
+            raise ApiError(400, "invalid_token", "токен подписки: латиница и цифры")
+        user = subtoken_user(token)
+        if not user:
+            raise ApiError(404, "unknown_token", "токен подписки не найден")
+        payload = user_payload(user)
+        if payload is None:
+            raise ApiError(404, "user_not_found", "токен есть, но пользователь удалён")
         return payload
 
     def h_tg(self, tg_id):
