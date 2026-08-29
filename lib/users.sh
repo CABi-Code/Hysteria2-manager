@@ -327,6 +327,11 @@ erase_from_file() {   # file needle...
 #  - у dns_local НЕТ detour: detour на пустой direct outbound в 1.12 даёт FATAL
 #    ("detour to an empty direct outbound makes no sense").
 #
+# dns_local — DoH (type https), а НЕ plain-UDP: открытый DNS по UDP к публичным
+# резолверам перехватывают на транзите и подменяют ответ на NXDOMAIN, и домен
+# подключения переставал резолвиться ДО туннеля — клиент не вставал вообще
+# (P-122). Адрес резолвера — IP-литерал, поэтому бутстрап-резолв не нужен.
+#
 # Аутентификация Hysteria 2 (userpass) — строка "user:pass" в поле password.
 # Блок obfs (salamander) добавляется, только если задан obfs-пароль; для нашего
 # сервера он обязателен, иначе сервер отбросит пакеты.
@@ -363,7 +368,7 @@ generate_user_config() {
         jq_filter='{
             log: { level: "warn", timestamp: true },   # не "info": на нём sing-box пишет в лог каждый посещённый адрес (P-79)
             dns: {
-                servers: [ { type: "udp", tag: "dns_local", server: "1.1.1.1" } ]
+                servers: [ { type: "https", tag: "dns_local", server: "1.1.1.1" } ]
             },
             inbounds: [
                 { type: "mixed", tag: "socks-in", listen: "127.0.0.1", listen_port: 1080 }
@@ -392,7 +397,7 @@ generate_user_config() {
             dns: {
                 servers: [
                     { type: "https", tag: "dns_remote", server: "8.8.8.8", detour: "proxy_out" },
-                    { type: "udp", tag: "dns_local", server: "1.1.1.1" }
+                    { type: "https", tag: "dns_local", server: "1.1.1.1" }
                 ],
                 final: "dns_remote",
                 strategy: "ipv4_only"

@@ -72,6 +72,11 @@ for mode in tun socks; do
     [ "$(jq -r '.outbounds[0].server_port' "$cfg")" = "20443" ] \
         || fail "$mode: порт в конфиге разъехался с listen"
 
+    # P-122: ни один DNS-сервер в конфиге не ходит открытым UDP — такие запросы
+    # перехватывают на транзите и отдают NXDOMAIN вместо адреса ноды.
+    [ -z "$(jq -r '.dns.servers[] | select(.type=="udp") | .tag' "$cfg")" ] \
+        || fail "$mode: DNS по открытому UDP — $(jq -r '[.dns.servers[]|select(.type=="udp").tag]|join(\",\")' "$cfg")"
+
     # Главный инвариант: ссылка и JSON описывают одно подключение.
     link=$(build_user_link alice pass1 "$(link_host)" "$(get_port)" "$(get_obfs_pass)" "$(get_sni)")
     [ "$(sni_of_link "$link")" = "$(sni_of "$cfg")" ] \
