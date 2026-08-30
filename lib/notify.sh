@@ -68,7 +68,8 @@ period_days_get() {   # user -> days (0 если нет)
 # chandm работает только если у нас есть topic для этого пользователя (он уже
 # писал в чат канала) и бот — админ канала с can_post_messages.
 notify_user() {   # user  html_text  [kb_json]  [channel_cta_html]
-    local user="$1" text="$2" kb="$3" cta="$4" c
+    # kb/cta необязательны: bot_notify_activated зовёт с двумя аргументами.
+    local user="$1" text="$2" kb="${3:-}" cta="${4:-}" c delivered=0
     bot_enabled || return 0
     # Модуль notify (lib/tgbot.sh): выключается отдельно от продажи — надстройка
     # со своими уведомлениями глушит бота, не теряя привязку и фулфилмент.
@@ -77,7 +78,31 @@ notify_user() {   # user  html_text  [kb_json]  [channel_cta_html]
     for c in $(tg_user_chats "$user"); do
         [ -n "$c" ] || continue
         tg_send "$c" "$text" "$kb" || chandm_send "$c" "$text" "$cta"
+        delivered=$(( delivered + 1 ))
     done
+    # Ни одного чата — уведомление не «тихо прошло», оно потеряно: у человека
+    # нет привязки к Telegram. Раньше это было неотличимо от успеха, и человек
+    # месяцами не получал НИЧЕГО — ни про устройства, ни про баланс, ни про
+    # срок, — а мы об этом не знали (docs/issues/OPS.md#p-123).
+    [ "$delivered" -gt 0 ] || _notify_undelivered "$user"
+}
+
+# Запись «некому доставить» в лог бота, не чаще раза в сутки на человека:
+# sweep ходит каждые ~5 минут, и без окна один непривязанный юзер писал бы
+# сотни строк в день, топя собой всё остальное.
+NOTIFY_UNDELIV_FILE="$DATA_DIR/notify_undeliv.dat"   # user|ts последней жалобы
+NOTIFY_UNDELIV_EVERY_SEC="${NOTIFY_UNDELIV_EVERY_SEC:-86400}"
+_notify_undelivered() {   # user
+    local user="$1" now last
+    now=$(date +%s)
+    last=$(fld_by_key "$NOTIFY_UNDELIV_FILE" "$user" 2)
+    [[ "$last" =~ ^[0-9]+$ ]] && [ $(( now - last )) -lt "$NOTIFY_UNDELIV_EVERY_SEC" ] && return 0
+    touch "$NOTIFY_UNDELIV_FILE" 2>/dev/null || return 0
+    sed -i "/^${user}|/d" "$NOTIFY_UNDELIV_FILE" 2>/dev/null
+    printf '%s|%s\n' "$user" "$now" >> "$NOTIFY_UNDELIV_FILE"
+    mkdir -p "$LOG_DIR" 2>/dev/null
+    printf '%s [notify] некому доставить: у «%s» нет привязки к Telegram\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$user" >> "$BOT_LOG" 2>/dev/null
 }
 
 # Отправить «от лица канала» в персональный топик пользователя, добавив призыв
