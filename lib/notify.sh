@@ -172,20 +172,54 @@ bot_renew_link() {
 #    должен превращаться в вечный цикл попыток.
 # 3. Тревога — только когда устройств БОЛЬШЕ, чем оплачено. Второй телефон
 #    человека, купившего два устройства, — не чужой.
+#
+# Уровень «новое приложение» (ниже, _newapp_check_user) правило 1 сознательно
+# ослабляет: тревожит и по неопознанным клиентам. Он поэтому и не обвиняет —
+# сообщает факт и объясняет, чем опасна общая ссылка. Правила 2 и 4 держат
+# частоту: одно сообщение на приложение навсегда плюс свой суточный кулдаун.
 FOREIGN_COOLDOWN_SEC="${FOREIGN_COOLDOWN_SEC:-86400}"   # не чаще раза в сутки на человека
+NEWAPP_COOLDOWN_SEC="${NEWAPP_COOLDOWN_SEC:-86400}"     # свой кулдаун у мягкого уровня
+FOREIGN_LIST_MAX="${FOREIGN_LIST_MAX:-10}"              # сколько устройств перечислять в сообщении
 SUBAPPS_SEEN_KEEP_DAYS="${SUBAPPS_SEEN_KEEP_DAYS:-30}"
 
-# Кнопка «сбросить ссылку»: экран подписки мини-аппа, там же живёт перевыпуск.
+# Кнопки под уведомлением об утечке. «Свои устройства» ведут на экран подписки:
+# там и список ссылок, и перевыпуск — отдельной кнопки «сбросить» не нужно,
+# сброс живёт на том же экране. «Купить устройство» — на витрину: устройства
+# докупаются там же, где срок. Третьей строкой статья, если оператор её завёл
+# (SUB_DEVICES_URL): объяснять устройство лимита внутри сообщения негде.
 bot_subscription_kb() {
-    local s
+    local s t a p rows
     s=$(miniapp_screen_url subscription) || return 0
-    jq -nc --arg s "$s" \
-        '{inline_keyboard:[[{text:"🔑 Сбросить ссылку",url:$s}]]}'
+    t=$(miniapp_screen_url tariffs)
+    a=$(sub_devices_url 2>/dev/null)
+    p=$(miniapp_screen_url privacy)
+    rows=$(jq -nc --arg s "$s" '[[{text:"📱 Свои устройства",url:$s}]]')
+    [ -n "$t" ] && rows=$(jq -nc --argjson r "$rows" --arg t "$t" \
+        '$r + [[{text:"➕ Купить устройство",url:$t}]]')
+    [ -n "$a" ] && rows=$(jq -nc --argjson r "$rows" --arg a "$a" \
+        '$r + [[{text:"📄 Почему у каждого своя ссылка",url:$a}]]')
+    # Человеку, которому только что перечислили его приложения, нужен ответ
+    # «а что вы вообще обо мне храните» в один тап. Ведёт в «Помощь»,
+    # раскрытую на политике конфиденциальности.
+    [ -n "$p" ] && rows=$(jq -nc --argjson r "$rows" --arg p "$p" \
+        '$r + [[{text:"🔒 Какие данные мы храним",url:$p}]]')
+    jq -nc --argjson r "$rows" '{inline_keyboard:$r}'
 }
+# То же для директа канала: кнопок там нет вовсе, только ссылки текстом.
 bot_subscription_link() {
     local bu; bu=$(bot_username)
     [ -n "$bu" ] || return 0
-    printf '%s Сбросить ссылку: https://t.me/%s?start=subscription' "$(ce "🚫")" "$bu"
+    printf '%s Свои устройства: https://t.me/%s?start=subscription\n%s Купить устройство: https://t.me/%s?start=tariffs' \
+        "$(ce "🚫")" "$bu" "$(ce "⭐")" "$bu"
+}
+
+# Строка со ссылкой на статью в теле сообщения. Кнопки видны только в личке
+# бота, а в директе канала их нет вовсе — там эта строка и остаётся
+# единственным способом дочитать объяснение.
+_devices_article_line() {
+    local a; a=$(sub_devices_url 2>/dev/null)
+    [ -n "$a" ] || return 0
+    printf '\n\nПодробнее — <a href="%s">как устроены устройства</a>.' "$a"
 }
 
 # Отметка «об этом устройстве уже писали»: «основной_токен|hwid|ts».
@@ -200,64 +234,150 @@ _seen_add() {   # primary hwid ts
     _seen_has "$1" "$2" || printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$SUBAPPS_SEEN_FILE"
 }
 
-_foreign_check_user() {   # user now
-    local user="$1" now="$2" allowed primary apps ids count new_line="" new_count=0 cool=""
+# Первый взгляд на человека: всё, что у него уже есть, — не новость. Без этого
+# первый же прогон после обновления разослал бы тревогу вообще всем.
+#
+# Гейт ОБЩИЙ для обоих уровней и стоит ДО них: уровни делят один файл отметок,
+# и если бы каждый заводил человека сам, первый пометил бы токен своими ключами,
+# а второй увидел бы токен уже знакомым и выстрелил по всем своим ключам сразу.
+# Поэтому метим все ключи разом — и опознанные устройства, и приложения.
+# Возврат 0 = «человека только что завели, тревожить нечем».
+_seen_prime_user() {   # user now
+    local user="$1" now="$2" primary apps key
+    primary=$(sub_token_for "$user" 2>/dev/null) || return 1
+    [ -n "$primary" ] || return 1
+    grep -qF "$primary|" "$SUBAPPS_SEEN_FILE" 2>/dev/null && return 1
+
+    apps=$(get_user_apps "$user" 2>/dev/null) || return 1
+    [ -n "$apps" ] || return 1
+    while IFS='|' read -r key _rest; do
+        [ -n "$key" ] && _seen_add "$primary" "$key" "$now"
+    done <<< "$apps"
+    return 0
+}
+
+# Возврат обоих уровней: 0 — сообщение УШЛО, 1 — тревожить было не о чем.
+# Обход в notify_foreign_devices на этом и построен: отправил резкий уровень —
+# мягкий в тот же прогон уже не зовём. Если бы «ничего не нашёл» тоже был нулём,
+# мягкий уровень не выполнялся бы никогда.
+_foreign_check_user() {   # user now → 0 если отправили
+    local user="$1" now="$2" allowed primary apps ids count new_line="" new_count=0 cool="" list=""
     allowed=$(get_user_devices "$user" 2>/dev/null)
     # Безлимит — тревожить не о чем: «больше, чем оплачено» недостижимо.
-    [ "${allowed:-0}" -gt 0 ] 2>/dev/null || return 0
-    primary=$(sub_token_for "$user" 2>/dev/null) || return 0
-    [ -n "$primary" ] || return 0
+    [ "${allowed:-0}" -gt 0 ] 2>/dev/null || return 1
+    primary=$(sub_token_for "$user" 2>/dev/null) || return 1
+    [ -n "$primary" ] || return 1
 
-    apps=$(get_user_apps "$user" 2>/dev/null) || return 0
-    [ -n "$apps" ] || return 0
+    apps=$(get_user_apps "$user" 2>/dev/null) || return 1
+    [ -n "$apps" ] || return 1
     # Только опознанные: «~…» это не устройство, а «кто-то с таким приложением».
     ids=$(printf '%s\n' "$apps" | awk -F'|' '$1 !~ /^~/ && $1 != "" { print }')
-    [ -n "$ids" ] || return 0
+    [ -n "$ids" ] || return 1
     count=$(printf '%s\n' "$ids" | wc -l)
 
-    # Первый взгляд на человека: всё, что уже есть, — не новость. Без этого
-    # первый же прогон после обновления разослал бы «новое устройство» всем.
-    if ! grep -qF "$primary|" "$SUBAPPS_SEEN_FILE" 2>/dev/null; then
-        printf '%s\n' "$ids" | while IFS='|' read -r hwid _rest; do
-            _seen_add "$primary" "$hwid" "$now"
-        done
-        return 0
-    fi
-
-    local hwid app ver os model _first _last _cnt
+    # Показываем ВЕСЬ список опознанных устройств, а не только новое: человек
+    # решает, свои они или чужие, а для этого ему надо видеть их рядом. Порядок
+    # — как отдал get_user_apps, самое свежее первым. Список режем по
+    # FOREIGN_LIST_MAX: утёкшая в общий чат ссылка даёт десятки строк, а в
+    # сообщение Telegram влезает 4096 символов.
+    local hwid app ver os model _first _last _cnt line shown=0
     while IFS='|' read -r hwid app ver os model _first _last _cnt; do
-        _seen_has "$primary" "$hwid" && continue
-        _seen_add "$primary" "$hwid" "$now"
-        new_count=$(( new_count + 1 ))
-        # Самое свежее устройство идёт первым (get_user_apps сортирует по last),
-        # его и показываем в сообщении.
-        [ -n "$new_line" ] || new_line="${model:-${os:-Неизвестное устройство}} · ${os:-—} · ${app:-—}${ver:+ $ver}"
+        line="${model:-${os:-Неизвестное устройство}} · ${os:-—} · ${app:-—}${ver:+ $ver}"
+        if ! _seen_has "$primary" "$hwid"; then
+            _seen_add "$primary" "$hwid" "$now"
+            new_count=$(( new_count + 1 ))
+            line="$line — новое"
+            [ -n "$new_line" ] || new_line="$line"
+        fi
+        if [ "$shown" -lt "$FOREIGN_LIST_MAX" ]; then
+            list="${list}
+📱 <b>${line}</b>"
+            shown=$(( shown + 1 ))
+        fi
     done <<< "$ids"
+    [ "$count" -gt "$shown" ] && list="${list}
+… и ещё $(( count - shown ))"
 
-    [ "$new_count" -gt 0 ] || return 0
+    [ "$new_count" -gt 0 ] || return 1
     # Новое устройство в пределах оплаченного — это просто новое устройство.
-    [ "$count" -gt "$allowed" ] 2>/dev/null || return 0
+    [ "$count" -gt "$allowed" ] 2>/dev/null || return 1
 
     # Кулдаун: ссылку выложили в общий чат — новые устройства будут капать
     # часами, а человеку нужно одно сообщение, а не поток.
     cool=$(awk -F'|' -v t="$primary" '$1 == t && $2 == "=alert" { print $3 }' \
            "$SUBAPPS_SEEN_FILE" 2>/dev/null | tail -1)
-    [ -n "$cool" ] && [ $(( now - cool )) -lt "$FOREIGN_COOLDOWN_SEC" ] 2>/dev/null && return 0
+    [ -n "$cool" ] && [ $(( now - cool )) -lt "$FOREIGN_COOLDOWN_SEC" ] 2>/dev/null && return 1
     sed -i "/^${primary}|=alert|/d" "$SUBAPPS_SEEN_FILE" 2>/dev/null
     printf '%s|=alert|%s\n' "$primary" "$now" >> "$SUBAPPS_SEEN_FILE"
 
-    local more="" kb cta
+    local kb cta
+    kb=$(bot_subscription_kb); cta=$(bot_subscription_link)
+    notify_user "$user" "$(ce "❗️") <b>Устройств больше, чем оплачено</b>
+
+Подписку скачивают <b>${count}</b> устройств, оплачено <b>${allowed}</b>:
+${list}
+
+Сервер разрывает лишние подключения и не разбирает, какое из них лишнее, — обрывы получают все ваши устройства сразу. Это и есть «связь работает через раз».
+
+Если устройства ваши — докупите недостающие. Если ссылка ушла другому человеку — сбросьте её или добавьте ему отдельное устройство со своей ссылкой.$(_devices_article_line)" \
+        "$kb" "$cta"
+    return 0
+}
+
+# ---------- мягкий уровень: подписку скачало новое ПРИЛОЖЕНИЕ ----------
+# Зачем он нужен, когда есть уровень выше: половина клиентов (Hiddify, v2rayNG,
+# браузер) `X-Hwid` не шлёт вовсе, и утечка через них уровню выше не видна в
+# принципе — он молчит, человек ничего не узнаёт, а связь у него тем временем
+# рвётся. Этот уровень смотрит на то, что видно всегда: каким приложением
+# скачали подписку. Новое приложение по ссылке — повод предупредить.
+#
+# Чем платим: неопознанный клиент — это «кто-то с таким приложением», а не
+# устройство, поэтому сказать «у вас чужой» тут нельзя. Сообщение и не говорит:
+# оно сообщает факт, первым делом объясняет безобидные причины и только потом
+# предупреждает. Тревога сверх лимита осталась отдельным, более резким уровнем.
+#
+# ~TelegramBot исключён намеренно: этот след оставляет предпросмотр ссылки в
+# Telegram, а его дёргает и НАШ СОБСТВЕННЫЙ бот, когда присылает человеку его
+# же подписку. Тревожить по нему — писать «вашу ссылку кто-то открыл» сразу
+# после того, как мы сами её и отправили.
+_newapp_check_user() {   # user now
+    local user="$1" now="$2" primary apps syn new_line="" new_count=0 cool="" kb cta
+    primary=$(sub_token_for "$user" 2>/dev/null) || return 1
+    [ -n "$primary" ] || return 1
+
+    apps=$(get_user_apps "$user" 2>/dev/null) || return 1
+    [ -n "$apps" ] || return 1
+    syn=$(printf '%s\n' "$apps" | awk -F'|' '$1 ~ /^~/ && $1 != "~TelegramBot" { print }')
+    [ -n "$syn" ] || return 1
+
+    local key app ver os _model _first _last _cnt
+    while IFS='|' read -r key app ver os _model _first _last _cnt; do
+        _seen_has "$primary" "$key" && continue
+        _seen_add "$primary" "$key" "$now"
+        new_count=$(( new_count + 1 ))
+        [ -n "$new_line" ] || new_line="${app:-неизвестное приложение}${ver:+ $ver}${os:+ · $os}"
+    done <<< "$syn"
+
+    [ "$new_count" -gt 0 ] || return 1
+
+    cool=$(awk -F'|' -v t="$primary" '$1 == t && $2 == "=newapp" { print $3 }' \
+           "$SUBAPPS_SEEN_FILE" 2>/dev/null | tail -1)
+    [ -n "$cool" ] && [ $(( now - cool )) -lt "$NEWAPP_COOLDOWN_SEC" ] 2>/dev/null && return 1
+    sed -i "/^${primary}|=newapp|/d" "$SUBAPPS_SEEN_FILE" 2>/dev/null
+    printf '%s|=newapp|%s\n' "$primary" "$now" >> "$SUBAPPS_SEEN_FILE"
+
+    local more=""
     [ "$new_count" -gt 1 ] && more=" и ещё $(( new_count - 1 ))"
     kb=$(bot_subscription_kb); cta=$(bot_subscription_link)
-    notify_user "$user" "$(ce "❗️") <b>Новое устройство в вашей подписке</b>
-Вашу ссылку добавили там, где её раньше не было:
+    notify_user "$user" "$(ce "❗️") <b>Вашу подписку скачало новое приложение</b>
+
 📱 <b>${new_line}</b>${more}
 
-Сейчас подписку скачивают <b>${count}</b> устройств, а оплачено <b>${allowed}</b>.
+Если это вы — ничего делать не нужно. Если нет, ссылка могла уйти на сторону: сбросьте её, старая перестанет работать.
 
-Если это вы — ничего делать не нужно. Если нет — сбросьте ссылку: старая
-перестанет работать, и её надо будет заново добавить на своих устройствах." \
+Одна ссылка рассчитана на одно устройство. Когда по ней подключаются двое, сервер рвёт лишние подключения — связь портится у обоих. Нужен доступ близкому: добавьте отдельное устройство, у него будет своя ссылка.$(_devices_article_line)" \
         "$kb" "$cta"
+    return 0
 }
 
 # Проход по всем: у кого появилось устройство сверх оплаченного.
@@ -278,7 +398,13 @@ notify_foreign_devices() {
     local now user; now=$(date +%s)
     while IFS= read -r user; do
         [ -n "$user" ] || continue
-        _foreign_check_user "$user" "$now"
+        # Только что завели — метки поставлены, тревожить не о чем.
+        _seen_prime_user "$user" "$now" && continue
+        # Резкий уровень идёт первым: если устройств уже больше, чем оплачено,
+        # человеку нужно именно это сообщение, а не «замечено новое приложение».
+        # Оба в один прогон — это два сообщения об одном событии.
+        _foreign_check_user "$user" "$now" && continue
+        _newapp_check_user "$user" "$now"
     done < <(sub_all_users 2>/dev/null)
 
     # Уборка: отметка живёт дольше самих записей о скачивании (те 7 дней), иначе

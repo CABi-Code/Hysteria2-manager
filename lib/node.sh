@@ -115,6 +115,10 @@ sub_update_hours() { local h; h=$(node_get SUB_UPDATE_HOURS); [[ "$h" =~ ^[0-9]+
 sub_support_url()  { node_get SUB_SUPPORT_URL; }
 # Кнопка «страница подписки». По умолчанию — корень домена ноды.
 sub_page_url()     { local u; u=$(node_get SUB_PAGE_URL); [ -n "$u" ] && printf '%s' "$u" || printf 'https://%s/' "$(node_host)"; }
+# Статья «как устроены устройства и почему ссылка личная» для уведомлений об
+# утечке подписки (docs/guide/SUB-ALERTS.md). Пусто — уведомление уходит без
+# ссылки на статью: адрес зависит от оператора, зашивать его в код нельзя.
+sub_devices_url() { node_get SUB_DEVICES_URL; }
 # Куда уводить БРАУЗЕР, открывший /sub/<token> (см. docs/guide/SUB-BROWSER.md).
 # Пусто — не уводить никуда: браузер получит тот же текст, что и клиент.
 # Хвостовой слэш срезаем: к значению дописывается путь запроса целиком.
@@ -248,7 +252,8 @@ plan_apply_ph() {   # text user -> text
 # НЕ входит — она у каждой ноды своя. POOL_LIMIT/NODE_LIMIT — глобальные лимиты
 # подключений (см. ниже), синхронизируются тем же LWW-механизмом.
 SETTING_KEYS="SUB_TITLE SUB_TAG_TMPL SUB_UPDATE_HOURS POOL_LIMIT NODE_LIMIT
-SUB_SUPPORT_URL SUB_PAGE_URL SUB_WEB_URL SUB_ANN_URL SUB_ANN_DEMO SUB_ANN_FREE SUB_ANN_PAID SUB_HEADERS"
+SUB_SUPPORT_URL SUB_PAGE_URL SUB_WEB_URL SUB_ANN_URL SUB_ANN_DEMO SUB_ANN_FREE SUB_ANN_PAID SUB_HEADERS
+SUB_DEVICES_URL"
 
 setting_ts() { local t; t=$(node_get "${1}_TS"); [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0; }
 
