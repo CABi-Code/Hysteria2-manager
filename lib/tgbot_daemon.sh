@@ -219,15 +219,24 @@ ${tl:-нет тарифов}
                     || bot_client_menu "$chat"
             fi ;;
         "/start "*)
-            local code="${text#/start }" u
+            local code="${text#/start }" u _screen
             code=$(printf '%s' "$code" | tr -d '[:space:]')
             # ref_<КОД> — реферальная ссылка мини-аппа (не код привязки);
             # wl_<id> — подтверждение входа в веб-версию (карточку шлёт мини-апп);
-            # tariffs/balance — ссылка «продлить» из директа канала: мини-апп по
-            # прямой ссылке оттуда не открывается, поэтому ведём через /start, а
-            # нужный экран открывает кнопка приветствия мини-аппа.
+            # имена экранов — ссылки из директа канала: мини-апп по прямой ссылке
+            # оттуда не открывается, поэтому ведём через /start, а нужный экран
+            # открывает кнопка приветствия мини-аппа.
+            #
+            # Список обязан покрывать ВСЕ экраны, на которые ссылается
+            # lib/notify.sh: незнакомое имя падает ниже в поиск кода привязки и
+            # человек получает «код неверен или истёк». Так и было с
+            # `subscription` — ссылка под уведомлением об утечке вела в тупик.
+            case "$code" in
+                tariffs|balance|subscription|mydevices|buydevice) _screen=1 ;;
+                *) _screen=0 ;;
+            esac
             if [ "${code#ref_}" != "$code" ] || [ "${code#wl_}" != "$code" ] \
-               || [ "$code" = "tariffs" ] || [ "$code" = "balance" ]; then
+               || [ "$_screen" = 1 ]; then
                 bot_miniapp_start "$chat" "$from" "$code" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
                     "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
                     || bot_client_menu "$chat"

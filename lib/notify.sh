@@ -214,8 +214,12 @@ SUBAPPS_SEEN_KEEP_DAYS="${SUBAPPS_SEEN_KEEP_DAYS:-30}"
 # (SUB_DEVICES_URL): объяснять устройство лимита внутри сообщения негде.
 bot_subscription_kb() {
     local s t a p rows
-    s=$(miniapp_screen_url subscription) || return 0
-    t=$(miniapp_screen_url tariffs)
+    # mydevices/buydevice, а не subscription/tariffs: первый открывает экран
+    # подписки с прокруткой к блоку устройств, второй — витрину сразу в режиме
+    # покупки УСТРОЙСТВ. Обычные экраны высаживали человека на начало длинного
+    # списка и на покупку дней соответственно.
+    s=$(miniapp_screen_url mydevices) || return 0
+    t=$(miniapp_screen_url buydevice)
     a=$(sub_devices_url 2>/dev/null)
     p=$(miniapp_screen_url privacy)
     rows=$(jq -nc --arg s "$s" '[[{text:"📱 Свои устройства",url:$s}]]')
@@ -234,7 +238,7 @@ bot_subscription_kb() {
 bot_subscription_link() {
     local bu; bu=$(bot_username)
     [ -n "$bu" ] || return 0
-    printf '%s Свои устройства: https://t.me/%s?start=subscription\n%s Купить устройство: https://t.me/%s?start=tariffs' \
+    printf '%s Свои устройства: https://t.me/%s?start=mydevices\n%s Купить устройство: https://t.me/%s?start=buydevice' \
         "$(ce "🚫")" "$bu" "$(ce "⭐")" "$bu"
 }
 
@@ -342,7 +346,7 @@ _foreign_check_user() {   # user now → 0 если отправили
 Подписку скачивают <b>${count}</b> устройств, оплачено <b>${allowed}</b>:
 ${list}
 
-Сервер разрывает лишние подключения и не разбирает, какое из них лишнее, — обрывы получают все ваши устройства сразу. Это и есть «связь работает через раз».
+Сервер разрывает лишние подключения и не разбирает, какое из них лишнее, — обрывы получают все ваши устройства сразу, включая те, которыми пользуетесь вы.
 
 Если устройства ваши — докупите недостающие. Если ссылка ушла другому человеку — сбросьте её или добавьте ему отдельное устройство со своей ссылкой.$(_devices_article_line)" \
         "$kb" "$cta"
