@@ -1209,6 +1209,60 @@ proto_xray_repair() {
 # принадлежат ЭТОМУ юзеру однозначно (_proto_ip_sole_owner_lines): за общим
 # CGNAT-адресом может сидеть чужой, рвать его нельзя. Закрываем поштучно,
 # DELETE /connections/{id} — соседние соединения не страдают.
+# ---- TUIC: блокировка новых соединений (docs/guide/DEVICE-LIMITS.md §4.2) ----
+#
+# Закрыть потоки через clash API мало: креды остаются валидными, и клиент
+# открывает новые в ту же секунду. Отказать на подключении sing-box не умеет —
+# ни auth-хука, ни атрибуции соединения к юзеру (P-17). Единственное место, где
+# «новые соединения не проходят» вообще достижимо, — ядро: дропаем UDP на порт
+# TUIC с адреса нарушителя.
+#
+# Три свойства, ради которых сделано именно так:
+#
+# * **Своя таблица `inet hy2block`.** В `hy2limit` класть нельзя: kernel-лимиты
+#   пересобирают её целиком (`delete table` + создание заново, lib/perf.sh), и
+#   наши элементы исчезали бы на первом же reconcile.
+# * **Элемент с таймаутом**, а не вечная запись. Снимать блокировку явно никто
+#   не обязан: упал менеджер, кончился крон, перезагрузили ноду — человек всё
+#   равно разблокируется сам через TUIC_BLOCK_SEC. Вечная запись означала бы
+#   риск запереть клиента навсегда из-за нашей же ошибки.
+# * **Только однозначные адреса** (`_proto_ip_sole_owner_lines`, как у учёта
+#   трафика): за общим CGNAT-адресом сидят чужие люди, и дроп по нему выключил
+#   бы TUIC им всем.
+TUIC_BLOCK_SEC="${TUIC_BLOCK_SEC:-300}"
+
+# Таблица есть и построена под текущий порт. Порт сменили — пересобираем:
+# правило с прежним портом дропало бы не то и не тех.
+_proto_tuic_block_ensure() {
+    command -v nft >/dev/null 2>&1 || return 1
+    local port; port=$(proto_tuic_port)
+    [ -n "$port" ] || return 1
+    if nft list table inet hy2block 2>/dev/null | grep -q "dport $port "; then
+        return 0
+    fi
+    nft delete table inet hy2block 2>/dev/null
+    nft -f - <<EOF 2>/dev/null
+table inet hy2block {
+    set tuic4 { type ipv4_addr; flags timeout; }
+    set tuic6 { type ipv6_addr; flags timeout; }
+    chain input {
+        type filter hook input priority filter - 5; policy accept;
+        udp dport $port ip saddr @tuic4 counter drop
+        udp dport $port ip6 saddr @tuic6 counter drop
+    }
+}
+EOF
+}
+
+# Закрыть TUIC для адреса на TUIC_BLOCK_SEC. Версия адреса выбирается по
+# наличию двоеточия — своего set у каждой, иначе nft не примет элемент.
+_proto_tuic_block_ip() {   # ip
+    local ip="$1" set=tuic4
+    [ -n "$ip" ] || return 1
+    case "$ip" in *:*) set=tuic6 ;; esac
+    nft add element inet hy2block "$set" "{ $ip timeout ${TUIC_BLOCK_SEC}s }" 2>/dev/null
+}
+
 proto_tuic_kick() {   # user -> 0 если что-то закрыли
     proto_tuic_enabled || return 1
     command -v jq >/dev/null 2>&1 || return 1
@@ -1221,6 +1275,16 @@ proto_tuic_kick() {   # user -> 0 если что-то закрыли
 
     ips=$(_proto_ip_sole_owner_lines | awk -F'\t' -v u="$user" '$2==u{print $1}')
     [ -n "$ips" ] || return 1
+
+    # Сначала запираем дверь, потом выставляем: закрой мы потоки первыми,
+    # клиент успел бы переоткрыть их до того, как правило встанет.
+    # Рубильник TUIC_BLOCK=0 в node.conf оставляет прежнее поведение —
+    # закрытие потоков без блокировки.
+    if [ "$(node_get TUIC_BLOCK 2>/dev/null)" != "0" ] && _proto_tuic_block_ensure; then
+        while IFS= read -r ip; do
+            _proto_tuic_block_ip "$ip"
+        done <<< "$ips"
+    fi
 
     while IFS= read -r id; do
         [ -n "$id" ] || continue
