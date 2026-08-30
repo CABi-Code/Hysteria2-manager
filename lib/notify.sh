@@ -375,6 +375,26 @@ _newapp_check_user() {   # user now
     syn=$(printf '%s\n' "$apps" | awk -F'|' '$1 ~ /^~/ && $1 != "~TelegramBot" { print }')
     [ -n "$syn" ] || return 1
 
+    # Свой «первый взгляд», отдельно от общего (_seen_prime_user).
+    #
+    # Общего мало: он молчит только про человека, которого файл отметок НЕ знает
+    # вовсе. А в день, когда этот уровень появился, файл уже знал людей — по их
+    # опознанным устройствам, — и их приложения, замеченные неделю назад,
+    # мгновенно стали «новыми». Так и вышло на боевой ноде: двое получили
+    # «подписку скачало новое приложение» про клиент, которым пользуются давно.
+    #
+    # Отметка `=initapp` говорит «этого человека мягкий уровень уже видел».
+    # Нет её — молча метим все приложения и выходим. То же самое защитит и
+    # следующий уровень, если он когда-нибудь появится: заводить человека обязан
+    # каждый уровень отдельно, иначе он выстрелит по всей накопленной истории.
+    if ! grep -qF "$primary|=initapp|" "$SUBAPPS_SEEN_FILE" 2>/dev/null; then
+        printf '%s|=initapp|%s\n' "$primary" "$now" >> "$SUBAPPS_SEEN_FILE"
+        while IFS='|' read -r key _rest; do
+            [ -n "$key" ] && _seen_add "$primary" "$key" "$now"
+        done <<< "$syn"
+        return 1
+    fi
+
     local key app ver os _model _first _last _cnt
     while IFS='|' read -r key app ver os _model _first _last _cnt; do
         _seen_has "$primary" "$key" && continue
