@@ -137,8 +137,12 @@ proto_params_menu() {
                 ask v "  Шифр: "
                 case "$v" in 2022-blake3-aes-128-gcm|2022-blake3-aes-256-gcm) proto_set PROTO_SS_METHOD "$v" ;; *) echo "  ❌ Неизвестный шифр"; sleep 1 ;; esac
                 ;;
-            5) ask v "  REALITY dest (host:443, реальный TLS1.3-сайт): "; [ -n "$v" ] && proto_set PROTO_REALITY_DEST "$v" ;;
-            6) ask v "  REALITY SNI (обычно host из dest): "; [ -n "$v" ] && proto_set PROTO_REALITY_SNI "$v" ;;
+            5) ask v "  REALITY dest (обычно 127.0.0.1:443 — свой же Caddy): "; [ -n "$v" ] && proto_set PROTO_REALITY_DEST "$v" ;;
+            6)
+                echo "  Домен должен A-записью вести на ЭТУ ноду, иначе бан IP (P-129)."
+                ask v "  REALITY SNI: "
+                [ -n "$v" ] && { proto_set PROTO_REALITY_SNI "$v"; proto_reality_sni_check "$v" || sleep 3; }
+                ;;
             7) ask v "  Путь XHTTP (например /dl): "; [ -n "$v" ] && proto_set PROTO_XHTTP_PATH "$v" ;;
             8) ask v "  Новый порт Trojan (TCP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_TROJAN_PORT "$v" ;;
             9) ask v "  Путь WS Trojan (например /ws): "; [ -n "$v" ] && proto_set PROTO_TROJAN_WS_PATH "$v" ;;

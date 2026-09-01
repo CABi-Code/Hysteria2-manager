@@ -59,8 +59,8 @@ PROTO_TUIC_PORT=2053             # UDP
 PROTO_TROJAN_PORT=8444           # TCP
 PROTO_TROJAN_WS_PATH=/           # путь WebSocket
 PROTO_SS_METHOD=2022-blake3-aes-128-gcm
-PROTO_REALITY_DEST=www.microsoft.com:443
-PROTO_REALITY_SNI=www.microsoft.com
+PROTO_REALITY_DEST=127.0.0.1:443  # свой же Caddy, НЕ чужой сайт
+PROTO_REALITY_SNI=<домен ноды>   # A-запись обязана вести сюда же
 PROTO_REALITY_PRIVKEY=...        # генерится xray x25519 при установке
 PROTO_REALITY_PUBKEY=...         # pbk в подписку
 PROTO_REALITY_SHORTID=...        # sid в подписку
@@ -72,7 +72,11 @@ PROTO_XHTTP_PATH=/               # path XHTTP
 
 ## TLS
 
-* VLESS+REALITY — сертификат не нужен (REALITY заимствует TLS чужого `dest`).
+* VLESS+REALITY — отдельный сертификат не нужен: `dest` указывает на **свой
+  же Caddy** (`127.0.0.1:443`), и REALITY заимствует его настоящий TLS.
+  Чужой популярный домен в `dest`/`SNI` ставить нельзя — его A-запись живёт в
+  чужой AS, а клиент идёт на наш адрес, и это несовпадение стоит бана всего
+  адреса: [issues/PROTOCOLS.md P-129](../issues/PROTOCOLS.md#p-129).
 * SS-2022 — без TLS.
 * TUIC (QUIC) и Trojan/WS — нужен TLS, серт общий (`$DATA_DIR/proto/tuic.{crt,key}`).
 * Hysteria 2 — свой серт по путям из её `config.yaml`.

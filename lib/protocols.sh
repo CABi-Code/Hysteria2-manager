@@ -72,15 +72,34 @@ proto_trojan_port()    { local p; p=$(proto_get PROTO_TROJAN_PORT);    echo "${p
 proto_trojan_ws_path() { local p; p=$(proto_get PROTO_TROJAN_WS_PATH); echo "${p:-/}"; }
 proto_ss_method()  { local m; m=$(proto_get PROTO_SS_METHOD);  echo "${m:-2022-blake3-aes-128-gcm}"; }
 proto_ss_keylen()  { case "$(proto_ss_method)" in *aes-256*) echo 32 ;; *) echo 16 ;; esac; }
-# REALITY-цель («домен-прикрытие»): apple/icloud Xray прямо помечает как рисковые
-# (могут привести к блокировке IP). Дефолт — нейтральный иностранный сайт с
-# TLS1.3+H2+X25519, не блокируемый в РФ. dest и sni ДОЛЖНЫ указывать на один хост.
-proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-www.samsung.com:443}"; }
-proto_reality_sni()     { local s; s=$(proto_get PROTO_REALITY_SNI);    echo "${s:-www.samsung.com}"; }
+# REALITY-цель («домен-прикрытие»). ЧУЖОЙ ПОПУЛЯРНЫЙ ДОМЕН СТАВИТЬ НЕЛЬЗЯ:
+# A-запись samsung/microsoft/apple живёт в чужой AS (Akamai и подобные), а
+# клиент с этим именем идёт на наш адрес у мелкого хостера. Несовпадение
+# «имя ↔ AS адреса» ловится одним правилом на транзите и стоит бана всего IP
+# (P-129). Дефолт поэтому — САМ ДОМЕН НОДЫ на её же 443, где стоит Caddy с
+# настоящим сертификатом: имя ведёт ровно на тот адрес, куда идёт клиент, и
+# активная проверка снаружи видит настоящий сайт. dest и sni — один хост.
+proto_reality_dest()    { local d; d=$(proto_get PROTO_REALITY_DEST);   echo "${d:-127.0.0.1:443}"; }
+proto_reality_sni()     { local s; s=$(proto_get PROTO_REALITY_SNI);    echo "${s:-$(node_host)}"; }
 proto_reality_privkey() { proto_get PROTO_REALITY_PRIVKEY; }
 proto_reality_pubkey()  { proto_get PROTO_REALITY_PUBKEY; }
 proto_reality_shortid() { proto_get PROTO_REALITY_SHORTID; }
 proto_xhttp_path()      { local p; p=$(proto_get PROTO_XHTTP_PATH);     echo "${p:-/}"; }
+
+# Сторож маскарада: имя из SNI обязано A-записью вести на IP ЭТОЙ ноды.
+# Ведёт на чужой адрес — значит клиент придёт к нам под чужим именем, а это
+# ровно тот признак, по которому банят адрес целиком (P-129). Не режем, а
+# предупреждаем: домен могли только что переписать, DNS ещё не разошёлся.
+proto_reality_sni_check() {   # домен
+    local d="$1" a
+    [ -n "$d" ] || { echo "  ⚠️  REALITY SNI пуст: у ноды нет домена (меню настроек → домен)."; return 1; }
+    a=$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1; exit}')
+    [ -n "$a" ] && list_local_ips 2>/dev/null | grep -qxF "$a" && return 0
+    echo "  ⚠️  $d ведёт на ${a:-—}, а не на адрес этой ноды."
+    echo "      Чужое имя на нашем IP = бан адреса от РКН. Возьми домен, чья"
+    echo "      A-запись смотрит сюда, и держи dest на 127.0.0.1:443 (Caddy)."
+    return 1
+}
 
 # ---------------- Секрет и деривация кредов ----------------
 proto_secret() {
@@ -852,8 +871,9 @@ proto_enable_protocol() {   # name
             proto_set PROTO_VLESS_ENABLED 1
             [ -n "$(proto_get PROTO_VLESS_PORT)" ] || proto_set PROTO_VLESS_PORT 8443
             [ -n "$(proto_get PROTO_XHTTP_PATH)" ] || proto_set PROTO_XHTTP_PATH /
-            [ -n "$(proto_get PROTO_REALITY_DEST)" ] || proto_set PROTO_REALITY_DEST www.microsoft.com:443
-            [ -n "$(proto_get PROTO_REALITY_SNI)" ]  || proto_set PROTO_REALITY_SNI www.microsoft.com
+            [ -n "$(proto_get PROTO_REALITY_DEST)" ] || proto_set PROTO_REALITY_DEST 127.0.0.1:443
+            [ -n "$(proto_get PROTO_REALITY_SNI)" ]  || proto_set PROTO_REALITY_SNI "$(node_host)"
+            proto_reality_sni_check "$(proto_reality_sni)" || true
             ;;
         ss)
             proto_set PROTO_SS_ENABLED 1
