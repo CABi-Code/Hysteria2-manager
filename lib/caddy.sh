@@ -81,9 +81,15 @@ setup_caddy() {
     # Web API для внешних приложений (lib/webapi.sh): когда включён — проксируем
     # /api/* на локальный демон. Блок генерируется здесь, а не дописывается извне:
     # setup_caddy полностью перезаписывает Caddyfile, и внешняя правка потерялась бы.
+    # handle_path, а НЕ handle: префикс /api надо снять. Демон знает маршруты
+    # как /v1/…, и с обычным handle к нему приходило /api/v1/… — он отвечал
+    # «нет такого эндпоинта» на ВСЁ. Локальный потребитель этого не замечал
+    # (он ходит прямо на 127.0.0.1), а вот межнодовые вызовы, которые строят
+    # адрес как https://<нода>/api/v1/… (wa_core.cluster_request), молча
+    # получали 404 — и снаружи Web API ноды не существовало вовсе.
     local api_block=""
     if type -t webapi_enabled >/dev/null 2>&1 && webapi_enabled; then
-        api_block="    handle /api/* {
+        api_block="    handle_path /api/* {
         reverse_proxy 127.0.0.1:$(webapi_port)
     }"
     fi
