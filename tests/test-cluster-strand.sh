@@ -118,4 +118,17 @@ printf '%s' "$out" | grep -q 'нет 2 из 3' || fail "покрытие: жда
 printf 'alice\tu\nbob\tu\ncarol\tu\n' > "$PEERS_DIR/peer1.example.manifest"
 [ -z "$(cluster_coverage_report)" ] || fail "покрытие: всё на месте, а отчёт ругается"
 
+# --- Отчёт об обновлении соседей судит по телу, а не по коду ответа ----------
+# Нода, где /api ещё не снимает префикс, отдаёт бодрый 200 статической
+# заглушкой подписки. По коду ответа это «успех», которого не было.
+cluster_peers()  { printf 'peer1.example\n'; }
+
+cluster_post()   { printf 'Subscription endpoint. Open your personal /sub/<token> URL...'; }
+out=$(cluster_update_peers)
+printf '%s' "$out" | grep -q '❌' || fail "обновление: заглушка Caddy принята за успех"
+
+cluster_post()   { printf '{"ok": true, "data": {"accepted": "1"}}'; }
+out=$(cluster_update_peers)
+printf '%s' "$out" | grep -q '💚' || fail "обновление: настоящий ответ демона не признан"
+
 echo "✅ test-cluster-strand: расхождение лечится, срок и кластерный блок уважаются, недостача видна"
