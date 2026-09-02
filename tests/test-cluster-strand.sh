@@ -97,4 +97,25 @@ cluster_apply_roster
 db_user_exists nopass || fail "nopass: пустой пароль — должен быть заведён с новым"
 grep -q '^nopass|' "$DISABLED_FILE" && fail "nopass: заведён, но остался в отключённых"
 
-echo "✅ test-cluster-strand: расхождение лечится, срок и кластерный блок уважаются"
+# --- Видимость: расхождение должно быть ВИДНО, а не молчать ------------------
+# Ровно то, чего не хватало: пир жив и синхронизируется, а профилей у него нет.
+printf 'alice\nbob\ncarol\n' > "$CLUSTER_USERS_FILE"
+: > "$PEERS_DIR/peer1.roster"
+printf 'peer1|peer1.example\n' > "$CLUSTER_CONF"
+# У пира заведена только alice — bob и carol отсутствуют.
+printf 'alice\thysteria2://x@peer1.example:443/\n' > "$PEERS_DIR/peer1.example.manifest"
+
+out=$(cluster_coverage_report)
+[ -n "$out" ] || fail "покрытие: расхождение есть, а отчёт молчит"
+printf '%s' "$out" | grep -q 'нет 2 из 3' || fail "покрытие: ждали «нет 2 из 3», получили: $out"
+
+# Пустой манифест — это «нода не отдала данные» (о ней уже сказал .health),
+# а не «у неё нет профилей»: второй раз шуметь не о чем.
+: > "$PEERS_DIR/peer1.example.manifest"
+[ -z "$(cluster_coverage_report)" ] || fail "покрытие: пустой манифест не повод для тревоги"
+
+# Полное совпадение — тишина.
+printf 'alice\tu\nbob\tu\ncarol\tu\n' > "$PEERS_DIR/peer1.example.manifest"
+[ -z "$(cluster_coverage_report)" ] || fail "покрытие: всё на месте, а отчёт ругается"
+
+echo "✅ test-cluster-strand: расхождение лечится, срок и кластерный блок уважаются, недостача видна"

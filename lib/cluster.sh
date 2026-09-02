@@ -195,6 +195,33 @@ cluster_health_report() {
             printf '%s (%s) — нет синхронизации %d мин\n' "${name:-$host}" "$host" "$((age / 60))"
         fi
     done < "$PEERS_HEALTH_FILE"
+    cluster_coverage_report
+}
+
+# Кто из кластерных профилей не заведён у пира. Пир жив, синхронизация идёт, а
+# профиля у него нет — снаружи это выглядит как «в подписке один сервер вместо
+# всех», и заметить это раньше было нечем: расхождение молчит (P-130).
+#
+# Считаем по манифесту пира — он собирается из ЕГО users.db, то есть говорит о
+# факте, а не о намерении (ростер говорит как раз о намерении и совпасть с
+# фактом может не сразу). Свежесть манифеста уже проверена выше по .health,
+# поэтому отставание в пару минут сюда не попадает.
+cluster_coverage_report() {
+    local want total f host miss
+    want=$(cluster_users_all); [ -n "$want" ] || return 0
+    total=$(printf '%s\n' "$want" | grep -c .)
+    for f in "$PEERS_DIR"/*.manifest; do
+        [ -f "$f" ] || continue
+        host=$(basename "$f" .manifest)
+        grep -q "|$host\$" "$CLUSTER_CONF" 2>/dev/null || continue
+        # Пустой манифест — это «нода не отдала данные», а не «профилей нет»:
+        # о недоступности уже сказал .health, второй раз шуметь не о чем.
+        [ -s "$f" ] || continue
+        miss=$(comm -23 <(printf '%s\n' "$want" | sort -u) \
+                        <(cut -f1 "$f" | grep -v '^$' | sort -u) | grep -c .)
+        [ "${miss:-0}" -gt 0 ] && printf '%s — нет %d из %d профилей\n' "$host" "$miss" "$total"
+    done
+    return 0
 }
 
 # Одна строка для шапки главного меню. Пусто = проблем нет.
