@@ -735,9 +735,13 @@ cluster_apply_state() {
         case "$s" in
             active)
                 if is_user_disabled "$u"; then
-                    pw=$(get_disabled_password "$u")
-                    [ -n "$pw" ] && db_add_user "$u" "$pw"
-                    sed -i "/^${u}|/d" "$DISABLED_FILE" 2>/dev/null
+                    # Пароль пустой — заводим новый, но НЕ вычёркиваем из
+                    # отключённых вслепую: раньше sed срабатывал и тогда, когда
+                    # db_add_user был пропущен, и юзер исчезал разом из базы и
+                    # из disabled.dat (P-130).
+                    pw=$(get_disabled_password "$u"); [ -n "$pw" ] || pw=$(pwgen -s 64 1)
+                    db_add_user "$u" "$pw"
+                    db_user_exists "$u" && sed -i "/^${u}|/d" "$DISABLED_FILE" 2>/dev/null
                 elif ! db_user_exists "$u"; then
                     db_add_user "$u" "$(pwgen -s 64 1)"
                 fi
@@ -775,7 +779,7 @@ publish_roster() {
 # Заводит локально кластерных юзеров, объявленных пирами, которых тут ещё нет.
 cluster_apply_roster() {
     sub_enabled || return 0
-    local want u f created=0
+    local want u f pw created=0
     want=$(for f in "$PEERS_DIR"/*.roster; do [ -f "$f" ] && cat "$f"; done 2>/dev/null)
     want=$(printf '%s\n' "$want" | grep -v '^$' | sort -u)
     [ -n "$want" ] || return 0
@@ -786,7 +790,31 @@ cluster_apply_roster() {
         # пересоздаём, даже если он ещё «висит» в roster-кэше пира.
         case "$(cstate_get "$u")" in deleted|disabled) continue ;; esac
         db_user_exists "$u" && continue
-        is_user_disabled "$u" && continue
+        # Кластер считает юзера активным, а у нас он в отключённых — это не
+        # состояние, а РАССОГЛАСОВАНИЕ, и само оно не рассасывается: раньше тут
+        # стояло «is_user_disabled && continue», а cluster_apply_state работает
+        # только на НОВОМ ts, которого больше не будет. Профиль оставался живым
+        # на одной ноде, и клиент видел в подписке один сервер вместо всех
+        # (P-130). Типовой путь сюда — истёк срок (сосед отключил у себя, это
+        # локальное решение), потом человек купил тариф на другой ноде.
+        if is_user_disabled "$u"; then
+            [ "$(cstate_get "$u")" = active ] || continue
+            # Срок спрашиваем ТЕМИ ЖЕ функциями и в том же порядке, что
+            # check_expired_users (lib/expiry.sh): вторая копия политики срока
+            # разъедется с первой, и мы получим качели «эта ветка включает —
+            # sweep отключает» на каждой синхронизации.
+            if ! { declare -F freeplan_has >/dev/null && freeplan_has "$u"; }; then
+                expiry_is_over "$(get_user_expiry "$u")" && continue
+            fi
+            pw=$(get_disabled_password "$u"); [ -n "$pw" ] || pw=$(pwgen -s 64 1)
+            db_add_user "$u" "$pw"
+            # Из отключённых вычёркиваем только по факту записи в базу: иначе
+            # юзер пропадает разом и оттуда, и отсюда.
+            db_user_exists "$u" || continue
+            sed -i "/^${u}|/d" "$DISABLED_FILE" 2>/dev/null
+            created=1
+            continue
+        fi
         db_add_user "$u" "$(pwgen -s 64 1)"
         created=1
     done <<< "$want"
