@@ -178,9 +178,49 @@ freeplan_window_start() {   # start_ts window_sec now -> ts
     printf '%s' $(( st + k * win ))
 }
 
+# Снять с бесплатного тарифа тех, кто снова оплатил.
+#
+# Отдельно от freeplan_tick и БЕЗ гейта free_enabled: это не учёт квот, а уборка
+# КЛАСТЕРНОГО файла, и нода, где free=1 не настроен, обязана делать её тоже.
+# Иначе строка висит у оплатившего вечно, а последствия видит клиент:
+#   • в заголовке подписки стоит квота бесплатного тарифа, и приложение пишет
+#     «квота исчерпана» при полностью работающем платном доступе;
+#   • любая нода, где free=1 всё-таки настроен, увидит перерасход и отключит
+#     его — то самое отключение, из которого профиль потом не возвращается.
+# Уборка идёт на КАЖДОЙ ноде именно поэтому: cluster_apply_freeplan сливает
+# строки LWW, и удаление на одной ноде соседи привезли бы обратно (P-131).
+freeplan_release_paid() {
+    [ -s "$FREEPLAN_FILE" ] || return 0
+    local user exp paid=""
+    # Сначала собираем список, потом правим файл: freeplan_remove делает sed -i
+    # по тому же файлу, который мы бы читали циклом.
+    while IFS='|' read -r user _; do
+        [ -n "$user" ] || continue
+        [[ "$user" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        exp=$(get_user_expiry "$user")
+        # Пустой срок — это не оплата, а бессрочный/неизвестный доступ:
+        # expiry_is_over на пустой строке говорит «не истёк», и без этой
+        # проверки мы сняли бы с тарифа всех подряд.
+        [ -n "$exp" ] || continue
+        expiry_is_over "$exp" && continue
+        paid="$paid $user"
+    done < "$FREEPLAN_FILE"
+    [ -n "$paid" ] || return 0
+    for user in $paid; do
+        is_user_disabled "$user" && enable_user "$user" >/dev/null 2>&1
+        freeplan_remove "$user"
+    done
+    # Заголовок подписки несёт квоту бесплатного тарифа — её надо перевыпустить,
+    # иначе приложение продолжит показывать «квота исчерпана».
+    declare -F sub_refresh >/dev/null 2>&1 && sub_refresh
+    return 0
+}
+
 # ---------- прогон (раз в минуту из --online-sync) ----------
 
 freeplan_tick() {
+    [ -s "$FREEPLAN_FILE" ] || return 0
+    freeplan_release_paid          # уборка за оплатившими — без гейта, см. выше
     free_enabled || return 0
     [ -s "$FREEPLAN_FILE" ] || return 0
     local now wk_lim mo_lim user state start wks wkb mos mob notif ts
