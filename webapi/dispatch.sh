@@ -417,6 +417,22 @@ case "$verb" in
         printf 'stars_mode=%s\nrub_per_star=%s\n' "$1" "$2"
         ;;
 
+    cluster-nudge)  # сосед просит синхронизироваться сейчас, не ждать крона
+        # Замок НЕ берём и результата не ждём: синхронизация идёт минуты, а
+        # вызывающая сторона — соседняя нода в момент чужой оплаты. Если
+        # прогон уже идёт, cron_lock внутри просто пропустит этот тик, и это
+        # правильный ответ («уже синхронизируюсь»).
+        setsid nohup "$MANAGER_DIR/hy2-manager.sh" --cluster-sync >/dev/null 2>&1 &
+        printf 'accepted=1\n'
+        ;;
+
+    cluster-update)  # сосед просит обновить у себя менеджер (только менеджер)
+        # Данные, конфиг, сертификаты и Hysteria не трогаются — install.sh
+        # запускается в режиме manager_only и другого режима удалённо не знает.
+        manager_update_silent || fail 69 update_failed "не удалось скачать установщик"
+        printf 'accepted=1\nversion_before=%s\n' "$(cat "$MANAGER_DIR/VERSION" 2>/dev/null)"
+        ;;
+
     *)
         fail 64 unknown_verb "неизвестная команда: ${verb:-<пусто>}"
         ;;

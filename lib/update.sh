@@ -68,6 +68,43 @@ manager_update_banner() {   # [force]
     printf '⬆ доступно обновление менеджера: v%s (у вас v%s)' "$rem" "$(manager_local_version)"
 }
 
+# Неинтерактивное обновление менеджера — для кластерного крючка «обнови соседа»
+# и для запуска из крона. Ставит ТОЛЬКО файлы менеджера: install.sh в режиме
+# manager_only не трогает Hysteria, конфиг, сертификаты, пользователей и
+# статистику, а полную переустановку без человека за клавиатурой он запустить
+# не даст в принципе (см. HY2M_MANAGER_ONLY в install.sh).
+#
+# Работа уходит в отвязанный процесс: установщик перезапускает hy2-webapi и
+# hy2-bot, а вызов сюда, как правило, ПРИШЁЛ через один из них — иначе
+# обновление убило бы само себя на середине, оставив половину модулей старыми.
+# Возврат: 0 — запущено (результат смотреть в логе), 1 — установщик не скачался.
+manager_update_silent() {
+    local up_tmp log
+    log="${LOG_DIR:-/var/log/hy2-manager}/update.log"
+    mkdir -p "$(dirname "$log")" 2>/dev/null
+    up_tmp=$(mktemp /tmp/hy2m-update.XXXXXX) || return 1
+    if ! curl -fsSL --max-time 30 "$MANAGER_REPO_RAW/install.sh" -o "$up_tmp" || [ ! -s "$up_tmp" ]; then
+        rm -f "$up_tmp"
+        echo "$(date '+%F %T') обновление: не удалось скачать install.sh" >> "$log"
+        return 1
+    fi
+    setsid nohup bash -c '
+        {
+            echo "=== $(date "+%F %T") обновление менеджера (только менеджер) ==="
+            HY2M_MANAGER_ONLY=1 bash "'"$up_tmp"'"
+            rc=$?
+            rm -f "'"$up_tmp"'"
+            # Перезапускаем только то, что реально крутится: демоны держат
+            # старый код в памяти, пока их не тронешь.
+            for svc in hy2-webapi hy2-bot; do
+                systemctl is-active --quiet "$svc" && systemctl restart "$svc"
+            done
+            echo "=== $(date "+%F %T") готово, код $rc, версия $(cat /opt/hy2-manager/VERSION 2>/dev/null) ==="
+        } >>"'"$log"'" 2>&1
+    ' >/dev/null 2>&1 &
+    return 0
+}
+
 # Запуск установщика с GitHub (режим «только менеджер»). Заменяет процесс.
 manager_do_update() {
     local up_tmp; up_tmp=$(mktemp)

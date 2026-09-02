@@ -166,6 +166,18 @@ EOF
     systemctl is-active --quiet caddy 2>/dev/null
 }
 
+# Разовая миграция: до 4.26.123 блок прокси стоял на «handle /api/*», который
+# префикс НЕ снимает, и Web API ноды снаружи не отвечал ни на один запрос.
+# Отдельной миграцией, потому что самовосстановление в hy2-manager.sh чинит
+# только ЛЕЖАЩИЙ или БИТЫЙ конфиг, а этот валиден — он просто неправильный.
+# Идемпотентна: смотрит ровно на старую форму блока и молчит, если её нет.
+migrate_caddy_api_prefix() {
+    sub_enabled || return 0
+    [ -f "$CADDYFILE" ] || return 0
+    grep -qE '^[[:space:]]*handle /api/\*' "$CADDYFILE" 2>/dev/null || return 0
+    setup_caddy >/dev/null 2>&1
+}
+
 # Открывает 80/443 tcp в активном firewall (ufw/firewalld/iptables). Идемпотентно.
 # 80 нужен для ACME-проверки Let's Encrypt, 443 — для самой подписки.
 ensure_ports_open() {

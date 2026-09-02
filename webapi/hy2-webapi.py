@@ -105,12 +105,25 @@ ROUTES = [
     # SSE: выдача тикета — по Bearer (Laravel); сам поток — по тикету (браузер).
     ("POST", re.compile(r"^/v1/stream/ticket$"), "read", "h_stream_ticket"),
     ("GET", re.compile(r"^/v1/stream/online$"), None, "h_stream_online"),
+    # Крючки между нодами: «синхронизируйся сейчас» и «обнови менеджер».
+    # Scope «cluster» намеренно НЕ выдан ключам приложений по умолчанию —
+    # это разговор нод между собой, а не ручка кабинета.
+    ("POST", re.compile(r"^/v1/cluster/nudge$"), "cluster", "h_cluster_nudge"),
+    ("POST", re.compile(r"^/v1/cluster/update$"), "cluster", "h_cluster_update"),
 ]
 
 
-# Единственная ветка API, куда пускают по общему секрету кластера, а не по
-# ключу webapi.keys (см. handle_route и wa_core.cluster_auth_ok).
-CLUSTER_AUTH_PREFIX = "/v1/demo"
+# Ветки API, куда пускают по общему секрету кластера, а не по ключу
+# webapi.keys (см. handle_route и wa_core.cluster_auth_ok). str.startswith
+# принимает кортеж, поэтому проверка ниже не меняется.
+# ВАЖНО: у этих маршрутов scope обязан быть НЕ None — ветка кластерной
+# авторизации живёт внутри «if scope is not None», и маршрут со scope=None
+# остался бы вообще без проверки.
+CLUSTER_AUTH_PREFIX = ("/v1/demo", "/v1/cluster")
+
+# Ветка, куда пускают ТОЛЬКО ноды и никогда — ключи приложений, даже со «*»
+# в scopes (см. handle_route). Демо сюда не входит: его ручки нужны и кабинету.
+CLUSTER_NODE_ONLY_PREFIX = "/v1/cluster"
 
 
 class ApiError(Exception):
@@ -389,6 +402,20 @@ class Handler(BaseHTTPRequestHandler):
                 "password": res.get("password"),
                 "subscription_url": res.get("sub_url") or None}
 
+    def h_cluster_nudge(self):
+        # Сосед сообщает «у меня что-то изменилось, забери сейчас». Данные он
+        # НЕ передаёт: мы идём и тянем их сами, прежним путём и с прежними
+        # проверками, — ручка лишь заменяет ожидание крона (~5 мин).
+        return self.dispatch("cluster-nudge")
+
+    def h_cluster_update(self):
+        # Сосед просит обновить менеджер. Обновляется ТОЛЬКО менеджер, из
+        # репозитория, зашитого в config.sh этой ноды: адрес источника
+        # вызывающая сторона не выбирает, поэтому «обнови себя» не
+        # превращается в «выполни мой код». Пользователи, конфиг, сертификаты
+        # и Hysteria не трогаются (install.sh, режим manager_only).
+        return self.dispatch("cluster-update")
+
     def h_extend(self, name):
         user = need_username(name)
         days = self.body.get("days")
@@ -636,9 +663,16 @@ class Handler(BaseHTTPRequestHandler):
                 # demo_create_remote) и отвечает нам о его состоянии.
                 if key is None and path.startswith(CLUSTER_AUTH_PREFIX) \
                         and cluster_auth_ok(self.headers.get("X-Cluster-Auth")):
-                    key = {"name": "cluster", "scopes": {"read", "users"}}
+                    key = {"name": "cluster", "scopes": {"read", "users", "cluster"}}
                 if key is None:
                     raise ApiError(401, "unauthorized", "нужен заголовок Authorization: Bearer <ключ>")
+                # Крючки между нодами — ТОЛЬКО по секрету кластера. Проверять
+                # их обычным scope нельзя: ключу приложения могли выдать «*», и
+                # тогда кабинет получил бы право перезапускать синхронизацию и
+                # обновлять менеджер ноды. Это разговор нод между собой.
+                if path.startswith(CLUSTER_NODE_ONLY_PREFIX) and key["name"] != "cluster":
+                    raise ApiError(403, "forbidden",
+                                   "ручка только для нод кластера (заголовок X-Cluster-Auth)")
                 if not rate_ok(key["name"], conf()["rate_rpm"]):
                     raise ApiError(429, "rate_limited", "слишком много запросов",
                                    {"Retry-After": "10"})

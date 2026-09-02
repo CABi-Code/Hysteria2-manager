@@ -138,6 +138,20 @@ if [ "$1" = "--cluster-sync" ]; then
     exit 0
 fi
 
+if [ "$1" = "--self-update" ]; then
+    # Обновить менеджер на ЭТОЙ ноде, без вопросов. Дёргается ручкой
+    # /v1/cluster/update (сосед просит обновиться) и годится для крона.
+    # Ставится только менеджер: данные, конфиг и Hysteria не трогаются.
+    manager_update_silent
+    exit $?
+fi
+
+if [ "$1" = "--cluster-update" ]; then
+    # Попросить ВСЕХ соседей обновить у себя менеджер.
+    cluster_update_peers
+    exit $?
+fi
+
 if [ "$1" = "--ym-poll" ]; then
     cron_lock ym-poll
     # Оплаты ЮMoney: опрос истории операций по меткам ждущих счетов.
@@ -151,6 +165,7 @@ if [ "$1" = "--online-sync" ]; then
     # Частый обмен онлайном + применение лимита устройств по кластеру (cron, 1 мин).
     setup_stats_api
     migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
+    migrate_caddy_api_prefix # /api/* без снятия префикса — Web API был мёртв снаружи
     rates_timer_ensure      # таймер спидометра ставится сам после обновления ноды
     # TUIC-трафик считаем ЗДЕСЬ (раз в минуту): по дельтам соединений, иначе они
     # успеют закрыться между снимками. До cluster_online_sync — чтобы publish_stats
@@ -191,6 +206,7 @@ fi
 migrate_auth
 migrate_to_command_auth
 migrate_device_limit        # старый device_limit -> общекластерный POOL_LIMIT
+migrate_caddy_api_prefix    # /api/* без снятия префикса — Web API был мёртв снаружи
 rates_timer_ensure          # таймер тика скорости (спидометр мини-аппа)
 setup_stats_api
 collect_traffic
