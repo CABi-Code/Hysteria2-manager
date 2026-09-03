@@ -237,11 +237,29 @@ proto_params_menu() {
                 [ -n "$v" ] || continue
                 _proto_param_valid "${types[i]}" "$v" || { sleep 2; continue; }
                 proto_set "${keys[i]}" "$v"
-                # SNI отдельно: неверная A-запись стоит бана всего адреса (P-129),
-                # и узнать об этом надо сразу, а не из жалоб клиентов.
-                [ "${keys[i]}" = "PROTO_REALITY_SNI" ] && { proto_reality_sni_check "$v" || sleep 3; }
-                echo "  ✅ Сохранено. Не забудьте пересобрать сервисы."
-                sleep 1
+                echo "  ✅ Сохранено."
+                # dest и SNI — единственная пара, которую нельзя проверить
+                # «на глаз»: SNI обязан быть именем, на которое DEST УМЕЕТ
+                # отдать сертификат. Не умеет — REALITY рвёт каждое соединение,
+                # и снаружи это выглядит как «ключ не работает», без подсказок.
+                # Так уже сломали две ноды: одну именем без A-записи, другую
+                # именем, которого нет в Caddy. Поэтому сразу после правки
+                # показываем вердикт — не новой проверкой, а теми же строками
+                # самопроверки, что и на её экране.
+                case "${keys[i]}" in
+                    PROTO_REALITY_SNI|PROTO_REALITY_DEST)
+                        echo ""
+                        echo "  Проверяю пару dest ↔ SNI..."
+                        proto_selftest 2>/dev/null | grep -F 'REALITY' \
+                            | while IFS=$'\t' read -r icon what verdict; do
+                                  printf "  %s %-20s %s\n" "$icon" "$what" "$verdict"
+                              done
+                        echo ""
+                        echo "  Если выше ❌ — ключи работать НЕ будут, поправьте до пересборки."
+                        pause
+                        ;;
+                    *) sleep 1 ;;
+                esac
                 ;;
         esac
     done
