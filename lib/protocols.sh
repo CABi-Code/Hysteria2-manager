@@ -123,11 +123,30 @@ proto_tuic_alpn()  { local v; v=$(proto_get PROTO_TUIC_ALPN);  echo "${v:-h3}"; 
 # Ведёт на чужой адрес — значит клиент придёт к нам под чужим именем, а это
 # ровно тот признак, по которому банят адрес целиком (P-129). Не режем, а
 # предупреждаем: домен могли только что переписать, DNS ещё не разошёлся.
+# Ведёт ли имя на ЭТУ ноду. Сверяем со ВСЕМ списком её адресов, а не с одним
+# «своим IP»: у ноды их может быть несколько, и `get_ip` (спрашивает ifconfig.me)
+# возвращает адрес ИСХОДЯЩЕГО трафика, который на такой ноде законно отличается
+# от того, на который смотрит домен. Сверка с одним адресом дала ложную тревогу
+# «маскарад под чужой домен» на совершенно здоровой ноде с двумя IP.
+# Имён у домена тоже может быть несколько — принимаем совпадение по любому.
+_proto_name_is_ours() {   # домен -> 0/1; печатает найденные адреса
+    local d="$1" ips
+    [ -n "$d" ] || return 1
+    ips=$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1}' | sort -u)
+    printf '%s' "$(printf '%s' "$ips" | paste -sd, -)"
+    [ -n "$ips" ] || return 1
+    local a
+    while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        list_local_ips 2>/dev/null | grep -qxF "$a" && return 0
+    done <<< "$ips"
+    return 1
+}
+
 proto_reality_sni_check() {   # домен
     local d="$1" a
     [ -n "$d" ] || { echo "  ⚠️  REALITY SNI пуст: у ноды нет домена (меню настроек → домен)."; return 1; }
-    a=$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1; exit}')
-    [ -n "$a" ] && list_local_ips 2>/dev/null | grep -qxF "$a" && return 0
+    a=$(_proto_name_is_ours "$d") && return 0
     echo "  ⚠️  $d ведёт на ${a:-—}, а не на адрес этой ноды."
     echo "      Чужое имя на нашем IP = бан адреса от РКН. Возьми домен, чья"
     echo "      A-запись смотрит сюда, и держи dest на 127.0.0.1:443 (Caddy)."
@@ -1535,14 +1554,14 @@ proto_selftest() {
         fi
 
         # 4. A-запись SNI обязана вести на нас, иначе бан адреса (P-129).
-        ip=$(get_ip 2>/dev/null)
-        a=$(getent ahostsv4 "$sni" 2>/dev/null | awk '{print $1; exit}')
-        if [ -z "$a" ]; then
+        #    Сверяем со ВСЕМИ адресами ноды: у неё их может быть несколько, и
+        #    домен смотрит на один, а исходящий трафик идёт с другого.
+        if a=$(_proto_name_is_ours "$sni"); then
+            _st "💚" "REALITY SNI" "«$sni» ведёт на эту ноду ($a)"
+        elif [ -z "$a" ]; then
             _st "⚠️" "REALITY SNI" "«$sni» не резолвится — проверьте DNS"
-        elif [ -n "$ip" ] && [ "$a" = "$ip" ]; then
-            _st "💚" "REALITY SNI" "«$sni» ведёт на эту ноду"
         else
-            _st "❌" "REALITY SNI" "«$sni» ведёт на $a, а нода — $ip. Клиент придёт к нам под чужим именем: риск бана адреса (P-129)"
+            _st "❌" "REALITY SNI" "«$sni» ведёт на $a, а адреса ноды: $(list_local_ips | paste -sd, -). Клиент придёт к нам под чужим именем: риск бана адреса (P-129)"
         fi
     fi
 
