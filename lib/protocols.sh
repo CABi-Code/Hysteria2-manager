@@ -1507,7 +1507,30 @@ proto_selftest() {
                     _st "⚠️" "REALITY dest TLS" "сертификат на «$cn», а в ключах клиентов «$sni» — имена разъехались"
                 fi
             else
-                _st "❌" "REALITY dest" "$dest НЕ отвечает с этой ноды — сервер будет рвать каждое соединение"
+                _st "❌" "REALITY dest" "$dest НЕ отвечает с этой ноды — сервер рвёт КАЖДОЕ соединение"
+                # Дальше не гадаем, а печатаем ФАКТЫ, по которым видно причину.
+                # Их всего три, и они разные по лечению, а симптом один.
+                local pub bindline listen
+                pub=$(get_ip 2>/dev/null)
+                # 1. Кто и на каких адресах реально слушает этот порт. Здесь сразу
+                #    видно «0.0.0.0:443» (слушают все) против «<публичный>:443»
+                #    (loopback не покрыт) против «[::]:443» (только IPv6).
+                listen=$(ss -ltnH "sport = :$dport" 2>/dev/null | awk '{print $4}' | paste -sd' ' -)
+                _st "ℹ️" "  порт $dport слушают" "${listen:-НИКТО — на этом порту вообще ничего нет}"
+                # 2. Отвечает ли тот же порт по публичному адресу. Отвечает —
+                #    значит сервис жив, а недоступен именно loopback.
+                if [ -n "$pub" ] && [ "$dhost" != "$pub" ]; then
+                    if _proto_can_dial "$pub" "$dport"; then
+                        _st "ℹ️" "  а $pub:$dport" "отвечает — сервис жив, недоступен именно $dhost. Поставьте dest = $pub:$dport либо верните Caddy на loopback"
+                    else
+                        _st "ℹ️" "  и $pub:$dport" "тоже не отвечает — значит на порту $dport ничего не поднято (проверьте Caddy: systemctl status caddy)"
+                    fi
+                fi
+                # 3. Есть ли в конфиге bind, уводящий Caddy с loopback.
+                bindline=$(grep -E '^[[:space:]]*bind[[:space:]]' "$CADDYFILE" 2>/dev/null | head -1)
+                if [ -n "$bindline" ] && ! printf '%s' "$bindline" | grep -q '127\.0\.0\.1'; then
+                    _st "ℹ️" "  Caddyfile" "есть «${bindline#"${bindline%%[![:space:]]*}"}» без 127.0.0.1 — пересоберите Caddy (Настройки → подписка), это лечится само (P-136)"
+                fi
             fi
         fi
 

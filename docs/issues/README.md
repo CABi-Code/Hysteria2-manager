@@ -29,7 +29,7 @@
 
 | Файл | О чём | Проблем |
 |---|---|:--:|
-| [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 11 |
+| [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 12 |
 | [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 25 |
 | [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 13 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 6 |
@@ -123,8 +123,9 @@
 | [P-133](CLUSTER.md#p-133) | Крючок обновления требует Web API на цели, и об этом никто не говорит | `lib/cluster.sh`, `lib/caddy.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-134](CLUSTER.md#p-134) | Имя пира из gossip становилось путём записи от root | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-135](OPS.md#p-135) | Секрет кластера читался любым локальным процессом (Caddyfile 0644) | `lib/caddy.sh` | [ops](OPS.md) | ✅ |
+| [P-136](PROTOCOLS.md#p-136) | `bind` уводил Caddy с loopback, а dest REALITY на него смотрит | `lib/caddy.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 
-Следующий свободный номер — **P-136**.
+Следующий свободный номер — **P-137**.
 
 Номера **P-74** и **P-75** выданы задним числом: обе линии — `main` и
 `integration-multiprotocol` — независимо заняли `P-52` и `P-53` под разные

@@ -24,10 +24,18 @@ setup_caddy() {
 
     # Если у сервера несколько IP и наш IP — реально локальный, привязываем Caddy
     # ИМЕННО к нему. Тогда другой сервис (nginx и т.п.) на другом IP не мешает.
+    #
+    # ВМЕСТЕ С LOOPBACK, и это обязательно. `bind <ip>` без 127.0.0.1 означает,
+    # что снаружи Caddy отвечает, а изнутри ноды `127.0.0.1:443` мёртв. А это
+    # штатный `dest` для REALITY (docs/guide/MULTIPROTOCOL.md): не дозвонившись
+    # до dest, REALITY рвёт КАЖДОЕ соединение, при том что порт слушается и
+    # сервис активен. То есть один и тот же код одной рукой ставил dest на
+    # loopback, а другой — уводил Caddy с loopback, и ломался VLESS целиком,
+    # только на нодах с несколькими адресами. См. P-136.
     local bind_ip bind_line=""
     bind_ip=$(node_ip)
     if [ "$(list_local_ips | grep -c .)" -gt 1 ] && list_local_ips | grep -qxF "$bind_ip" 2>/dev/null; then
-        bind_line="    bind ${bind_ip}"
+        bind_line="    bind ${bind_ip} 127.0.0.1"
     fi
 
     # Оформление подписки: название профиля и интервал обновления — клиенты
@@ -184,6 +192,26 @@ migrate_caddy_api_prefix() {
     sub_enabled || return 0
     [ -f "$CADDYFILE" ] || return 0
     grep -qE '^[[:space:]]*handle /api/\*' "$CADDYFILE" 2>/dev/null || return 0
+    setup_caddy >/dev/null 2>&1
+}
+
+# Разовая миграция: `bind <ip>` без loopback. На ноде с несколькими адресами
+# Caddy садился только на публичный, и `127.0.0.1:443` — штатный dest REALITY —
+# был мёртв изнутри. Снаружи при этом всё отвечало, порт VLESS слушался, сервис
+# был активен: отказ выглядел как «ключ не работает» без единой зацепки (P-136).
+#
+# Условие сформулировано как «НЕТ нужного», а не «есть плохое»: проверяем
+# отсутствие 127.0.0.1 в строке bind, а не конкретную старую форму. Так
+# миграция не промахнётся мимо ноды с чуть иным написанием — ровно та ошибка,
+# из-за которой migrate_caddy_api_prefix молча пропускала свои цели (P-133).
+# Терминируется сама: после регенерации 127.0.0.1 в строке есть.
+migrate_caddy_bind_loopback() {
+    sub_enabled || return 0
+    [ -f "$CADDYFILE" ] || return 0
+    local line
+    line=$(grep -E '^[[:space:]]*bind[[:space:]]' "$CADDYFILE" 2>/dev/null | head -1)
+    [ -n "$line" ] || return 0                      # bind нет вовсе — Caddy на всех адресах
+    printf '%s' "$line" | grep -q '127\.0\.0\.1' && return 0
     setup_caddy >/dev/null 2>&1
 }
 
