@@ -510,18 +510,33 @@ class Handler(BaseHTTPRequestHandler):
         if row is None:
             raise ApiError(404, "demo_not_found", "демо-профиль не найден")
 
-        # Профиль на другой ноде — спрашиваем её: трафик, TTL и отбор доступа
-        # считает она, а у нас лежит только строка-указатель. Клиенту при этом
-        # ничего не меняется: ручка та же, поля те же.
+        # Профиль на другой ноде: трафик, TTL и отбор доступа считает она, а у
+        # нас лежит только строка-указатель с нулевой базой. Берём посчитанное
+        # состояние из ФАЙЛОВОГО КАНАЛА (раздел `demos`, обновляется раз в
+        # минуту), а не живым запросом в её Web API. Причины две: демон у неё
+        # может быть просто не включён — тогда кабинет и лендинг не работали бы
+        # для такого гостя вовсе, — и лежачая нода отдавала гостю 502 вместо
+        # шкалы лимита (P-73). Клиенту ручка и поля не меняются, добавлено
+        # `stale_sec`: возраст цифр, по нему видно, насколько они свежие.
         node = demo_node(row)
         if node and node != node_host():
-            path = "/v1/demo/%s%s" % (urllib.parse.quote(user), "/refresh" if refresh else "")
-            try:
-                data = cluster_request(node, path, "POST" if refresh else "GET")
-            except Exception:
-                raise ApiError(502, "demo_node_unreachable",
-                               "нода демо-профиля не отвечает")
-            return dict(data, username=user, node=node)
+            cached = demo_peer_status(user)
+            if cached is not None:
+                # refreshed=False всегда: пересчитать трафик может только сама
+                # нода-владелец, а мы больше её не дёргаем. Врать «пересчитал»
+                # нельзя — на этом поле строятся решения вызывающего.
+                return dict(cached, username=user, node=node, refreshed=False)
+            # Раздел ещё не доехал (профиль выдан секунды назад — первая
+            # публикация владельца впереди). Отвечаем по своему указателю: срок
+            # и кап в нём настоящие, расход неизвестен. Отдать 502 тут было бы
+            # хуже: гостю нечего показать в момент, когда он только получил
+            # ключ. Занизить расход не опасно — доступ отбирает владелец по
+            # своим цифрам, экран на это не влияет.
+            return {"username": user, "node": node, "refreshed": False,
+                    "state": row[1], "created_at": _num(row[2]),
+                    "expires_at": _num(row[3]), "limit_bytes": _num(row[4]),
+                    "used_bytes": 0, "left_bytes": _num(row[4]) or None,
+                    "alive": True, "online": False, "stale_sec": None}
 
         refreshed = False
         if refresh:

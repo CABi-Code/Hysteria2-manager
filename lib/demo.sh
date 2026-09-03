@@ -78,14 +78,31 @@ demo_node_list() { node_get DEMO_NODES 2>/dev/null | tr ',; ' '\n' | grep -v '^$
 # Пир годится, если последняя синхронизация признала его живым и вердикт свежий
 # (см. peer_health_set). Отдельного опроса не делаем: гость ждёт ответа, а
 # probe по мёртвой ноде — это секунды таймаутов на ровном месте.
+#
+# Плюс отдельное условие: пир обязан объявить у себя ВКЛЮЧЁННЫЙ Web API. Завести
+# профиль на соседе можно только его ручкой `POST /v1/demo` — файловый канал
+# статичен и за него ничего не исполнит. Без демона попытка выдачи просто
+# сожжёт DEMO_REMOTE_TIMEOUT (15 с) и уедет на локальную ноду, а всё это время
+# гость смотрит на крутилку. Раньше от этого спасала только строчка в доке
+# «не вписывайте такую ноду в DEMO_NODES» — теперь нода говорит о себе сама
+# (WEBAPI в её nodeinfo, см. publish_cluster_nodeinfo).
+#
+# Пустое значение = «не знаю» (старая нода или раздел ещё не доехал). Считаем
+# такую ноду годной: раньше её и так пробовали, и терять локацию из-за
+# неприехавшего раздела хуже, чем изредка потратить таймаут.
 _demo_peer_ok() {   # host
-    local ok ts row
+    local ok ts row api
     row=$(awk -F'|' -v h="$1" '$1==h{print $3"|"$4; exit}' "$PEERS_HEALTH_FILE" 2>/dev/null)
     [ -n "$row" ] || return 1
     ok=${row%%|*}; ts=${row##*|}
     [ "$ok" = "1" ] || return 1
     [[ "$ts" =~ ^[0-9]+$ ]] || return 1
-    [ $(( $(date +%s) - ts )) -lt "${PEER_STALE_SEC:-900}" ]
+    [ $(( $(date +%s) - ts )) -lt "${PEER_STALE_SEC:-900}" ] || return 1
+    if declare -F cluster_peer_nodeinfo >/dev/null 2>&1; then
+        api=$(cluster_peer_nodeinfo "$1" WEBAPI)
+        [ "$api" = "0" ] && return 1
+    fi
+    return 0
 }
 
 # Куда отдать следующее демо. Печатает host ноды-приёмника (всегда непустой).
@@ -240,11 +257,65 @@ demo_user_bytes() {
     fi
 }
 
+# ---- Состояние демо в файловом канале ------------------------------------
+# Профиль живёт на одной ноде, а спросить «что с ним» могут у любой: кабинет и
+# лендинг обслуживает та нода, где стоит витрина, а выдать демо могла соседняя.
+# Раньше это решалось живым запросом в Web API ноды-владельца — и упиралось в
+# два её свойства: демон там может быть просто не включён, а если включён и
+# нода легла, гость получал 502 вместо шкалы лимита (P-73).
+#
+# Теперь владелец ВЫКЛАДЫВАЕТ посчитанное состояние в раздел `demos`, а отвечает
+# любая нода из кэша. Публикуется раз в минуту вместе с demo_tick: TTL демо —
+# минуты, и 5-минутная полная синхронизация для шкалы расхода слишком грубая.
+#
+# Строка: user|state|created|expires|cap|used|alive|online|ts
+# `used` — уже ПОСЧИТАННЫЙ расход (не база): считать его умеет только владелец,
+# у остальных нет ни его трафика, ни базы. `ts` — когда посчитано, по нему
+# читатель судит о свежести.
+publish_cluster_demos() {
+    demo_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    local out="$WEBROOT/cluster/demos" tmp="$WEBROOT/cluster/demos.tmp.$BASHPID"
+    local self now u st cr ex cap base used node spent alive online
+    self=$(node_host); now=$(date +%s)
+    : > "$tmp"
+    if [ -s "$DEMOS_DB" ]; then
+        while IFS='|' read -r u st cr ex cap base used node; do
+            [ -n "$u" ] || continue
+            [[ "$u" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+            # Только СВОИ профили. Чужие у нас указатели с нулевой базой —
+            # опубликовав их, мы бы выдали за факт цифры, которых не знаем.
+            [ -z "$node" ] || [ "$node" = "$self" ] || continue
+            if [ "$st" = "active" ]; then
+                spent=$(( $(demo_user_bytes "$u") - ${base:-0} ))
+                [ "$spent" -lt 0 ] && spent=0
+            else
+                spent=${used:-0}
+            fi
+            alive=0; db_user_exists "$u" && alive=1
+            # Онлайн best-effort: зовётся после publish_stats, где онлайн уже
+            # посчитан. Не посчитан — ноль, это индикатор, а не деньги.
+            online=0
+            if declare -F get_user_online_count >/dev/null 2>&1; then
+                [ "$(get_user_online_count "$u")" -gt 0 ] 2>/dev/null && online=1
+            fi
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+                "$u" "$st" "${cr:-0}" "${ex:-0}" "${cap:-0}" "$spent" "$alive" "$online" "$now" >> "$tmp"
+        done < "$DEMOS_DB"
+    fi
+    mv "$tmp" "$out" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    local cg=root; id caddy >/dev/null 2>&1 && cg=caddy
+    chown "root:${cg}" "$out" 2>/dev/null || true
+    chmod 640 "$out" 2>/dev/null || true
+}
+
 # Прогон раз в минуту (--online-sync): отобрать доступ у выдохшихся демо и
 # подчистить старые строки. TTL меряем в минутах, поэтому суточной прогонки
 # expiry-по-датам (check_expired_users) здесь мало.
 demo_tick() {
-    [ -s "$DEMOS_DB" ] || return 0
+    # Пустая база — публикуем пустой раздел и выходим: у соседа должно быть
+    # видно «демо нет», а не прошлогодний кэш.
+    [ -s "$DEMOS_DB" ] || { publish_cluster_demos; return 0; }
     local now self user state created expires cap base used node bytes spent
     now=$(date +%s); self=$(node_host)
 
@@ -277,4 +348,9 @@ demo_tick() {
             demo_remove "$user"
         fi
     done < "$DEMOS_DB"
+
+    # Выкладываем итог тика: состояние на диске уже актуально, значит и в канале
+    # оно должно быть актуально — иначе сосед минуту показывал бы живым то, что
+    # мы только что отобрали.
+    publish_cluster_demos
 }

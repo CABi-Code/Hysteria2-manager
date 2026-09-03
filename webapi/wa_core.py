@@ -144,18 +144,17 @@ def cluster_auth_ok(header):
     return bool(secret) and bool(header) and hmac.compare_digest(secret, header.strip())
 
 
-def cluster_request(host, path, method="GET", timeout=15):
-    """Запрос к Web API другой ноды кластера под тем же общим секретом.
-    Возвращает поле data ответа; бросает OSError/ValueError при отказе."""
-    req = urllib.request.Request("https://%s/api%s" % (host, path), method=method,
-                                 data=b"{}" if method == "POST" else None,
-                                 headers={"X-Cluster-Auth": cluster_secret(),
-                                          "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    if not body.get("ok"):
-        raise ValueError((body.get("error") or {}).get("code") or "peer_error")
-    return body.get("data") or {}
+# Запроса к Web API соседа здесь БОЛЬШЕ НЕТ, и это намеренно. Был
+# `cluster_request`, которым `/v1/demo/{name}` ходил к ноде-владельцу за
+# состоянием профиля. Он требовал включённого демона на той стороне и отдавал
+# гостю 502, когда нода недоступна (P-73). Состояние демо теперь приезжает
+# файловым каналом (раздел `demos` -> `demo_peer_status` в wa_users.py), других
+# читающих вызовов не осталось, а держать готовый хелпер «позвать соседа»
+# значит приглашать следующую сессию повторить ту же ошибку.
+# Единственное, что ноды всё ещё просят друг у друга по Web API, — ЗАВЕСТИ
+# демо-профиль (`lib/demo.sh: demo_create_remote`, обычным curl): статика
+# ничего не исполняет, а гость ждёт ответа сейчас. Критерий выбора канала —
+# docs/guide/CLUSTER-CHANNELS.md.
 
 
 def rate_ok(key_name, rpm):

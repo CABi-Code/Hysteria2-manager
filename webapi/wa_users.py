@@ -177,6 +177,52 @@ def demo_status(user, total_bytes):
     }
 
 
+def demo_peer_status(user):
+    """Состояние демо-профиля, живущего на ДРУГОЙ ноде, из файлового канала.
+
+    Владелец выкладывает уже посчитанное состояние в раздел `demos`
+    (`publish_cluster_demos`, `lib/demo.sh`), мы забираем его раз в минуту в
+    `peers/<нода>.demos`. Строка:
+    `user|state|created|expires|cap|used|alive|online|ts`.
+
+    Ищем по ВСЕМ кэшам глобом, а не по имени ноды из `demos.db`: имя файла кэша
+    строится из имени пира в реестре, и повторять это правило здесь означало бы
+    вторую копию той же формулы (см. `_cluster_safe_name`). Имя демо-профиля
+    уникально в кластере и живёт ровно на одной ноде, поэтому поиск по имени
+    однозначен и в отображении host->имя файла нет нужды.
+
+    Возвращает dict с полями как у `demo_status` плюс `stale_sec` (сколько
+    секунд назад владелец это посчитал) либо None, если данных ещё нет.
+    Раньше здесь был живой запрос в Web API владельца: он требовал включённого
+    там демона и отдавал гостю 502, когда нода недоступна (P-73)."""
+    try:
+        names = os.listdir(PEERS_DIR)
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".demos"):
+            continue
+        for line in read_lines(os.path.join(PEERS_DIR, name)):
+            parts = line.split("|")
+            if len(parts) < 8 or parts[0] != user:
+                continue
+            nums = [int(x) if x.lstrip("-").isdigit() else 0 for x in parts[2:6]]
+            created, expires, cap, spent = nums
+            ts = int(parts[8]) if len(parts) > 8 and parts[8].isdigit() else 0
+            return {
+                "state": parts[1],
+                "created_at": created,
+                "expires_at": expires,
+                "used_bytes": spent,
+                "limit_bytes": cap,
+                "left_bytes": max(0, cap - spent) if cap else None,
+                "alive": parts[6] == "1",
+                "online": parts[7] == "1",
+                "stale_sec": max(0, int(time.time()) - ts) if ts else None,
+            }
+    return None
+
+
 def peer_stats(user):
     """Суммы по кэшам пиров $DATA_DIR/peers/*.stats:
     user \t online \t tx \t rx \t sptx \t sprx \t active \t active_since"""

@@ -394,7 +394,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols updatereq"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols updatereq demos"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -416,6 +416,7 @@ _section_label() {
         version)    echo "версия менеджера" ;;
         protocols)  echo "состояние протоколов" ;;
         updatereq)  echo "просьба обновить менеджер" ;;
+        demos)      echo "состояние демо-профилей" ;;
         *)          echo "$1" ;;
     esac
 }
@@ -447,6 +448,10 @@ cluster_sync() {
     publish_cluster_settings
     publish_cluster_userlimits
     publish_cluster_abuse
+    # Состояние демо — здесь же, раз в минуту: TTL демо меряется минутами, и
+    # шкала расхода у гостя не должна отставать на пятиминутную cluster_sync.
+    # После publish_stats — в нём считается онлайн, который туда попадает.
+    declare -F publish_cluster_demos >/dev/null 2>&1 && publish_cluster_demos
     publish_ips
     publish_subips
     publish_cluster_tgbind
@@ -720,11 +725,31 @@ cluster_apply_ipforget() {
 # её знать надо — иначе человек в кабинете видит вместо узлов доменные имена
 # (часть P-06: паспорта ноды у нас нет). Публикуем отдельной строкой: каждая
 # нода объявляет СВОЮ метку, слияния и конфликтов тут нет по устройству.
+# Факты ноды о себе, `КЛЮЧ=значение`. Single-writer: каждая нода утверждает
+# только про себя, LWW-слияния здесь нет (в отличие от settings) — поэтому сюда
+# и можно класть свойства, которые сосед перезаписывать не должен.
+#
+# WEBAPI — включён ли на нас Web API. Нужен не нам, а тем, кто собирается нас о
+# чём-то ПОПРОСИТЬ: единственная оставшаяся межнодовая ручка (выдача демо на
+# нашей ноде) без демона не сработает, и знать это заранее дешевле, чем узнать
+# по таймауту в горячем пути, где ждёт гость. См. demo_pick_node и P-133.
 publish_cluster_nodeinfo() {
     sub_enabled || return 0
     mkdir -p "$WEBROOT/cluster"
-    printf 'LABEL=%s\n' "$(node_label)" > "$WEBROOT/cluster/nodeinfo" 2>/dev/null || true
+    local api=0
+    declare -F webapi_enabled >/dev/null 2>&1 && webapi_enabled && api=1
+    { printf 'LABEL=%s\n' "$(node_label)"
+      printf 'WEBAPI=%s\n' "$api"
+    } > "$WEBROOT/cluster/nodeinfo" 2>/dev/null || true
     secure_web_files
+}
+
+# Факт о пире из его же nodeinfo. Ключа нет (старая нода или раздел не доехал) —
+# печатаем пустую строку, а не «0»: «не знаю» и «выключено» решаются по-разному.
+cluster_peer_nodeinfo() {   # host ключ -> значение
+    local name; name=$(cluster_peer_name "$1")
+    awk -F'=' -v k="$2" '$1==k{sub(/^[^=]*=/,""); print; exit}' \
+        "$PEERS_DIR/${name}.nodeinfo" 2>/dev/null
 }
 
 # ---- ПРАВО НА ЗАБВЕНИЕ ПО КЛАСТЕРУ ----
@@ -1350,6 +1375,11 @@ cluster_online_sync() {
             [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.userlimits"
             d=$(cluster_call "$host" "/cluster/abuse")
             [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.abuse"
+            # Состояние демо-профилей пира: по нему отвечает НАШ /v1/demo про
+            # профиль, живущий у него. Пустой ответ прошлый кэш не затирает —
+            # устаревшая шкала лучше пропавшей (свежесть видна по полю ts).
+            d=$(cluster_call "$host" "/cluster/demos")
+            [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.demos"
             # Свежий манифест пира (в нём испечён онлайн той ноды). Недоступного пира
             # НЕ трогаем — оставляем прошлый манифест, чтобы не терять его ключи.
             if [ -n "$need_online" ]; then
