@@ -120,7 +120,7 @@
 | [P-130](CLUSTER.md#p-130) | Отключённый локально при кластерном `active` застревал навсегда | `lib/cluster.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-131](CLUSTER.md#p-131) | Оплатившего не снимали с бесплатного тарифа на ноде без `free=1` | `lib/freeplan.sh` | [cluster](CLUSTER.md) | ✅ |
 | [P-132](OPS.md#p-132) | Web API называл основной VLESS транспортом, которого у него нет | `webapi/wa_dispatch.py` | [ops](OPS.md) | ✅ |
-| [P-133](CLUSTER.md#p-133) | Крючок обновления мёртв ровно на тех нодах, которым он нужен | `lib/cluster.sh`, `lib/caddy.sh` | [cluster](CLUSTER.md) | 🔴 |
+| [P-133](CLUSTER.md#p-133) | Крючок обновления требует Web API на цели, и об этом никто не говорит | `lib/cluster.sh`, `lib/caddy.sh` | [cluster](CLUSTER.md) | 🔴 |
 
 Следующий свободный номер — **P-134**.
 
