@@ -17,11 +17,21 @@ cluster_secret() {
     cat "$CLUSTER_SECRET_FILE" 2>/dev/null
 }
 
+# Разрешённые символы имени пира. Имя приходит ИЗВНЕ (gossip привозит чужой
+# peers.list) и подставляется в путь файла кэша — значит слэш и «..» в нём
+# означают запись в произвольное место от root. См. P-134.
+_cluster_safe_name() { printf '%s\n' "${1//[^a-zA-Z0-9_.-]/_}"; }
+
 # Добавляет пир в реестр (без дублей по host).
+# ОБА поля чистятся ЗДЕСЬ, на входе в реестр: это единственная точка, через
+# которую пир попадает в наш файл, и дальше его читают полтора десятка мест.
 cluster_add_peer() {   # name host
     local name="$1" host="$2"
     [ -n "$host" ] || return 1
-    [ -n "$name" ] || name="$host"
+    # Хост идёт в URL (`https://$host/cluster/...`) и должен выглядеть как имя
+    # или адрес. Что-то другое — это не пир, а попытка подсунуть чужой запрос.
+    [[ "$host" =~ ^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$ ]] || return 1
+    name=$(_cluster_safe_name "${name:-$host}")
     touch "$CLUSTER_CONF"
     grep -q "|${host}\$" "$CLUSTER_CONF" 2>/dev/null && return 0
     printf '%s|%s\n' "$name" "$host" >> "$CLUSTER_CONF"
@@ -39,7 +49,11 @@ cluster_peers() {
 cluster_remove_peer() {   # host
     local host="$1" name tmp
     [ -n "$host" ] || return 1
-    name=$(awk -F'|' -v h="$host" '$2==h{print $1; exit}' "$CLUSTER_CONF" 2>/dev/null)
+    # Имя — через cluster_peer_name, а не своим awk: оно идёт в `rm -f` по путям
+    # кэша, и грязное имя из отравленного реестра означало бы удаление файлов
+    # вне peers/ (P-134). Кэш чистим только у того, кто в реестре и был.
+    name=""
+    grep -q "|${host}\$" "$CLUSTER_CONF" 2>/dev/null && name=$(cluster_peer_name "$host")
     tmp=$(mktemp) || return 1
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
@@ -61,14 +75,22 @@ publish_peers_list() {
 # Имя пира по его хосту (реестр CLUSTER_CONF, строки «name|host»). Пира нет в
 # реестре — безопасное имя из самого хоста. Без awk/tr: зовётся в цикле по пирам
 # на каждой синхронизации.
+#
+# Санитайз обязателен и для значения ИЗ РЕЕСТРА, а не только для запасного из
+# хоста. Через эту функцию проходят ВСЕ пять мест, где имя становится путём
+# (`$PEERS_DIR/$name.$раздел`), плюс `rm -f` в cluster_remove_peer, — а в реестр
+# имя попадает из чужого peers.list по gossip. Раньше чистился только запасной
+# путь, и `../../..` в имени превращалось в запись файла от root в любом месте
+# файловой системы: P-134. Чистка стоит и на входе (cluster_add_peer), эта —
+# вторая линия, потому что реестр мог быть отравлен до обновления.
 cluster_peer_name() {   # host -> name
     local n h
     if [ -f "$CLUSTER_CONF" ]; then
         while IFS='|' read -r n h || [ -n "$n" ]; do
-            [ "$h" = "$1" ] && { printf '%s\n' "$n"; return 0; }
+            [ "$h" = "$1" ] && [ -n "$n" ] && { _cluster_safe_name "$n"; return 0; }
         done < "$CLUSTER_CONF"
     fi
-    printf '%s\n' "${1//[^a-zA-Z0-9_.-]/_}"
+    _cluster_safe_name "$1"
 }
 
 # Запрос к пиру с кластерной аутентификацией.

@@ -147,6 +147,15 @@ ${sub_hdrs}        file_server
     }
 }
 EOF
+    # Caddyfile содержит СЕКРЕТ КЛАСТЕРА открытым текстом (матчер @cluster_auth).
+    # Сам cluster.secret лежит 600, а этот файл создавался по umask — 0644, то
+    # есть секрет читал любой локальный процесс: www-data под php-fpm кабинета,
+    # hysteria, caddy. А знание секрета — это доступ ко всем разделам обмена всех
+    # нод, включая манифест с паролями юзеров. Отдаём чтение только группе Caddy
+    # (он работает под своим пользователем и конфиг читает уже под ним). См. P-135.
+    local cg=root; id caddy >/dev/null 2>&1 && cg=caddy
+    chown "root:${cg}" "$CADDYFILE" 2>/dev/null || true
+    chmod 640 "$CADDYFILE" 2>/dev/null || true
     secure_web_files
 
     # Проверяем конфиг ДО применения. Если невалиден — откат, Caddy не трогаем.
