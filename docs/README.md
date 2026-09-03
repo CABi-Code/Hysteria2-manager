@@ -20,6 +20,8 @@
 | Почему юзер «в сети» / откуда цифры трафика и спидометра | [guide/ONLINE.md](guide/ONLINE.md) |
 | Почему скорость не режется (или режется не так) | [guide/SPEED-LIMITS.md](guide/SPEED-LIMITS.md) |
 | Настройка на соседней ноде другая — это баг? | [guide/CLUSTER-SCOPE.md](guide/CLUSTER-SCOPE.md) |
+| Как ноды вообще разговаривают и по какому каналу что посылать | [guide/CLUSTER-CHANNELS.md](guide/CLUSTER-CHANNELS.md) |
+| Что будет, если взломают обмен между нодами | [guide/CLUSTER-CHANNELS.md](guide/CLUSTER-CHANNELS.md#безопасность) |
 | Оплата пришла, доступа нет | [guide/YOOMONEY.md](guide/YOOMONEY.md), [issues/BILLING.md](issues/BILLING.md) |
 | Удалил юзера, а подписка работает | [issues/CLUSTER.md#p-13](issues/CLUSTER.md#p-13) |
 | Откуда у юзера число устройств и что оно ограничивает | [guide/DEVICE-LIMITS.md](guide/DEVICE-LIMITS.md) |
