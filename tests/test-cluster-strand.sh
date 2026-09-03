@@ -127,6 +127,8 @@ printf 'alice\tu\nbob\tu\ncarol\tu\n' > "$PEERS_DIR/peer1.example.manifest"
 cluster_peers() { printf 'peer1.example\n'; }
 cluster_post()  { echo "ЗВАЛИ WEB API" >> "$HY2M_DATA_DIR/api-calls"; printf '{"ok":true}'; }
 : > "$HY2M_DATA_DIR/api-calls"
+# Просьба публикуется с версией; без неё функция честно отказывается работать.
+MANAGER_VERSION="4.0.0"
 
 out=$(cluster_update_peers)
 [ -s "$HY2M_DATA_DIR/api-calls" ] && fail "обновление снова ходит в Web API соседа"

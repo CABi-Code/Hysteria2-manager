@@ -107,6 +107,31 @@ printf '%s\n' 'мусор без разделителя' > "$PEERS_DIR/сосе�
 cluster_apply_updatereq && ok "функция не упала" || bad "функция вернула ошибку"
 is "запусков нет" "$(runs)" 0
 
+echo "── «unknown» вместо версии не считается просьбой ──"
+# sort -V ставит «unknown» ВЫШЕ любых цифр, поэтому такая строка (у соседа не
+# прочиталась VERSION) гнала бы нас в бесконечные попытки догнать несуществующее.
+: > "$RUNS"; printf '0\n' > "$UPDATEREQ_SEEN_FILE"
+rm -f "$PEERS_DIR"/*.updatereq
+peer_asks unknown "$(date +%s)"
+cluster_apply_updatereq
+is "по «unknown» не обновляемся" "$(runs)" 0
+peer_asks "4.28.200-hack" "$(date +%s)"
+cluster_apply_updatereq
+is "по мусору с цифрами тоже" "$(runs)" 0
+
+echo "── И сами такого не публикуем ──"
+manager_remote_version() { printf ''; }
+MANAGER_VERSION=""
+if ver=$(cluster_request_update); then
+    bad "опубликовали просьбу без вменяемой версии: «$ver»"
+else
+    ok "без версии просьба не публикуется (возврат ошибки)"
+fi
+MANAGER_VERSION="4.28.100"
+manager_remote_version() { printf 'unknown'; }
+ver=$(cluster_request_update)
+is "мусор из репозитория отброшен, взята своя" "$ver" "4.28.100"
+
 echo "── Мы публикуем ТОЛЬКО свою просьбу, чужие не перепубликовываем ──"
 manager_remote_version() { printf '4.30.000'; }
 ver=$(cluster_request_update)

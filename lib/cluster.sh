@@ -172,14 +172,23 @@ cluster_request_update() {
     # живой ноде: просьба вышла на версию, которая у соседей уже стояла, то есть
     # в никуда. Обе функции через declare: cluster.sh грузится раньше update.sh,
     # и при частичной загрузке падать здесь незачем.
-    local ver="" mine="${MANAGER_VERSION:-unknown}"
+    local ver="" mine="${MANAGER_VERSION:-}"
     declare -F manager_remote_version >/dev/null 2>&1 \
         && ver=$(manager_remote_version force 2>/dev/null | tr -d '[:space:]')
+    # Обе стороны — только если это ВЕРСИЯ. «unknown» (VERSION не прочиталась)
+    # в sort -V оказывается выше любых цифр, и такая просьба гнала бы соседей в
+    # бесконечные попытки догнать несуществующее.
+    declare -F _ver_ok >/dev/null 2>&1 || _ver_ok() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)*$ ]]; }
+    _ver_ok "$ver"  || ver=""
+    _ver_ok "$mine" || mine=""
     if [ -z "$ver" ]; then
         ver="$mine"
-    elif declare -F _ver_gt >/dev/null 2>&1 && _ver_gt "$mine" "$ver"; then
+    elif [ -n "$mine" ] && declare -F _ver_gt >/dev/null 2>&1 && _ver_gt "$mine" "$ver"; then
         ver="$mine"
     fi
+    # Ни одной вменяемой версии — публиковать нечего. Пустая просьба лучше
+    # вредной: пусть админ увидит, что не получилось, и повторит.
+    [ -n "$ver" ] || { echo ""; return 1; }
     printf '%s|%s\n' "$ver" "$(date +%s)" > "$UPDATEREQ_FILE"
     chmod 600 "$UPDATEREQ_FILE" 2>/dev/null
     publish_cluster_updatereq
@@ -207,6 +216,10 @@ cluster_apply_updatereq() {
         [ -f "$f" ] || continue
         IFS='|' read -r ver ts < "$f"
         [[ "$ts" =~ ^[0-9]+$ ]] || continue
+        # Не версия — не просьба. Сосед мог отдать «unknown» (у него не
+        # прочиталась VERSION) или мусор, а sort -V поставит такое выше любых
+        # цифр и загонит нас в попытки догнать несуществующее.
+        declare -F _ver_ok >/dev/null 2>&1 && { _ver_ok "$ver" || continue; }
         [ "$ts" -gt "$newest_ts" ] && { newest_ts=$ts; newest_ver=$ver; }
     done
     [ "$newest_ts" -gt 0 ] || return 0
@@ -244,7 +257,13 @@ cluster_apply_updatereq() {
 cluster_update_peers() {
     sub_enabled || { echo "  ⚪ Подписка не настроена — публиковать просьбу некуда."; return 0; }
     local ver host n=0
-    ver=$(cluster_request_update)
+    # Не смогли назвать версию (VERSION не читается и сеть молчит) — публиковать
+    # нечего: просьба без версии либо не сработает, либо сработает не туда.
+    if ! ver=$(cluster_request_update) || [ -z "$ver" ]; then
+        echo "  ❌ Не удалось определить версию для просьбы."
+        echo "     Проверьте файл VERSION менеджера и доступность GitHub, затем повторите."
+        return 1
+    fi
     while read -r host; do
         [ -n "$host" ] || continue
         n=$((n + 1))
@@ -252,7 +271,7 @@ cluster_update_peers() {
     done < <(cluster_peers)
     [ "$n" -gt 0 ] || { echo "  ⚪ Пиров нет."; return 0; }
     echo ""
-    echo "  Просьба обновиться до ${ver:-текущей} опубликована в разделе updatereq."
+    echo "  Просьба обновиться до ${ver} опубликована в разделе updatereq."
     echo "  Соседи заберут её своим кроном (до ~5 мин) и обновятся сами."
     echo "  Ход обновления — на самой ноде в update.log; версии — колонка версии пира."
     return 0

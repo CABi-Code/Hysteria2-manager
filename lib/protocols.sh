@@ -95,6 +95,30 @@ proto_reality_pubkey()  { proto_get PROTO_REALITY_PUBKEY; }
 proto_reality_shortid() { proto_get PROTO_REALITY_SHORTID; }
 proto_xhttp_path()      { local p; p=$(proto_get PROTO_XHTTP_PATH);     echo "${p:-/}"; }
 
+# --- Параметры, которые раньше были вбиты в код ---------------------------
+# Все они попадают в КЛИЕНТСКУЮ ссылку и на стороне сервера ничего не меняют
+# (кроме xhttp mode: там сервер на "auto" принимает любой). Держать их
+# константами было ошибкой: именно ими и подкручивают связь, когда цензор
+# ловит соединение по поведению, а не по содержимому. Дефолты — ровно те
+# значения, что стояли в коде, поэтому у существующих нод ничего не меняется.
+#
+# fp — отпечаток ClientHello (uTLS): chrome, firefox, safari, ios, edge,
+# random, randomized. У TCP-ключа исторически firefox, у XHTTP — chrome
+# (XHTTP притворяется обычным HTTP/2, для него хромовский отпечаток частотнее).
+proto_vless_fp()   { local v; v=$(proto_get PROTO_VLESS_FP);   echo "${v:-firefox}"; }
+proto_vlessx_fp()  { local v; v=$(proto_get PROTO_VLESSX_FP);  echo "${v:-chrome}"; }
+# spiderX — путь «паука» REALITY. Дефолт «/», меняют редко.
+proto_spx()        { local v; v=$(proto_get PROTO_SPX);        echo "${v:-/}"; }
+# Режим XHTTP В ССЫЛКЕ. Сервер слушает на "auto" и принимает любой; клиент
+# выбирает этот. stream-one — один двунаправленный стрим вместо GET+POST, то
+# есть без отдельного стрима выгрузки, из-за которого upload вставал в 0 (c5f37a8).
+proto_xhttp_mode() { local v; v=$(proto_get PROTO_XHTTP_MODE); echo "${v:-stream-one}"; }
+# TUIC: контроль перегрузки (bbr / cubic / new_reno), режим UDP (native / quic),
+# ALPN. На потерях bbr обычно лучше, но не всегда — потому и настройка.
+proto_tuic_cc()    { local v; v=$(proto_get PROTO_TUIC_CC);    echo "${v:-bbr}"; }
+proto_tuic_urm()   { local v; v=$(proto_get PROTO_TUIC_URM);   echo "${v:-native}"; }
+proto_tuic_alpn()  { local v; v=$(proto_get PROTO_TUIC_ALPN);  echo "${v:-h3}"; }
+
 # Сторож маскарада: имя из SNI обязано A-записью вести на IP ЭТОЙ ноды.
 # Ведёт на чужой адрес — значит клиент придёт к нам под чужим именем, а это
 # ровно тот признак, по которому банят адрес целиком (P-129). Не режем, а
@@ -803,9 +827,10 @@ proto_build_vless() {   # user pass ip tag
     # VLESS-Vision-REALITY поверх TCP. flow ОБЯЗАН совпадать с инбаундом
     # (xtls-rprx-vision), иначе uplink рвётся/встаёт в 0. fp=firefox — uTLS-
     # отпечаток ClientHello (маскировка под браузер); spx — spiderX (дефолт «/»).
-    printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&pbk=%s&sid=%s&fp=firefox&type=tcp&spx=%%2F#%s' \
+    printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&pbk=%s&sid=%s&fp=%s&type=tcp&spx=%s#%s' \
         "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_vless_port)" \
         "$(proto_reality_sni)" "$(proto_reality_pubkey)" "$(proto_reality_shortid)" \
+        "$(proto_vless_fp)" "$(_proto_urlenc "$(proto_spx)")" \
         "$(_proto_urlenc "$tag")"
 }
 proto_build_vlessx() {   # user pass ip tag
@@ -818,10 +843,12 @@ proto_build_vlessx() {   # user pass ip tag
     # здесь отсутствует. fp=chrome, а не firefox как у TCP-ключа: XHTTP
     # притворяется обычным HTTP/2 к браузерному сайту, и хромовский ClientHello
     # для такого трафика — самый частый, значит самый незаметный.
-    printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%s&mode=stream-one&spx=%%2F#%s' \
+    printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&pbk=%s&sid=%s&fp=%s&type=xhttp&path=%s&mode=%s&spx=%s#%s' \
         "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_vlessx_port)" \
         "$(proto_reality_sni)" "$(proto_reality_pubkey)" "$(proto_reality_shortid)" \
-        "$(_proto_urlenc "$(proto_xhttp_path)")" "$(_proto_urlenc "$tag")"
+        "$(proto_vlessx_fp)" "$(_proto_urlenc "$(proto_xhttp_path)")" \
+        "$(proto_xhttp_mode)" "$(_proto_urlenc "$(proto_spx)")" \
+        "$(_proto_urlenc "$tag")"
 }
 proto_build_ss() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4" userinfo
@@ -838,8 +865,9 @@ proto_build_tuic() {   # user pass ip tag
     tag=${tag//\{protocol\}/TUIC}   # {protocol} — метка этого ключа
     # allow_insecure только на запасном самоподписанном серте: с настоящим он
     # лишний, а часть клиентов на такой ключ вообще не идёт (см. proto_sync_certs).
-    printf 'tuic://%s:%s@%s:%s?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=%s%s#%s' \
+    printf 'tuic://%s:%s@%s:%s?congestion_control=%s&udp_relay_mode=%s&alpn=%s&sni=%s%s#%s' \
         "$(proto_uuid "$user" "$pass")" "$(_proto_urlenc "$pass")" "$ip" "$(proto_tuic_port)" \
+        "$(proto_tuic_cc)" "$(proto_tuic_urm)" "$(proto_tuic_alpn)" \
         "$(proto_reality_sni_or_host)" "$(proto_tls_trusted || echo '&allow_insecure=1')" \
         "$(_proto_urlenc "$tag")"
 }
@@ -1421,6 +1449,173 @@ proto_state_lines() {
     _proto_state_line ss     "$(proto_ss_enabled     && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_ss_port)"     tcp
     _proto_state_line trojan "$(proto_trojan_enabled && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_trojan_port)" tcp
     _proto_state_line tuic   "$(proto_tuic_enabled   && echo 1 || echo 0)" "$SINGBOX_SERVICE" "$(proto_tuic_port)"   udp
+}
+
+# ---- Самопроверка связности ------------------------------------------------
+# Отвечает на вопрос «почему не подключается», не выходя из менеджера.
+#
+# Поводом стал живой отказ: на одной ноде правили REALITY dest и SNI, после чего
+# VLESS перестал отвечать — при этом порт слушался, сервис был активен, и в
+# диагностике всё выглядело зелёным. Наружу это выглядело так: TCP принимается,
+# а TLS-ответа нет вовсе, соединение рвётся. Причина такого симптома у REALITY
+# всегда одна — он не может дозвониться до своего dest, и подменить ответ ему
+# нечем. Проверка порта этого не ловит, потому что порт-то слушается.
+#
+# Каждая проверка печатает строку «значок<TAB>что проверяли<TAB>вывод».
+# Всё с таймаутами: это интерактивный экран, висеть он не имеет права.
+_st() { printf '%s\t%s\t%s\n' "$1" "$2" "$3"; }
+
+# Дозванивается ли ЭТА нода до узла «хост:порт».
+_proto_can_dial() {   # host port
+    timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null
+}
+
+# Завершается ли TLS-рукопожатие и с каким именем в сертификате.
+# Печатает CN или пусто. Отдельно от _proto_can_dial: принятый TCP и
+# состоявшийся TLS — разные вещи, и вся разница между «работает» и «рвёт» тут.
+_proto_tls_cn() {   # host port sni
+    timeout 8 openssl s_client -connect "$1:$2" -servername "$3" </dev/null 2>/dev/null \
+        | awk -F'CN *= *' '/^subject=/{print $2; exit}'
+}
+
+proto_selftest() {
+    proto_any_enabled || { _st "⚪" "Протоколы" "ни один доп. протокол не включён"; return 0; }
+    local host dest dhost dport sni cn ip a
+
+    host=$(node_host 2>/dev/null)
+    _st "ℹ️" "Нода" "${host:-<домен не задан>}"
+
+    if proto_vless_enabled || proto_vlessx_enabled; then
+        dest=$(proto_reality_dest); sni=$(proto_reality_sni)
+        dhost=${dest%:*}; dport=${dest##*:}
+
+        # 1. Порт в dest. Самая частая правка «руками» — стереть «:443».
+        if [ "$dest" = "$dhost" ] || ! [[ "$dport" =~ ^[0-9]+$ ]]; then
+            _st "❌" "REALITY dest" "«$dest» — БЕЗ ПОРТА. Нужно «хост:порт», иначе сервер рвёт КАЖДОЕ соединение"
+        else
+            # 2. Дозвон до dest с этой ноды.
+            if _proto_can_dial "$dhost" "$dport"; then
+                _st "💚" "REALITY dest" "$dest — отвечает"
+                # 3. Отдаёт ли dest сертификат на НАШ SNI. Не отдаёт — REALITY
+                #    нечем прикрыться, и он закроет соединение.
+                cn=$(_proto_tls_cn "$dhost" "$dport" "$sni")
+                if [ -z "$cn" ]; then
+                    _st "❌" "REALITY dest TLS" "$dest не отвечает TLS на имя «$sni» — прикрыться нечем"
+                elif [ "$cn" = "$sni" ]; then
+                    _st "💚" "REALITY dest TLS" "сертификат на «$sni» — совпадает с SNI"
+                else
+                    _st "⚠️" "REALITY dest TLS" "сертификат на «$cn», а в ключах клиентов «$sni» — имена разъехались"
+                fi
+            else
+                _st "❌" "REALITY dest" "$dest НЕ отвечает с этой ноды — сервер будет рвать каждое соединение"
+            fi
+        fi
+
+        # 4. A-запись SNI обязана вести на нас, иначе бан адреса (P-129).
+        ip=$(get_ip 2>/dev/null)
+        a=$(getent ahostsv4 "$sni" 2>/dev/null | awk '{print $1; exit}')
+        if [ -z "$a" ]; then
+            _st "⚠️" "REALITY SNI" "«$sni» не резолвится — проверьте DNS"
+        elif [ -n "$ip" ] && [ "$a" = "$ip" ]; then
+            _st "💚" "REALITY SNI" "«$sni» ведёт на эту ноду"
+        else
+            _st "❌" "REALITY SNI" "«$sni» ведёт на $a, а нода — $ip. Клиент придёт к нам под чужим именем: риск бана адреса (P-129)"
+        fi
+    fi
+
+    # 5. Каждый включённый порт: слушается ли и отвечает ли рукопожатием.
+    #    Проверяем ЧЕРЕЗ 127.0.0.1 — снаружи может мешать файрвол, это отдельный
+    #    разговор, а здесь выясняем, виноват ли сам движок.
+    local p
+    if proto_vless_enabled; then
+        p=$(proto_vless_port)
+        if ! ss -ltn 2>/dev/null | grep -q ":$p "; then
+            _st "❌" "VLESS TCP :$p" "порт не слушается — сервис не поднялся"
+        elif [ -n "$(_proto_tls_cn 127.0.0.1 "$p" "$(proto_reality_sni)")" ]; then
+            _st "💚" "VLESS TCP :$p" "рукопожатие проходит"
+        else
+            _st "❌" "VLESS TCP :$p" "порт слушается, но рукопожатие РВЁТСЯ — смотрите REALITY dest выше"
+        fi
+    fi
+    if proto_vlessx_enabled; then
+        p=$(proto_vlessx_port)
+        if ! ss -ltn 2>/dev/null | grep -q ":$p "; then
+            _st "❌" "VLESS XHTTP :$p" "порт не слушается"
+        elif [ -n "$(_proto_tls_cn 127.0.0.1 "$p" "$(proto_reality_sni)")" ]; then
+            _st "💚" "VLESS XHTTP :$p" "рукопожатие проходит"
+        else
+            _st "❌" "VLESS XHTTP :$p" "порт слушается, но рукопожатие РВЁТСЯ — смотрите REALITY dest выше"
+        fi
+    fi
+    if proto_trojan_enabled; then
+        p=$(proto_trojan_port)
+        cn=$(_proto_tls_cn 127.0.0.1 "$p" "$(proto_reality_sni_or_host)")
+        [ -n "$cn" ] && _st "💚" "Trojan/WS :$p" "TLS отвечает, сертификат на «$cn»" \
+                     || _st "❌" "Trojan/WS :$p" "TLS не отвечает"
+    fi
+    if proto_ss_enabled; then
+        p=$(proto_ss_port)
+        ss -ltn 2>/dev/null | grep -q ":$p " && _st "💚" "Shadowsocks :$p" "порт слушается" \
+                                             || _st "❌" "Shadowsocks :$p" "порт не слушается"
+    fi
+    if proto_tuic_enabled; then
+        p=$(proto_tuic_port)
+        # TUIC поверх QUIC (UDP): рукопожатием его отсюда не проверить, смотрим
+        # факт прослушивания — этого достаточно, чтобы отличить «не поднялся».
+        ss -lun 2>/dev/null | grep -q ":$p " && _st "💚" "TUIC :$p (UDP)" "порт слушается" \
+                                             || _st "❌" "TUIC :$p (UDP)" "порт не слушается"
+    fi
+
+    # 6. Сертификат для Trojan/TUIC: настоящий или запасной самоподписанный.
+    if proto_trojan_enabled || proto_tuic_enabled; then
+        proto_tls_trusted && _st "💚" "Сертификат" "настоящий (ключи идут без insecure)" \
+                          || _st "⚠️" "Сертификат" "запасной самоподписанный — часть клиентов такие ключи не берёт (P-50)"
+    fi
+    return 0
+}
+
+# То же самое, но про СОСЕДА: снаружи и без доступа к его файлам. Ровно та
+# проба, которой отсюда был найден отказ на соседней ноде: TCP принимается,
+# TLS-ответа нет. Порт и SNI берём из его же снимка протоколов и манифеста —
+# спрашивать нам его нечем и незачем.
+proto_selftest_peer() {   # host
+    local host="$1" line port up sni cn
+    line=$(cluster_proto_state "$(cluster_peer_name "$host")" vless 2>/dev/null)
+    port=${line#*|*|}; port=${port%%|*}
+    [[ "$port" =~ ^[0-9]+$ ]] || port=8443
+    up=$(printf '%s' "$line" | cut -d'|' -f2)
+    sni=$(grep -ohE 'vless://[^[:space:]]+' "$PEERS_DIR/$(cluster_peer_name "$host").manifest" 2>/dev/null \
+          | head -1 | grep -oE 'sni=[^&#]+' | cut -d= -f2)
+    [ -n "$sni" ] || sni="$host"
+
+    if ! _proto_can_dial "$host" "$port"; then
+        _st "❌" "$host VLESS :$port" "порт не принимает соединения (файрвол, сервис лежит)"
+        return 0
+    fi
+    cn=$(_proto_tls_cn "$host" "$port" "$sni")
+    if [ -n "$cn" ]; then
+        _st "💚" "$host VLESS :$port" "рукопожатие проходит, сертификат на «$cn»"
+    else
+        _st "❌" "$host VLESS :$port" "TCP принят, а TLS-ответа НЕТ — на той ноде сломан REALITY dest"
+    fi
+
+    # Маскарад под ЧУЖОЙ домен. Ловится по манифесту, без доступа к ноде: если
+    # SNI в ключах не её собственное имя, значит A-запись этого имени живёт в
+    # чужой AS, а клиент с ним идёт на её адрес. Несовпадение «имя ↔ AS адреса»
+    # снимается одним правилом на транзите и стоит бана ВСЕГО адреса (P-129).
+    # Ноды, поднятые до этой правки, донашивают старый дефолт: он применяется
+    # только когда значение пустое, поэтому сам собой не обновится никогда.
+    if [ -n "$sni" ] && [ "$sni" != "$host" ]; then
+        local sni_ip host_ip
+        sni_ip=$(getent ahostsv4 "$sni" 2>/dev/null | awk '{print $1; exit}')
+        host_ip=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1; exit}')
+        if [ -n "$sni_ip" ] && [ -n "$host_ip" ] && [ "$sni_ip" != "$host_ip" ]; then
+            _st "❌" "$host REALITY SNI" "маскарад под ЧУЖОЙ домен «$sni» ($sni_ip), а нода — $host_ip: риск бана всего адреса (P-129). Штатно SNI = домен самой ноды"
+        else
+            _st "⚠️" "$host REALITY SNI" "в ключах «$sni», а не домен ноды — проверьте (P-129)"
+        fi
+    fi
+    return 0
 }
 
 # Статус для меню/диагностики: строка «vless:💚 ss:🔴 tuic:💚».
