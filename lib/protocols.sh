@@ -1519,7 +1519,17 @@ proto_selftest() {
                 #    нечем прикрыться, и он закроет соединение.
                 cn=$(_proto_tls_cn "$dhost" "$dport" "$sni")
                 if [ -z "$cn" ]; then
-                    _st "❌" "REALITY dest TLS" "$dest не отвечает TLS на имя «$sni» — прикрыться нечем"
+                    # Мало сказать «не отвечает»: надо назвать имя, которое dest
+                    # обслужить УМЕЕТ, иначе админ подбирает домены наугад (так
+                    # уже перебрали три штуки подряд). Спрашиваем dest про домен
+                    # самой ноды — почти всегда это и есть верный ответ.
+                    local own
+                    own=$(_proto_tls_cn "$dhost" "$dport" "$host")
+                    if [ -n "$own" ]; then
+                        _st "❌" "REALITY dest TLS" "$dest не знает имени «$sni» — прикрыться нечем. Зато отдаёт сертификат на «$own»: поставьте это имя в SNI"
+                    else
+                        _st "❌" "REALITY dest TLS" "$dest не отвечает TLS ни на «$sni», ни на «$host» — на этом порту не тот сервис"
+                    fi
                 elif [ "$cn" = "$sni" ]; then
                     _st "💚" "REALITY dest TLS" "сертификат на «$sni» — совпадает с SNI"
                 else
