@@ -26,33 +26,36 @@ protocols_menu() {
             echo "     раздаются клиенту именно через единую ссылку-подписку."
             echo ""
         fi
-        local vs ss ts tj
+        local vs vx ss ts tj
         proto_vless_enabled  && vs="💚 вкл" || vs="⚪ выкл"
+        proto_vlessx_enabled && vx="💚 вкл" || vx="⚪ выкл"
         proto_ss_enabled     && ss="💚 вкл" || ss="⚪ выкл"
         proto_tuic_enabled   && ts="💚 вкл" || ts="⚪ выкл"
         proto_trojan_enabled && tj="💚 вкл" || tj="⚪ выкл"
-        echo "  1. VLESS + REALITY + XHTTP   : $vs   (TCP $(proto_vless_port))"
-        echo "  2. Shadowsocks-2022          : $ss   (TCP $(proto_ss_port), $(proto_ss_method))"
-        echo "  3. TUIC v5                   : $ts   (UDP $(proto_tuic_port))"
-        echo "  4. Trojan / WebSocket + TLS  : $tj   (TCP $(proto_trojan_port))"
+        echo "  1. VLESS + REALITY (TCP+Vision): $vs   (TCP $(proto_vless_port))"
+        echo "  2. Shadowsocks-2022            : $ss   (TCP $(proto_ss_port), $(proto_ss_method))"
+        echo "  3. TUIC v5                     : $ts   (UDP $(proto_tuic_port))"
+        echo "  4. Trojan / WebSocket + TLS    : $tj   (TCP $(proto_trojan_port))"
+        echo "  5. VLESS + REALITY + XHTTP     : $vx   (TCP $(proto_vlessx_port))  — резерв к п.1"
         echo ""
         echo "  Сервисы: Xray $(_proto_svc_state "$XRAY_SERVICE") · sing-box $(_proto_svc_state "$SINGBOX_SERVICE")"
         echo ""
-        echo "  5. ⚙  Параметры (порты, шифр SS, REALITY dest/SNI, пути XHTTP/WS)"
-        echo "  6. 🔁 Переустановить/пересобрать сервисы (bootstrap)"
-        echo "  7. 🔍 Диагностика (версии бинарников, статус, порты)"
-        echo "  8. 🌐 Протоколы по нодам кластера"
+        echo "  6. ⚙  Параметры (порты, шифр SS, REALITY dest/SNI, пути XHTTP/WS)"
+        echo "  7. 🔁 Переустановить/пересобрать сервисы (bootstrap)"
+        echo "  8. 🔍 Диагностика (версии бинарников, статус, порты)"
+        echo "  9. 🌐 Протоколы по нодам кластера"
         echo "  0. ↩  Назад"
         echo ""
         local choice
         ask choice "  Выберите: "
         case "$choice" in
-            1) _proto_toggle vless  "VLESS+REALITY+XHTTP" ;;
+            1) _proto_toggle vless  "VLESS+REALITY (TCP+Vision)" ;;
             2) _proto_toggle ss     "Shadowsocks-2022" ;;
             3) _proto_toggle tuic   "TUIC v5" ;;
             4) _proto_toggle trojan "Trojan/WS" ;;
-            5) proto_params_menu ;;
-            6)
+            5) _proto_toggle vlessx "VLESS+REALITY+XHTTP" ;;
+            6) proto_params_menu ;;
+            7)
                 echo ""
                 if ! proto_any_enabled; then
                     echo "  Нет включённых протоколов — включать нечего."
@@ -62,8 +65,8 @@ protocols_menu() {
                 fi
                 pause
                 ;;
-            7) proto_diagnose_menu ;;
-            8) proto_cluster_screen ;;
+            8) proto_diagnose_menu ;;
+            9) proto_cluster_screen ;;
             0) return ;;
             *) echo "  ❌ Неверный выбор!"; sleep 1 ;;
         esac
@@ -77,6 +80,7 @@ _proto_toggle() {   # name human
     local enabled=0
     case "$name" in
         vless)  proto_vless_enabled  && enabled=1 ;;
+        vlessx) proto_vlessx_enabled && enabled=1 ;;
         ss)     proto_ss_enabled     && enabled=1 ;;
         tuic)   proto_tuic_enabled   && enabled=1 ;;
         trojan) proto_trojan_enabled && enabled=1 ;;
@@ -114,6 +118,7 @@ proto_params_menu() {
         echo "  ⚙  Параметры протоколов"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  1. Порт VLESS (TCP)     : $(proto_vless_port)"
+        echo "  a. Порт VLESS-XHTTP(TCP): $(proto_vlessx_port)"
         echo "  2. Порт Shadowsocks(TCP): $(proto_ss_port)"
         echo "  3. Порт TUIC (UDP)      : $(proto_tuic_port)"
         echo "  4. Шифр Shadowsocks-2022: $(proto_ss_method)"
@@ -123,13 +128,14 @@ proto_params_menu() {
         echo "  8. Порт Trojan (TCP)    : $(proto_trojan_port)"
         echo "  9. Путь WS Trojan       : $(proto_trojan_ws_path)"
         echo ""
-        echo "  ⚠️  После смены параметров нужно пересобрать сервисы (Протоколы → 5)."
+        echo "  ⚠️  После смены параметров нужно пересобрать сервисы (Протоколы → 7)."
         echo "  0. ↩  Назад"
         echo ""
         local c v
         ask c "  Что изменить: "
         case "$c" in
             1) ask v "  Новый порт VLESS (TCP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_VLESS_PORT "$v" ;;
+            a|A) ask v "  Новый порт VLESS-XHTTP (TCP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_VLESSX_PORT "$v" ;;
             2) ask v "  Новый порт Shadowsocks (TCP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_SS_PORT "$v" ;;
             3) ask v "  Новый порт TUIC (UDP): "; [[ "$v" =~ ^[0-9]+$ ]] && proto_set PROTO_TUIC_PORT "$v" ;;
             4)
@@ -201,7 +207,7 @@ proto_diagnose_menu() {
     echo ""
     echo "  Прослушиваемые порты:"
     local p
-    for p in $(proto_vless_port) $(proto_ss_port) $(proto_trojan_port); do
+    for p in $(proto_vless_port) $(proto_vlessx_port) $(proto_ss_port) $(proto_trojan_port); do
         proto_xray_needed || break
         if ss -ltn 2>/dev/null | grep -q ":$p "; then echo "    TCP $p : 💚 слушается"; else echo "    TCP $p : 🔴 нет"; fi
     done

@@ -58,14 +58,23 @@ proto_set() {   # key value
 }
 _proto_flag() { [ "$(proto_get "$1")" = "1" ]; }
 proto_vless_enabled() { _proto_flag PROTO_VLESS_ENABLED; }
+# VLESS+REALITY поверх XHTTP — ВТОРОЙ инбаунд рядом с основным (TCP+Vision), на
+# своём порту, а не замена ему. Замену уже пробовали и откатили (c5f37a8):
+# Vision с XHTTP невалиден, строгие клиенты (Happ) xhttp+reality не тянут, а
+# выгрузка отдельным POST-стримом вставала в 0. Смысл резерва — ДРУГОЙ рисунок
+# трафика: ТСПУ ловит VLESS+TCP+REALITY по поведению (размеры первых пакетов и
+# тайминги), а не по содержимому, и на этот признак XHTTP не попадает. Оба ключа
+# лежат в подписке рядом; клиент, который xhttp не умеет, просто берёт основной.
+proto_vlessx_enabled(){ _proto_flag PROTO_VLESSX_ENABLED; }
 proto_ss_enabled()    { _proto_flag PROTO_SS_ENABLED; }
 proto_tuic_enabled()  { _proto_flag PROTO_TUIC_ENABLED; }
 proto_trojan_enabled(){ _proto_flag PROTO_TROJAN_ENABLED; }
 # Включён ли хоть один доп. протокол (нужен ли Xray / sing-box вообще).
-proto_any_enabled()   { proto_vless_enabled || proto_ss_enabled || proto_tuic_enabled || proto_trojan_enabled; }
-proto_xray_needed()   { proto_vless_enabled || proto_ss_enabled || proto_trojan_enabled; }
+proto_any_enabled()   { proto_vless_enabled || proto_vlessx_enabled || proto_ss_enabled || proto_tuic_enabled || proto_trojan_enabled; }
+proto_xray_needed()   { proto_vless_enabled || proto_vlessx_enabled || proto_ss_enabled || proto_trojan_enabled; }
 
 proto_vless_port() { local p; p=$(proto_get PROTO_VLESS_PORT); echo "${p:-8443}"; }
+proto_vlessx_port(){ local p; p=$(proto_get PROTO_VLESSX_PORT); echo "${p:-8445}"; }
 proto_ss_port()    { local p; p=$(proto_get PROTO_SS_PORT);    echo "${p:-8388}"; }
 proto_tuic_port()  { local p; p=$(proto_get PROTO_TUIC_PORT);  echo "${p:-2053}"; }
 proto_trojan_port()    { local p; p=$(proto_get PROTO_TROJAN_PORT);    echo "${p:-8444}"; }
@@ -350,16 +359,17 @@ proto_sync_certs() {
 # а TUIC демо противопоказан и сам по себе — там нет пер-юзерного учёта трафика,
 # то есть квоту не проверить.
 _proto_skip_user() { declare -F demo_is >/dev/null 2>&1 && demo_is "$1"; }
-# VLESS-клиенты Xray: [{ "id":UUID, "email":user, "flow":"xtls-rprx-vision" }, ...]
+# VLESS-клиенты Xray: [{ "id":UUID, "email":user, "flow":<flow> }, ...]
 # Vision требует raw-TCP инбаунд (network:tcp) — с XHTTP/WS flow невалиден и Xray
-# отвергнет клиента. flow ДОЛЖЕН совпадать в инбаунде и в share-ссылке.
-_proto_xray_vless_clients() {
-    local u p first=1
+# отвергнет клиента, поэтому flow приходит аргументом: "xtls-rprx-vision" для
+# TCP-инбаунда и "" для XHTTP. flow ДОЛЖЕН совпадать в инбаунде и в share-ссылке.
+_proto_xray_vless_clients() {   # [flow]
+    local flow="${1-xtls-rprx-vision}" u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
         _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
-        printf '{"id":"%s","email":"%s","flow":"xtls-rprx-vision"}' "$(proto_uuid "$u" "$p")" "$u"
+        printf '{"id":"%s","email":"%s","flow":"%s"}' "$(proto_uuid "$u" "$p")" "$u" "$flow"
         first=0
     done < "$USERS_DB"
 }
@@ -411,6 +421,21 @@ proto_write_xray_config() {
         inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
             "$(proto_vless_port)" "$(_proto_xray_vless_clients)" "$(proto_reality_dest)" \
             "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)")
+        comma=","
+    fi
+    if proto_vlessx_enabled; then
+        # Тот же VLESS+REALITY, но поверх XHTTP и на своём порту — резерв на
+        # случай, когда основной TCP-инбаунд задушен по ПОВЕДЕНИЮ (см. коммент
+        # у proto_vlessx_enabled). Ключи REALITY, dest и SNI общие с основным:
+        # это один и тот же маскарад, отдельный сертификат не нужен.
+        # flow пустой — Vision с XHTTP невалиден.
+        # mode:auto — сервер принимает любой из packet-up/stream-up/stream-one,
+        # режим выбирает клиент; в ссылку кладём stream-one (см. proto_build_vlessx).
+        inbounds+="${comma}"
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-xhttp-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]},"xhttpSettings":{"path":"%s","mode":"auto"}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
+            "$(proto_vlessx_port)" "$(_proto_xray_vless_clients '')" "$(proto_reality_dest)" \
+            "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)" \
+            "$(proto_xhttp_path)")
         comma=","
     fi
     if proto_ss_enabled; then
@@ -541,6 +566,7 @@ ensure_proto_ports_open() {
     proto_any_enabled || return 0
     local tcp_ports=() udp_ports=()
     proto_vless_enabled  && tcp_ports+=("$(proto_vless_port)")
+    proto_vlessx_enabled && tcp_ports+=("$(proto_vlessx_port)")
     proto_ss_enabled     && tcp_ports+=("$(proto_ss_port)")
     proto_trojan_enabled && tcp_ports+=("$(proto_trojan_port)")
     proto_tuic_enabled   && udp_ports+=("$(proto_tuic_port)")
@@ -674,6 +700,7 @@ _proto_xray_desired_users() {
 # Теги инбаундов Xray, включённых на этой ноде.
 _proto_xray_tags() {
     proto_vless_enabled  && echo vless-in
+    proto_vlessx_enabled && echo vless-xhttp-in
     proto_ss_enabled     && echo ss-in
     proto_trojan_enabled && echo trojan-in
     return 0
@@ -684,11 +711,18 @@ _proto_xray_tags() {
 # поэтому берём живой конфиг и подменяем в нём только списки клиентов: порты,
 # method/uPSK и streamSettings тогда заведомо валидны. Инбаунд api отсеивается
 # сам — у него нет clients.
+#
+# flow у VLESS берётся ИЗ ТРАНСПОРТА самого инбаунда, а не константой: VLESS-
+# инбаундов теперь два (raw-TCP с Vision и XHTTP без flow), и вбитый vision
+# отправил бы в XHTTP-инбаунд невалидного клиента — adu вернул бы ошибку, и
+# каждое добавление юзера скатывалось бы в полный рестарт Xray.
 _proto_xray_adu_json() {   # user uuid upsk
     jq -c --arg u "$1" --arg id "$2" --arg psk "$3" \
         '{inbounds:[.inbounds[]|select(.settings.clients!=null)
           |.settings.clients=(
-              if   .protocol=="vless"       then [{id:$id,email:$u,flow:"xtls-rprx-vision"}]
+              if   .protocol=="vless"       then
+                  [{id:$id,email:$u,
+                    flow:(if .streamSettings.network=="tcp" then "xtls-rprx-vision" else "" end)}]
               elif .protocol=="shadowsocks" then [{password:$psk,email:$u}]
               else                               [{password:$id,email:$u}] end)]}' \
         "$XRAY_CONFIG" 2>/dev/null
@@ -774,6 +808,21 @@ proto_build_vless() {   # user pass ip tag
         "$(proto_reality_sni)" "$(proto_reality_pubkey)" "$(proto_reality_shortid)" \
         "$(_proto_urlenc "$tag")"
 }
+proto_build_vlessx() {   # user pass ip tag
+    local user="$1" pass="$2" ip="$3" tag="$4"
+    tag=${tag//\{protocol\}/VLESS-X}   # {protocol} — метка этого ключа
+    # VLESS+REALITY поверх XHTTP. flow ОТСУТСТВУЕТ намеренно: Vision с XHTTP
+    # невалиден, инбаунд отдаёт клиентам flow:"" — параметры обязаны совпадать.
+    # mode=stream-one — один двунаправленный стрим вместо GET+POST, то есть ровно
+    # та причина, по которой в прошлый раз выгрузка вставала в 0 (см. c5f37a8),
+    # здесь отсутствует. fp=chrome, а не firefox как у TCP-ключа: XHTTP
+    # притворяется обычным HTTP/2 к браузерному сайту, и хромовский ClientHello
+    # для такого трафика — самый частый, значит самый незаметный.
+    printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%s&mode=stream-one&spx=%%2F#%s' \
+        "$(proto_uuid "$user" "$pass")" "$ip" "$(proto_vlessx_port)" \
+        "$(proto_reality_sni)" "$(proto_reality_pubkey)" "$(proto_reality_shortid)" \
+        "$(_proto_urlenc "$(proto_xhttp_path)")" "$(_proto_urlenc "$tag")"
+}
 proto_build_ss() {   # user pass ip tag
     local user="$1" pass="$2" ip="$3" tag="$4" userinfo
     tag=${tag//\{protocol\}/SS22}   # {protocol} — метка этого ключа
@@ -838,6 +887,7 @@ proto_user_uris() {   # user pass ip tag
     local user="$1" pass="$2" ip="${3:-$(link_host)}" tag="${4:-$1}"
     proto_any_enabled || return 0
     proto_vless_enabled  && { proto_build_vless  "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_vlessx_enabled && { proto_build_vlessx "$user" "$pass" "$ip" "$tag"; echo; }
     proto_ss_enabled     && { proto_build_ss     "$user" "$pass" "$ip" "$tag"; echo; }
     proto_trojan_enabled && { proto_build_trojan "$user" "$pass" "$ip" "$tag"; echo; }
     proto_tuic_enabled   && { proto_build_tuic   "$user" "$pass" "$ip" "$tag"; echo; }
@@ -875,6 +925,16 @@ proto_enable_protocol() {   # name
             [ -n "$(proto_get PROTO_REALITY_SNI)" ]  || proto_set PROTO_REALITY_SNI "$(node_host)"
             proto_reality_sni_check "$(proto_reality_sni)" || true
             ;;
+        vlessx)
+            # Ключи/dest/SNI REALITY общие с основным VLESS — если тот ещё не
+            # включался, дефолты выставляем здесь же (генерация ключей — в bootstrap).
+            proto_set PROTO_VLESSX_ENABLED 1
+            [ -n "$(proto_get PROTO_VLESSX_PORT)" ] || proto_set PROTO_VLESSX_PORT 8445
+            [ -n "$(proto_get PROTO_XHTTP_PATH)" ] || proto_set PROTO_XHTTP_PATH /
+            [ -n "$(proto_get PROTO_REALITY_DEST)" ] || proto_set PROTO_REALITY_DEST 127.0.0.1:443
+            [ -n "$(proto_get PROTO_REALITY_SNI)" ]  || proto_set PROTO_REALITY_SNI "$(node_host)"
+            proto_reality_sni_check "$(proto_reality_sni)" || true
+            ;;
         ss)
             proto_set PROTO_SS_ENABLED 1
             [ -n "$(proto_get PROTO_SS_PORT)" ]   || proto_set PROTO_SS_PORT 8388
@@ -898,6 +958,7 @@ proto_enable_protocol() {   # name
 proto_disable_protocol() {   # name
     case "$1" in
         vless)  proto_set PROTO_VLESS_ENABLED 0 ;;
+        vlessx) proto_set PROTO_VLESSX_ENABLED 0 ;;
         ss)     proto_set PROTO_SS_ENABLED 0 ;;
         tuic)   proto_set PROTO_TUIC_ENABLED 0 ;;
         trojan) proto_set PROTO_TROJAN_ENABLED 0 ;;
@@ -1356,6 +1417,7 @@ proto_state_lines() {
     _PROTO_LISTEN_UDP=$(ss -lunH 2>/dev/null)
     _proto_state_line hy2    1 "$SERVICE"         "$(get_port)"           udp
     _proto_state_line vless  "$(proto_vless_enabled  && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_vless_port)"  tcp
+    _proto_state_line vlessx "$(proto_vlessx_enabled && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_vlessx_port)" tcp
     _proto_state_line ss     "$(proto_ss_enabled     && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_ss_port)"     tcp
     _proto_state_line trojan "$(proto_trojan_enabled && echo 1 || echo 0)" "$XRAY_SERVICE"    "$(proto_trojan_port)" tcp
     _proto_state_line tuic   "$(proto_tuic_enabled   && echo 1 || echo 0)" "$SINGBOX_SERVICE" "$(proto_tuic_port)"   udp
@@ -1365,6 +1427,7 @@ proto_state_lines() {
 proto_status_line() {
     local s=""
     proto_vless_enabled  && s+="VLESS 💚 "  || s+="VLESS ⚪ "
+    proto_vlessx_enabled && s+="VLESS-X 💚 " || s+="VLESS-X ⚪ "
     proto_ss_enabled     && s+="SS2022 💚 " || s+="SS2022 ⚪ "
     proto_trojan_enabled && s+="TROJAN 💚 " || s+="TROJAN ⚪ "
     proto_tuic_enabled   && s+="TUIC 💚"    || s+="TUIC ⚪"

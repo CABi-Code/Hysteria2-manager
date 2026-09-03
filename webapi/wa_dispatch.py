@@ -113,6 +113,10 @@ def enabled_protocols():
     p = read_kv(data_path("protocols.conf"))
     out = ["hysteria2"]
     if p.get("PROTO_VLESS_ENABLED") == "1":
+        # Основной VLESS ходит по raw-TCP с XTLS-Vision, а не по XHTTP (c5f37a8);
+        # XHTTP — отдельный инбаунд ниже, у него свой флаг и свой порт.
+        out.append("vless-reality")
+    if p.get("PROTO_VLESSX_ENABLED") == "1":
         out.append("vless-reality-xhttp")
     if p.get("PROTO_TROJAN_ENABLED") == "1":
         out.append("trojan-ws")

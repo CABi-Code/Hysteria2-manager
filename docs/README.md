@@ -16,6 +16,7 @@
 |---|---|
 | Как мини-аппу получить/поменять данные юзера | [guide/API.md](guide/API.md) |
 | Откуда у юзера ключи VLESS/TUIC/Trojan и почему они такие | [guide/MULTIPROTOCOL.md](guide/MULTIPROTOCOL.md) |
+| Почему VLESS в подписке два и чем `VLESS-X` отличается от `VLESS` | [guide/MULTIPROTOCOL.md](guide/MULTIPROTOCOL.md#второй-vless-xhttp-как-резерв-а-не-замена) |
 | Почему юзер «в сети» / откуда цифры трафика и спидометра | [guide/ONLINE.md](guide/ONLINE.md) |
 | Почему скорость не режется (или режется не так) | [guide/SPEED-LIMITS.md](guide/SPEED-LIMITS.md) |
 | Настройка на соседней ноде другая — это баг? | [guide/CLUSTER-SCOPE.md](guide/CLUSTER-SCOPE.md) |

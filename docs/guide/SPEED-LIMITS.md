@@ -12,8 +12,13 @@ Kernel-лимит скорости (`hy2-limit`, tc HTB+fq_codel, `lib/perf.sh`)
 Введён список **`SHAPE`** — `protonum:port` всех шейпимых протоколов
 (`17`=udp, `6`=tcp), строится `_klimit_shape_ports` из включённых протоколов:
 Hysteria (udp, `get_port`), TUIC (udp, `proto_tuic_port`), SS (tcp+udp,
-`proto_ss_port`), VLESS (tcp, `proto_vless_port`), Trojan (tcp,
-`proto_trojan_port`). Пример: `17:38268 17:2053 6:8443 6:8444`.
+`proto_ss_port`), VLESS (tcp, `proto_vless_port`), VLESS-XHTTP (tcp,
+`proto_vlessx_port`), Trojan (tcp, `proto_trojan_port`). Пример:
+`17:38268 17:2053 6:8443 6:8445 6:8444`.
+
+Список обязан покрывать **каждый** слушающий порт: пропущенный порт — это не
+«лимит работает чуть хуже», а протокол целиком мимо тарифа. Включаешь новый
+инбаунд — строка в `_klimit_shape_ports` идёт тем же коммитом.
 
 По `SHAPE` строятся:
 - **catch-all** (prio 2, весь туннель → общий класс `1:ffff`) — `build_dev`;

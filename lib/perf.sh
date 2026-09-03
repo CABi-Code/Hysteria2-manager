@@ -522,6 +522,9 @@ _klimit_shape_ports() {   # hysteria_port
     if declare -F proto_vless_enabled >/dev/null 2>&1 && proto_vless_enabled; then
         p=$(proto_vless_port); out="$out 6:$p"
     fi
+    if declare -F proto_vlessx_enabled >/dev/null 2>&1 && proto_vlessx_enabled; then
+        p=$(proto_vlessx_port); out="$out 6:$p"
+    fi
     if declare -F proto_trojan_enabled >/dev/null 2>&1 && proto_trojan_enabled; then
         p=$(proto_trojan_port); out="$out 6:$p"
     fi
