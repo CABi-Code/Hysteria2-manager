@@ -118,17 +118,21 @@ printf '%s' "$out" | grep -q 'нет 2 из 3' || fail "покрытие: жда
 printf 'alice\tu\nbob\tu\ncarol\tu\n' > "$PEERS_DIR/peer1.example.manifest"
 [ -z "$(cluster_coverage_report)" ] || fail "покрытие: всё на месте, а отчёт ругается"
 
-# --- Отчёт об обновлении соседей судит по телу, а не по коду ответа ----------
-# Нода, где /api ещё не снимает префикс, отдаёт бодрый 200 статической
-# заглушкой подписки. По коду ответа это «успех», которого не было.
-cluster_peers()  { printf 'peer1.example\n'; }
+# --- Обновление соседей не зависит от Web API --------------------------------
+# Раньше здесь был POST в /v1/cluster/update, и отчёт приходилось строить по
+# ТЕЛУ ответа: нода без снятия префикса /api отдавала бодрый 200 статической
+# заглушкой подписки. Теперь просьба публикуется в файловом канале, и разбирать
+# чужие ответы не нужно — их просто нет (P-133). Главное, что сторожим:
+# Web API из этого пути ушёл и вернуться не должен.
+cluster_peers() { printf 'peer1.example\n'; }
+cluster_post()  { echo "ЗВАЛИ WEB API" >> "$HY2M_DATA_DIR/api-calls"; printf '{"ok":true}'; }
+: > "$HY2M_DATA_DIR/api-calls"
 
-cluster_post()   { printf 'Subscription endpoint. Open your personal /sub/<token> URL...'; }
 out=$(cluster_update_peers)
-printf '%s' "$out" | grep -q '❌' || fail "обновление: заглушка Caddy принята за успех"
-
-cluster_post()   { printf '{"ok": true, "data": {"accepted": "1"}}'; }
-out=$(cluster_update_peers)
-printf '%s' "$out" | grep -q '💚' || fail "обновление: настоящий ответ демона не признан"
+[ -s "$HY2M_DATA_DIR/api-calls" ] && fail "обновление снова ходит в Web API соседа"
+printf '%s' "$out" | grep -q 'peer1.example' || fail "обновление: пир не упомянут в отчёте"
+[ -s "$WEBROOT/cluster/updatereq" ] || fail "обновление: просьба не опубликована в разделе"
+grep -qE '^[^|]+\|[0-9]+$' "$WEBROOT/cluster/updatereq" \
+    || fail "обновление: формат просьбы не «версия|ts»: $(cat "$WEBROOT/cluster/updatereq")"
 
 echo "✅ test-cluster-strand: расхождение лечится, срок и кластерный блок уважаются, недостача видна"

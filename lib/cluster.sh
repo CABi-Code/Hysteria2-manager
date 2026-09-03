@@ -17,10 +17,19 @@ cluster_secret() {
     cat "$CLUSTER_SECRET_FILE" 2>/dev/null
 }
 
-# Разрешённые символы имени пира. Имя приходит ИЗВНЕ (gossip привозит чужой
-# peers.list) и подставляется в путь файла кэша — значит слэш и «..» в нём
-# означают запись в произвольное место от root. См. P-134.
-_cluster_safe_name() { printf '%s\n' "${1//[^a-zA-Z0-9_.-]/_}"; }
+# Имя пира, пригодное для подстановки в путь. Имя приходит ИЗВНЕ (gossip
+# привозит чужой peers.list) и становится частью пути `$PEERS_DIR/<имя>.<раздел>`,
+# поэтому опасен ровно один класс символов — РАЗДЕЛИТЕЛИ ПУТИ: с ними «../..»
+# уводит запись в любое место файловой системы, причём от root. См. P-134.
+#
+# Всё остальное намеренно НЕ трогаем, хотя соблазн «оставить только [a-zA-Z0-9]»
+# велик. Имена пиров задаёт человек, и они бывают с пробелами и кириллицей
+# («Finnish Noda 2», «Герм-1»). Переименование сменило бы имя файла кэша, старый
+# файл остался бы лежать — а читаются они глобом (`peers/*.stats`), то есть нода
+# считалась бы ДВАЖДЫ: двойной трафик, двойной онлайн, сорванные квоты. Цена
+# косметики здесь — испорченный учёт, поэтому чистим минимум.
+# Без слэша «..» в имени файла каталог не меняет, отдельно вычищать её незачем.
+_cluster_safe_name() { local n="${1//\//_}"; printf '%s\n' "${n//\\/_}"; }
 
 # Добавляет пир в реестр (без дублей по host).
 # ОБА поля чистятся ЗДЕСЬ, на входе в реестр: это единственная точка, через
@@ -58,7 +67,14 @@ cluster_remove_peer() {   # host
     awk -F'|' -v h="$host" '$2!=h' "$CLUSTER_CONF" > "$tmp" && cat "$tmp" > "$CLUSTER_CONF"
     rm -f "$tmp"
     if [ -n "$name" ]; then
-        rm -f "$PEERS_DIR/${name}.manifest" "$PEERS_DIR/${name}.stats" "$PEERS_DIR/${name}.subtokens" "$PEERS_DIR/${name}.roster" "$PEERS_DIR/${name}.state" "$PEERS_DIR/${name}.ips" "$PEERS_DIR/${name}.expiry" "$PEERS_DIR/${name}.settings" "$PEERS_DIR/${name}.userlimits" "$PEERS_DIR/${name}.subips" "$PEERS_DIR/${name}.tgbind" 2>/dev/null
+        # По CLUSTER_SYNC_SECTIONS, а не поимённым списком: перечисление здесь
+        # уже отставало от состава разделов (в нём не было ни state-подобных
+        # новичков, ни rates), и новый раздел молча оставлял бы за собой мусор.
+        # Тот же класс ошибки, что P-112: список, о котором надо помнить.
+        local s
+        for s in $CLUSTER_SYNC_SECTIONS rates; do
+            rm -f "$PEERS_DIR/${name}.${s}" 2>/dev/null
+        done
     fi
     publish_peers_list
     regen_subscriptions
@@ -130,46 +146,97 @@ cluster_nudge_peers() {
     return 0
 }
 
-# «Обнови менеджер у соседей» — тот же крючок, но про код, а не про данные.
-# Ручного доступа к соседним нодам может не быть вовсе, а правка, доехавшая
-# только до одной ноды, обычно не работает: половина кластерной логики
-# исполняется как раз на стороне соседа. Обновляется ТОЛЬКО менеджер, данные
-# и Hysteria не трогаются (см. manager_update_silent).
-# Ждём ответа: это осознанное действие админа, и он должен видеть результат.
-cluster_update_peers() {
+# ---- «Обновите менеджер» по файловому каналу ----------------------------
+# Раньше это был POST в Web API соседа. Так делать нельзя: Web API — отдельный
+# компонент, который на ноде без кабинета незачем включать, и кластер оказался
+# завязан на его наличие. Получался замкнутый круг — нода отстала, крючок в неё
+# не доходит, нода отстаёт дальше (P-133). Файловый канал такой болезни не
+# подвержен по построению: если он не работает, кластера нет вообще, и это
+# видно сразу, а не только при обновлении.
+#
+# Механика — объявление, а не команда. Мы кладём в свой раздел `updatereq`
+# строку «версия|ts», соседи забирают её обычной синхронизацией и решают САМИ.
+# Ровно та же форма, что у `erase`/`pwreset`, с двумя обязательными оговорками:
+#   * чужую просьбу мы НЕ перепубликовываем (в нашем файле только наша) —
+#     иначе объявление станет бессмертным, правило 3 в CLUSTER-SCOPE.md;
+#   * применённый ts запоминается, иначе просьба сработает на каждом sync и
+#     превратится в переустановку менеджера раз в пять минут.
+
+# Объявить просьбу. Версия — та, что сейчас в репозитории (до неё и подтянутся);
+# не смогли узнать — своя, тогда отстающие всё равно догонят нас.
+cluster_request_update() {
     sub_enabled || return 0
-    local host resp ok=0 fail=0
+    # Версию репозитория знает lib/update.sh; нет её (сеть молчит) — просим
+    # догнать хотя бы нас. Обе функции через declare: cluster.sh грузится раньше
+    # update.sh, и при частичной загрузке падать здесь незачем.
+    local ver=""
+    declare -F manager_remote_version >/dev/null 2>&1 \
+        && ver=$(manager_remote_version force 2>/dev/null | tr -d '[:space:]')
+    [ -n "$ver" ] || ver="${MANAGER_VERSION:-unknown}"
+    printf '%s|%s\n' "$ver" "$(date +%s)" > "$UPDATEREQ_FILE"
+    chmod 600 "$UPDATEREQ_FILE" 2>/dev/null
+    publish_cluster_updatereq
+    printf '%s' "$ver"
+}
+
+# Публикация нашей просьбы (только нашей — чужие сюда не попадают никогда).
+publish_cluster_updatereq() {
+    sub_enabled || return 0
+    mkdir -p "$WEBROOT/cluster"
+    cp -f "$UPDATEREQ_FILE" "$WEBROOT/cluster/updatereq" 2>/dev/null || : > "$WEBROOT/cluster/updatereq"
+    chmod 640 "$WEBROOT/cluster/updatereq" 2>/dev/null || true
+}
+
+# Применить самую свежую просьбу соседей. Зовётся из cluster_sync.
+cluster_apply_updatereq() {
+    [ -d "$PEERS_DIR" ] || return 0
+    # Сравнение версий и сам апдейт живут в lib/update.sh. Нет их — молча ничего
+    # не делаем: пропущенное обновление лечится повторной просьбой.
+    declare -F _ver_gt >/dev/null 2>&1 && declare -F manager_local_version >/dev/null 2>&1 || return 0
+    local newest_ts=0 newest_ver="" f ver ts seen
+    for f in "$PEERS_DIR"/*.updatereq; do
+        [ -f "$f" ] || continue
+        IFS='|' read -r ver ts < "$f"
+        [[ "$ts" =~ ^[0-9]+$ ]] || continue
+        [ "$ts" -gt "$newest_ts" ] && { newest_ts=$ts; newest_ver=$ver; }
+    done
+    [ "$newest_ts" -gt 0 ] || return 0
+
+    seen=$(cat "$UPDATEREQ_SEEN_FILE" 2>/dev/null)
+    [[ "$seen" =~ ^[0-9]+$ ]] || seen=0
+    [ "$newest_ts" -gt "$seen" ] || return 0
+
+    # Метку ставим ДО запуска обновления, а не после: install.sh подменяет файлы
+    # под работающим процессом, и «запишу, когда закончится» здесь не выполнится.
+    # Цена ошибки в эту сторону — пропущенное обновление, которое лечится
+    # повторной просьбой; в другую — переустановка по кругу.
+    printf '%s\n' "$newest_ts" > "$UPDATEREQ_SEEN_FILE"
+    chmod 600 "$UPDATEREQ_SEEN_FILE" 2>/dev/null
+
+    # Просьба «обновись до версии, которая у нас уже есть» — не работа.
+    _ver_gt "$newest_ver" "$(manager_local_version)" || return 0
+    declare -F manager_update_silent >/dev/null 2>&1 || return 0
+    manager_update_silent
+}
+
+# Что видит админ, нажавший «обновить соседей». Ответа с той стороны здесь нет
+# и быть не может: мы не зовём соседа, а выкладываем объявление. Поэтому вместо
+# ложного «💚 запущено» честно показываем, кто просьбу заберёт и когда.
+cluster_update_peers() {
+    sub_enabled || { echo "  ⚪ Подписка не настроена — публиковать просьбу некуда."; return 0; }
+    local ver host n=0
+    ver=$(cluster_request_update)
     while read -r host; do
         [ -n "$host" ] || continue
-        resp=$(cluster_post "$host" "/v1/cluster/update" 20)
-        # Судим по ТЕЛУ, а не по коду ответа. На ноде, где /api ещё не снимает
-        # префикс, запрос до демона не доходит вовсе — его забирает статическая
-        # заглушка раздела подписки и отдаёт бодрый 200. Проверка по коду
-        # рапортовала бы «обновление запущено» о нодах, которые ничего не
-        # получили, — а это худший вид отчёта: ложный успех.
-        case "$resp" in
-            *'"accepted"'*)
-                echo "  💚 $host — обновление запущено"
-                ok=$((ok + 1)) ;;
-            *)
-                echo "  ❌ $host — не принял (старая версия, Web API не отвечает снаружи или другой секрет)"
-                fail=$((fail + 1)) ;;
-        esac
+        n=$((n + 1))
+        echo "  📨 $host — заберёт на своей синхронизации"
     done < <(cluster_peers)
-    [ "$((ok + fail))" -gt 0 ] || { echo "  ⚪ Пиров нет."; return 0; }
+    [ "$n" -gt 0 ] || { echo "  ⚪ Пиров нет."; return 0; }
     echo ""
-    [ "$ok" -gt 0 ] && {
-        echo "  Обновление идёт в фоне (~10–30 с). Ход — в логе ноды: update.log."
-        echo "  Проверить версии: пункт «Синхронизировать» и колонка версии пира."
-    }
-    # Ноду, которая ручку не приняла, крючком не починить: он сам в неё и не
-    # доехал. Такую обновляют один раз руками, дальше крючок работает.
-    [ "$fail" -gt 0 ] && {
-        echo "  Не принявшие обновляются один раз вручную, на самой ноде:"
-        echo "    bash <(curl -fsSL $MANAGER_REPO_RAW/install.sh)   → пункт 1"
-        echo "  После этого крючок начнёт работать и заходить на них больше не нужно."
-    }
-    [ "$fail" = 0 ]
+    echo "  Просьба обновиться до ${ver:-текущей} опубликована в разделе updatereq."
+    echo "  Соседи заберут её своим кроном (до ~5 мин) и обновятся сами."
+    echo "  Ход обновления — на самой ноде в update.log; версии — колонка версии пира."
+    return 0
 }
 
 # ---- Здоровье пиров -----------------------------------------------------
@@ -327,7 +394,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols updatereq"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -348,6 +415,7 @@ _section_label() {
         tgbind)     echo "привязки Telegram" ;;
         version)    echo "версия менеджера" ;;
         protocols)  echo "состояние протоколов" ;;
+        updatereq)  echo "просьба обновить менеджер" ;;
         *)          echo "$1" ;;
     esac
 }
@@ -384,6 +452,7 @@ cluster_sync() {
     publish_cluster_tgbind
     publish_cluster_version
     publish_cluster_protocols
+    publish_cluster_updatereq
 
     # Жёсткая проверка НАШЕГО эндпоинта: без валидного HTTPS пиры физически не
     # смогут забрать наши данные — синхронизация будет односторонней.
@@ -465,6 +534,10 @@ cluster_sync() {
     regen_subscriptions
     cluster_online_sync      # заодно обновим онлайн и применим лимит устройств
     write_authlimits         # обновить снимок для жёсткой проверки
+    # ПОСЛЕДНИМ: обновление подменяет файлы менеджера под уже работающим
+    # процессом. Всё, что должно примениться на текущем коде, к этому моменту
+    # применено; запуск асинхронный, синхронизацию он не ждёт.
+    cluster_apply_updatereq  # просьба соседей обновить менеджер
     _vp "  ✅ Локально применено."
 
     if [ -n "$V" ]; then
