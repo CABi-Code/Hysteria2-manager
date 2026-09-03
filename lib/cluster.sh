@@ -166,13 +166,20 @@ cluster_nudge_peers() {
 # не смогли узнать — своя, тогда отстающие всё равно догонят нас.
 cluster_request_update() {
     sub_enabled || return 0
-    # Версию репозитория знает lib/update.sh; нет её (сеть молчит) — просим
-    # догнать хотя бы нас. Обе функции через declare: cluster.sh грузится раньше
-    # update.sh, и при частичной загрузке падать здесь незачем.
-    local ver=""
+    # Просим догнать САМУЮ НОВУЮ из известных версий: репозитория или нашу.
+    # Брать только репозиторий нельзя — `raw.githubusercontent.com` отдаёт из
+    # CDN и первые минуты после пуша показывает предыдущую версию. Поймано на
+    # живой ноде: просьба вышла на версию, которая у соседей уже стояла, то есть
+    # в никуда. Обе функции через declare: cluster.sh грузится раньше update.sh,
+    # и при частичной загрузке падать здесь незачем.
+    local ver="" mine="${MANAGER_VERSION:-unknown}"
     declare -F manager_remote_version >/dev/null 2>&1 \
         && ver=$(manager_remote_version force 2>/dev/null | tr -d '[:space:]')
-    [ -n "$ver" ] || ver="${MANAGER_VERSION:-unknown}"
+    if [ -z "$ver" ]; then
+        ver="$mine"
+    elif declare -F _ver_gt >/dev/null 2>&1 && _ver_gt "$mine" "$ver"; then
+        ver="$mine"
+    fi
     printf '%s|%s\n' "$ver" "$(date +%s)" > "$UPDATEREQ_FILE"
     chmod 600 "$UPDATEREQ_FILE" 2>/dev/null
     publish_cluster_updatereq
@@ -193,7 +200,9 @@ cluster_apply_updatereq() {
     # Сравнение версий и сам апдейт живут в lib/update.sh. Нет их — молча ничего
     # не делаем: пропущенное обновление лечится повторной просьбой.
     declare -F _ver_gt >/dev/null 2>&1 && declare -F manager_local_version >/dev/null 2>&1 || return 0
-    local newest_ts=0 newest_ver="" f ver ts seen
+    declare -F manager_update_silent >/dev/null 2>&1 || return 0
+    local newest_ts=0 newest_ver="" f ver ts now last
+    now=$(date +%s)
     for f in "$PEERS_DIR"/*.updatereq; do
         [ -f "$f" ] || continue
         IFS='|' read -r ver ts < "$f"
@@ -202,20 +211,30 @@ cluster_apply_updatereq() {
     done
     [ "$newest_ts" -gt 0 ] || return 0
 
-    seen=$(cat "$UPDATEREQ_SEEN_FILE" 2>/dev/null)
-    [[ "$seen" =~ ^[0-9]+$ ]] || seen=0
-    [ "$newest_ts" -gt "$seen" ] || return 0
-
-    # Метку ставим ДО запуска обновления, а не после: install.sh подменяет файлы
-    # под работающим процессом, и «запишу, когда закончится» здесь не выполнится.
-    # Цена ошибки в эту сторону — пропущенное обновление, которое лечится
-    # повторной просьбой; в другую — переустановка по кругу.
-    printf '%s\n' "$newest_ts" > "$UPDATEREQ_SEEN_FILE"
-    chmod 600 "$UPDATEREQ_SEEN_FILE" 2>/dev/null
-
-    # Просьба «обновись до версии, которая у нас уже есть» — не работа.
+    # СВЕРКА ПО ФАКТУ, а не дельта по ts. Триггер — «просят версию новее нашей»,
+    # и он остаётся верным, пока дело не сделано. Одной метки «этот ts я видел»
+    # тут категорически недостаточно: обновление может не доехать (сеть,
+    # install.sh упал, а на живой проверке — GitHub raw отдал из CDN версию
+    # старее объявленной), и повторить было бы уже нечем — новой метки времени
+    # взяться неоткуда. Это ровно правило 7 из docs/guide/CLUSTER-SCOPE.md:
+    # у дельты по ts обязан быть напарник, смотрящий на факт.
     _ver_gt "$newest_ver" "$(manager_local_version)" || return 0
-    declare -F manager_update_silent >/dev/null 2>&1 || return 0
+
+    # Просьба протухла — перестаём по ней дёргаться. Иначе объявление с
+    # недостижимой версией (опечатка, откат репозитория) осталось бы вечным
+    # поводом переустанавливать менеджер по кругу.
+    [ $(( now - newest_ts )) -lt "${UPDATEREQ_TTL_SEC:-86400}" ] || return 0
+
+    # Пауза между попытками. Без неё сверка по факту превратилась бы в
+    # переустановку на КАЖДОЙ синхронизации, пока версия не сойдётся.
+    last=$(cat "$UPDATEREQ_SEEN_FILE" 2>/dev/null)
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    [ $(( now - last )) -ge "${UPDATEREQ_RETRY_SEC:-1800}" ] || return 0
+
+    # Метку попытки ставим ДО запуска: install.sh подменяет файлы под работающим
+    # процессом, и «запишу, когда закончится» здесь не выполнится.
+    printf '%s\n' "$now" > "$UPDATEREQ_SEEN_FILE"
+    chmod 600 "$UPDATEREQ_SEEN_FILE" 2>/dev/null
     manager_update_silent
 }
 
