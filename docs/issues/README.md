@@ -125,7 +125,7 @@
 | [P-135](OPS.md#p-135) | Секрет кластера читался любым локальным процессом (Caddyfile 0644) | `lib/caddy.sh` | [ops](OPS.md) | ✅ |
 | [P-136](PROTOCOLS.md#p-136) | `bind` уводил Caddy с loopback, а dest REALITY на него смотрит | `lib/caddy.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 
-Следующий свободный номер — **P-137**.
+Следующий свободный номер — **P-138**.
 
 Номера **P-74** и **P-75** выданы задним числом: обе линии — `main` и
 `integration-multiprotocol` — независимо заняли `P-52` и `P-53` под разные
