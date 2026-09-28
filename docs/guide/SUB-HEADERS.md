@@ -23,6 +23,7 @@
 | `profile-web-page-url` | кнопка «страница подписки» (`SUB_PAGE_URL`) | нет |
 | `announce-url` | куда ведёт клик по анонсу (`SUB_ANN_URL`) | нет |
 | любые прочие | свободный список `SUB_HEADERS` | нет |
+| `routing` | профиль «РФ напрямую», формат по `User-Agent` (Happ / v2RayTun), см. [RU-BLOCK.md](RU-BLOCK.md) | нет |
 
 Все настройки, кроме метки ноды, — **общие для кластера** (`SETTING_KEYS`,
 last-write-wins, см. [CLUSTER-SCOPE.md](CLUSTER-SCOPE.md)): человек видит одно и

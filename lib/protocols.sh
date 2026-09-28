@@ -518,8 +518,8 @@ proto_write_xray_config() {
     { "listen": "127.0.0.1", "port": ${XRAY_API_PORT}, "protocol": "dokodemo-door",
       "settings": { "address": "127.0.0.1" }, "tag": "api" }
   ],
-  "outbounds": [ { "protocol": "freedom", "tag": "direct" } ],
-  "routing": { "rules": [ { "type": "field", "inboundTag": ["api"], "outboundTag": "api" } ] }
+  "outbounds": [ { "protocol": "freedom", "tag": "direct" }$(rublock_xray_outbound) ],
+  "routing": { "rules": [ { "type": "field", "inboundTag": ["api"], "outboundTag": "api" }$(rublock_xray_rules) ] }
 }
 EOF
     chmod 600 "$XRAY_CONFIG" 2>/dev/null
@@ -556,7 +556,7 @@ proto_write_singbox_config() {
       }
     }
   ],
-  "outbounds": [ { "type": "direct", "tag": "direct" } ],
+  "outbounds": [ { "type": "direct", "tag": "direct" } ]$(rublock_singbox_route),
   "experimental": {
     "clash_api": { "external_controller": "127.0.0.1:${SINGBOX_API_PORT}", "secret": "${secret}" }
   }
@@ -822,6 +822,7 @@ _proto_xray_hot_apply() {
 
 # Пересобрать конфиги из users.db и применить. Вызывается из sub_refresh.
 proto_sync_users() {
+    rublock_hysteria_apply   # Hysteria не в proto_any_enabled: её acl правим всегда
     proto_any_enabled || return 0
     if proto_xray_needed; then
         proto_write_xray_config

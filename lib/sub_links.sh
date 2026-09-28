@@ -710,6 +710,7 @@ write_sub_titles() {
     done <<< "$(sub_all_users)"
 
     {
+        rublock_sub_headers
         if [ "$static_title" = 1 ]; then
             printf '\theader profile-title "base64:%s"\n' "$(_sub_b64 "$(sub_title)")"
         else

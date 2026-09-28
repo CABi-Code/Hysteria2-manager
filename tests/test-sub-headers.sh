@@ -11,7 +11,7 @@ export HY2M_WEBROOT="$HY2M_DATA_DIR/web"
 mkdir -p "$HY2M_WEBROOT/sub" "$HY2M_DATA_DIR/peers"
 trap 'rm -rf "$HY2M_DATA_DIR"' EXIT
 
-for lib in config traffic expiry limits node tariffs freeplan demo sub_links caddy; do
+for lib in config traffic expiry limits node tariffs freeplan demo rublock sub_links caddy; do
     # shellcheck disable=SC1090
     source "$SCRIPT_DIR/lib/$lib.sh"
 done
