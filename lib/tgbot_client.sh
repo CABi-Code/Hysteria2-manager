@@ -156,6 +156,17 @@ bot_weblogin_cb() {   # chat_id tg_id message_id action id
     bot_miniapp_post api/bot/weblogin "$body" >/dev/null || return 1
 }
 
+# Кнопка приветствия, которой нужен профиль («st:<действие>»). Мини-апп отвечает
+# сразу, а профиль (~18 с у нового) и само действие делает уже после ответа,
+# переписывая это же сообщение. Демон не ждёт: long-polling у него один на всех.
+# В stdout — текст всплывашки, если мини-апп его вернул («бонус уже получен»).
+bot_action_cb() {   # chat_id tg_id message_id action
+    local body
+    body=$(jq -nc --argjson chat "$1" --argjson tg "$2" --argjson mid "${3:-0}" --arg act "$4" \
+        '{chat_id:$chat, tg_id:$tg, message_id:$mid, action:$act}') || return 1
+    bot_miniapp_post api/bot/action "$body" | jq -r '.toast // empty' 2>/dev/null
+}
+
 # Карточка согласования в личке владельца: нажата кнопка («pr:<действие>:<id>»)
 # или прислан текст правки ответом на карточку (action=text). Как и с входом в
 # веб-версию, решение и перерисовка карточки — на стороне мини-аппа.
