@@ -39,6 +39,14 @@ bot_handle_update() {   # json
         return 0
     fi
 
+    # chat_member: кто-то вступил в канал, где бот админ, или вышел из него.
+    # Telegram присылает его, только если он есть в allowed_updates. Решает,
+    # что с этим делать, надстройка (bot_member_cb) — здесь только доставка.
+    if [ "$(echo "$upd" | jq -r 'has("chat_member")' 2>/dev/null)" = "true" ]; then
+        bot_member_cb "$upd"
+        return 0
+    fi
+
     # 2) callback_query (кнопки).
     local cb_id
     cb_id=$(echo "$upd" | jq -r '.callback_query.id // empty' 2>/dev/null)
@@ -387,7 +395,7 @@ tgbot_daemon() {
     off=$(cat "$BOT_OFFSET_FILE" 2>/dev/null); [[ "$off" =~ ^[0-9]+$ ]] || off=0
     while :; do
         resp=$(tg_api getUpdates --data-urlencode "timeout=50" --data-urlencode "offset=$off" \
-            --data-urlencode 'allowed_updates=["message","callback_query","pre_checkout_query"]')
+            --data-urlencode 'allowed_updates=["message","callback_query","pre_checkout_query","chat_member"]')
         if [ -z "$resp" ] || [ "$(echo "$resp" | jq -r '.ok' 2>/dev/null)" != "true" ]; then
             echo "$(date '+%F %T') getUpdates: нет ответа/ошибка: $(echo "$resp" | jq -r '.description // "timeout"' 2>/dev/null)"
             sleep 3

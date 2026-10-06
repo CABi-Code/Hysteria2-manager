@@ -167,6 +167,19 @@ bot_action_cb() {   # chat_id tg_id message_id action
     bot_miniapp_post api/bot/action "$body" | jq -r '.toast // empty' 2>/dev/null
 }
 
+# Событие chat_member (вступил в канал / вышел) — в надстройку как есть: какие
+# каналы ей интересны и что делать с отпиской, решает она. Без надстройки —
+# молча ничего. Время события (date) передаём: считать надо от него.
+bot_member_cb() {   # update_json
+    local body
+    body=$(echo "$1" | jq -c '.chat_member | {
+        tg_id: .new_chat_member.user.id, chat_id: .chat.id,
+        chat_username: (.chat.username // ""), status: .new_chat_member.status,
+        is_member: (.new_chat_member.is_member // false), date: .date}' 2>/dev/null) || return 1
+    [ -n "$body" ] || return 1
+    bot_miniapp_post api/bot/member "$body" >/dev/null
+}
+
 # Карточка согласования в личке владельца: нажата кнопка («pr:<действие>:<id>»)
 # или прислан текст правки ответом на карточку (action=text). Как и с входом в
 # веб-версию, решение и перерисовка карточки — на стороне мини-аппа.
