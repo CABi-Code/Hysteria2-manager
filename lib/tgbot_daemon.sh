@@ -409,7 +409,12 @@ tgbot_daemon() {
     local off resp uid
     off=$(cat "$BOT_OFFSET_FILE" 2>/dev/null); [[ "$off" =~ ^[0-9]+$ ]] || off=0
     while :; do
-        resp=$(tg_api getUpdates --data-urlencode "timeout=50" --data-urlencode "offset=$off" \
+        # Опрос держим коротким (25 с) и обрываем зависшее соединение через
+        # 30 с: несколько раз в сутки ответ Telegram не приходит вовсе, и при
+        # прежних 50/65 с бот молчал до 68 с подряд (P-145). curl берёт
+        # последний --max-time, поэтому этот перекрывает общий из tg_api.
+        resp=$(tg_api getUpdates --max-time 30 --connect-timeout 10 \
+            --data-urlencode "timeout=25" --data-urlencode "offset=$off" \
             --data-urlencode 'allowed_updates=["message","callback_query","pre_checkout_query","chat_member"]')
         if [ -z "$resp" ] || [ "$(echo "$resp" | jq -r '.ok' 2>/dev/null)" != "true" ]; then
             echo "$(date '+%F %T') getUpdates: нет ответа/ошибка: $(echo "$resp" | jq -r '.description // "timeout"' 2>/dev/null)"
