@@ -120,11 +120,12 @@ bot_client_menu() {   # chat_id [message_id]
 # Мини-апп не открывается по ссылке из директа канала (баг Telegram), поэтому
 # реферальная ссылка ведёт на /start бота. Сторона мини-аппа — в его доках.
 # 0 — приветствие отправлено, 1 — мини-апп не настроен/недоступен (зовите меню).
-bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name]
+bot_miniapp_start() {   # chat_id tg_id [start_param] [username] [first_name] [message_id]
     local body resp
+    # message_id — сама команда «/start»: надстройка может её убрать из чата.
     body=$(jq -nc --argjson chat "$1" --argjson tg "$2" \
-        --arg sp "${3:-}" --arg un "${4:-}" --arg fn "${5:-}" \
-        '{chat_id:$chat, tg_id:$tg, start_param:$sp, username:$un, first_name:$fn}') || return 1
+        --arg sp "${3:-}" --arg un "${4:-}" --arg fn "${5:-}" --argjson mid "${6:-0}" \
+        '{chat_id:$chat, tg_id:$tg, start_param:$sp, username:$un, first_name:$fn, message_id:$mid}') || return 1
     # Долгий таймаут: в ответе может лежать провижининг нового профиля (~18 с).
     resp=$(bot_miniapp_post api/bot/start "$body" 60)
     # Telegram легко теряет payload (человек жмёт «START», а не ссылку) — без
@@ -165,6 +166,36 @@ bot_action_cb() {   # chat_id tg_id message_id action
     body=$(jq -nc --argjson chat "$1" --argjson tg "$2" --argjson mid "${3:-0}" --arg act "$4" \
         '{chat_id:$chat, tg_id:$tg, message_id:$mid, action:$act}') || return 1
     bot_miniapp_post api/bot/action "$body" | jq -r '.toast // empty' 2>/dev/null
+}
+
+# Отдавать ли сообщение надстройке как клиентскую команду. Не отдаём: /start
+# (своя ветка с payload), вход на сайт (/web — тоже уходит надстройке, но своим
+# путём) и пустое. Администратору — только клиентские команды: его /help,
+# /users и прочее ведёт бот.
+bot_command_for_miniapp() {   # tg_id text
+    local from="$1" text="$2" cmd
+    [ -n "$text" ] || return 1
+    [ -n "$(bot_get MINIAPP_API)" ] || return 1
+    cmd="${text%% *}"; cmd="${cmd%%@*}"
+    case "$cmd" in
+        /start|/web|/веб|/сайт|/admin) return 1 ;;
+    esac
+    if bot_is_admin "$from"; then
+        case "$cmd" in
+            /buy|/tariffs|/balance|/ref|/sub|/link|/status) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    return 0
+}
+
+# Команда или текст клиента — в надстройку. 0 — она ответила сама (ok:true).
+bot_miniapp_command() {   # chat_id tg_id message_id text
+    local body resp
+    body=$(jq -nc --argjson chat "$1" --argjson tg "$2" --argjson mid "${3:-0}" --arg t "$4" \
+        '{chat_id:$chat, tg_id:$tg, message_id:$mid, text:$t}') || return 1
+    resp=$(bot_miniapp_post api/bot/command "$body" 20)
+    [ "$(echo "$resp" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
 }
 
 # Событие chat_member (вступил в канал / вышел) — в надстройку как есть: какие

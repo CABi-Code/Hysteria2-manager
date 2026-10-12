@@ -48,6 +48,14 @@ POST $MINIAPP_API/api/bot/start
 | ответ (reply) на любое сообщение бота | `bot_review_cb … text` | `POST /api/bot/review` |
 | `st:<действие>` — кнопки приветствия надстройки | `bot_action_cb` | `POST /api/bot/action` |
 | событие `chat_member` — вступление в канал или выход из него | `bot_member_cb` | `POST /api/bot/member` |
+| команда или свободный текст клиента в личке | `bot_miniapp_command` | `POST /api/bot/command` |
+
+**Команды клиента** при подключённой надстройке отвечает она: бот отдаёт ей
+всё, кроме `/start` (своя ветка с payload), входа на сайт и пустого
+(`bot_command_for_miniapp`). Администратору — только клиентские команды,
+его собственные (`/help`, `/users`, `/add`, `/code`, …) ведёт бот. `/start`
+у администратора тоже уходит надстройке, админ-панель — `/admin`. Ответ
+`ok:false` или молчание — бот отвечает сам, как без надстройки.
 
 **`chat_member`** Telegram присылает, только если он перечислен в
 `allowed_updates` у `getUpdates` и бот — администратор канала. Бот пересылает

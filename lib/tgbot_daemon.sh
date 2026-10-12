@@ -180,11 +180,12 @@ ${tl:-нет тарифов}
     fi
 
     # 3) обычное сообщение.
-    local chat from text
+    local chat from text msg_id
     chat=$(echo "$upd" | jq -r '.message.chat.id // empty' 2>/dev/null)
     [ -z "$chat" ] && return 0
     from=$(echo "$upd" | jq -r '.message.from.id // empty')
     text=$(echo "$upd" | jq -r '.message.text // empty')
+    msg_id=$(echo "$upd" | jq -r '.message.message_id // 0')
 
     # 3-DM) чат прямых сообщений канала (Direct Messages in Channels, Bot API 9.2):
     # запоминаем topic пользователя, чтобы слать уведомления «от лица канала».
@@ -219,17 +220,30 @@ ${tl:-нет тарифов}
         bot_review_cb "$from" "$reply_mid" text 0 "$text" && return 0
     fi
 
+    # Клиентские команды и свободный текст ведёт надстройка, если она
+    # подключена (MINIAPP_API): бот здесь только доставляет. Не ответила или
+    # сказала «не моё» — дальше обычным порядком, ветки ниже — запасной путь.
+    if bot_command_for_miniapp "$from" "$text" \
+        && bot_miniapp_command "$chat" "$from" "$msg_id" "$text"; then
+        return 0
+    fi
+
     case "$text" in
+        /admin|/admin@*)
+            bot_is_admin "$from" || return 0
+            tg_send "$chat" "🛠 <b>Админ-панель</b>
+Команды: /add имя [дней] [устройств] · /code имя · /users · /status_srv" "$KB_ADMIN" ;;
         /start|/start@*)
-            if bot_is_admin "$from"; then
-                tg_send "$chat" "🛠 <b>Админ-панель</b>
+            # Кабинет шлёт надстройка — и администратору тоже: админ-панель
+            # теперь /admin. Своё меню — только если надстройка не ответила.
+            if ! bot_miniapp_start "$chat" "$from" "" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
+                    "$(echo "$upd" | jq -r '.message.from.first_name // empty')" "$msg_id"; then
+                if bot_is_admin "$from"; then
+                    tg_send "$chat" "🛠 <b>Админ-панель</b>
 Команды: /add имя [дней] [устройств] · /code имя · /users · /status_srv" "$KB_ADMIN"
-            else
-                # Приветствие с кнопкой «Открыть приложение» шлёт мини-апп;
-                # своё меню — только если он не настроен/не ответил.
-                bot_miniapp_start "$chat" "$from" "" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
-                    "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \
-                    || bot_client_menu "$chat"
+                else
+                    bot_client_menu "$chat"
+                fi
             fi ;;
         "/start "*)
             local code="${text#/start }" u _screen
@@ -294,8 +308,9 @@ ${tl:-нет тарифов}
 /code имя — код привязки Telegram
 /status_srv — состояние сервера
 /refund tg_id charge_id — возврат Stars
+/admin — админ-панель
 
-Клиентские: /link /sub /status /buy /id" "$KB_ADMIN"
+Клиентские: /start /buy /balance /ref /sub /id" "$KB_ADMIN"
             else
                 bot_client_menu "$chat"
             fi ;;
