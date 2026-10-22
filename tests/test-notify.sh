@@ -23,6 +23,8 @@ fail() { echo "❌ $1"; exit 1; }
 SENDS=0; CHAN=0; DM_OK=0; LAST_TEXT=''
 bot_mod_on()    { return 0; }
 bot_enabled()   { return 0; }
+BOT_UP=0
+bot_running()   { return "$BOT_UP"; }   # живой ли демон бота на этой ноде
 bot_token()     { printf 'TESTTOKEN'; }
 tg_send()       { SENDS=$((SENDS+1)); LAST_TEXT="$2"; return "$DM_OK"; }
 chandm_send()   { CHAN=$((CHAN+1)); }
@@ -35,6 +37,14 @@ bot_sales_on()  { return 1; }
 # независимо от времени суток (end_ts = сегодня 23:59:59 < now+24ч).
 printf 'u1|%s\n' "$(date +%Y-%m-%d)" > "$EXPIRY_FILE"
 period_days_set u1 30
+
+# --- нода без живого демона бота молчит: сроки синхронны по кластеру, и
+# напоминание ушло бы с каждой ноды, где бот лишь настроен (P-154) ---
+SENDS=0; BOT_UP=1
+bot_notify_sweep
+[ "$SENDS" -eq 0 ] || fail "без живого бота нода не должна слать, а слала $SENDS"
+[ -s "$NOTIFY_STATE_FILE" ] && fail "без живого бота нельзя и помечать пороги — их отправит другая нода"
+BOT_UP=0
 
 # --- дедуп: два прохода подряд шлют ровно одно сообщение ---
 SENDS=0

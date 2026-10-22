@@ -159,7 +159,9 @@ bot_notify_admins() {
 # cluster_apply_tgbind). Поэтому tg_bound_user трактует пустое поле как «не
 # привязан», а список привязок такие строки пропускает.
 tg_bound_user() { awk -F'|' -v id="$1" '$1==id && $2!=""{print $2; exit}' "$TGUSERS_FILE" 2>/dev/null; }
-tg_user_chats() { awk -F'|' -v u="$1" '$2==u{print $1}' "$TGUSERS_FILE" 2>/dev/null; }
+# Каждый чат — один раз: повтор строки (ручная правка, недослитый файл пира)
+# иначе превращался в повтор каждого уведомления (P-154).
+tg_user_chats() { awk -F'|' -v u="$1" '$2==u && !seen[$1]++ {print $1}' "$TGUSERS_FILE" 2>/dev/null; }
 tg_bind() {   # tg_id username
     touch "$TGUSERS_FILE"; chmod 600 "$TGUSERS_FILE" 2>/dev/null
     sed -i "/^${1}|/d" "$TGUSERS_FILE" 2>/dev/null
