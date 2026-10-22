@@ -244,6 +244,20 @@ case "$verb" in
         printf '%s\n' "$out"
         ;;
 
+    demo-promote)  # <user> → sub_url=… (демо становится обычным профилем, ссылка та же)
+        [ $# -eq 1 ] || fail 64 bad_args "demo-promote <user>"
+        valid_user "$1"
+        take_lock
+        demo_promote "$1"; rc=$?
+        case "$rc" in
+            0) ;;
+            2) fail 2 demo_not_found "демо не найдено или уже стёрто" ;;
+            3) fail 3 demo_remote "демо выдано на другой ноде" ;;
+            *) fail 1 promote_failed "не удалось повысить демо" ;;
+        esac
+        printf 'sub_url=%s\n' "$(subscription_url "$1")"
+        ;;
+
     tg-bind)     # <tg_id> <user>
         [ $# -eq 2 ] || fail 64 bad_args "tg-bind <tg_id> <user>"
         valid_tgid "$1"; valid_user "$2"

@@ -96,6 +96,9 @@ ROUTES = [
     # /v1/users/{name}, который на отобранном демо уже 404.
     ("GET", re.compile(r"^/v1/demo/([^/]+)$"), "read", "h_demo_state"),
     ("POST", re.compile(r"^/v1/demo/([^/]+)/refresh$"), "read", "h_demo_state_fresh"),
+    # Оплата с браузера, получившего демо: демо становится обычным профилем,
+    # ключ в приложении не меняется (lib/demo.sh: demo_promote).
+    ("POST", re.compile(r"^/v1/demo/([^/]+)/promote$"), "users", "h_demo_promote"),
     ("POST", re.compile(r"^/v1/users/([^/]+)/free-plan$"), "users", "h_free_plan"),
     # Право на забвение: стирает все следы человека на этом узле. Отдельным
     # scope не гейтится — это разновидность удаления (см. docs/guide/DATA-RETENTION.md).
@@ -555,6 +558,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def h_demo_state_fresh(self, name):
         return self.h_demo_state(name, refresh=True)
+
+    def h_demo_promote(self, name):
+        """Демо → обычный профиль с той же ссылкой и паролем. Кого и когда
+        повышать, решает вызывающий (оплата уже прошла) — менеджер лишь снимает
+        демо-ограничения. Дни начисляет следующий вызов /extend."""
+        user = need_username(name)
+        res = self.dispatch("demo-promote", user)
+        return {"username": user, "subscription_url": res.get("sub_url")}
 
     def h_bind(self):
         tg_id = need_tg_id(self.body.get("tg_id"))

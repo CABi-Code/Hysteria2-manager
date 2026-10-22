@@ -170,9 +170,14 @@ demo_create_local() {
         klimit_apply "$(klimit_down)" "$(klimit_up)" >/dev/null 2>&1 || true
     fi
 
-    demo_write_sub "$user" "$pass"
-
+    # Строка demos.db — ДО подписки: по ней sub_filter_protocols узнаёт демо и
+    # не кладёт ему TUIC.
     demo_set "$user" active "$now" "$expires" "$DEMO_CAP_BYTES" "$(demo_user_bytes "$user")" 0
+
+    # Ключи Xray (VLESS и др.) — сразу в живой процесс, без рестарта: иначе
+    # ключ из подписки не пустит до ближайшего sub_refresh.
+    declare -F proto_sync_xray >/dev/null 2>&1 && proto_sync_xray >/dev/null 2>&1
+    demo_write_sub "$user" "$pass"
 
     printf 'user=%s\n' "$user"
     printf 'sub_url=%s\n' "$(subscription_url "$user")"
@@ -241,8 +246,9 @@ demo_write_sub() {   # user pass
     local user="$1" pass="$2" token
     token=$(sub_token_for "$user") || return 1
     mkdir -p "$WEBROOT/sub"
-    build_user_link "$user" "$pass" "" "" "" "" "$(render_tag "$user")" \
-        | grep '^hysteria2://' | base64 -w0 > "$WEBROOT/sub/$token"
+    { build_user_link "$user" "$pass" "" "" "" "" "$(render_tag "$user")"; echo
+      declare -F proto_user_uris >/dev/null 2>&1 && proto_user_uris "$user" "$pass" "" "$(render_tag "$user")"
+    } | grep -v '^$' | sub_filter_protocols "$user" | base64 -w0 > "$WEBROOT/sub/$token"
     secure_web_files 2>/dev/null || true
 }
 
@@ -316,7 +322,7 @@ demo_tick() {
     # Пустая база — публикуем пустой раздел и выходим: у соседа должно быть
     # видно «демо нет», а не прошлогодний кэш.
     [ -s "$DEMOS_DB" ] || { publish_cluster_demos; return 0; }
-    local now self user state created expires cap base used node bytes spent
+    local now self user state created expires cap base used node bytes spent xray_dirty=0
     now=$(date +%s); self=$(node_host)
 
     while IFS='|' read -r user state created expires cap base used node; do
@@ -340,17 +346,71 @@ demo_tick() {
             spent=$(( bytes - ${base:-0} )); [ "$spent" -lt 0 ] && spent=0
             if [ "$now" -ge "${expires:-0}" ] 2>/dev/null || \
                { [ "${cap:-0}" -gt 0 ] && [ "$spent" -ge "$cap" ]; }; then
-                # Доступ отбираем целиком: демо не продлевают и не включают обратно.
-                cluster_delete_local "$user" >/dev/null 2>&1
+                # Доступ отбираем, но профиль ОТКЛЮЧАЕМ, а не стираем: покупка с
+                # этого браузера в течение DEMO_KEEP_SEC повышает его в платный
+                # (demo_promote) — ключ, уже вставленный в приложение, просто
+                # снова работает. Сам демо не продлевается и обратно не включается.
+                demo_disable "$user"
                 demo_set "$user" expired "$created" "$expires" "$cap" "$base" "$spent"
+                xray_dirty=1
             fi
         elif [ $(( now - ${expires:-0} )) -ge "$DEMO_KEEP_SEC" ] 2>/dev/null; then
+            cluster_delete_local "$user" >/dev/null 2>&1
             demo_remove "$user"
         fi
     done < "$DEMOS_DB"
+
+    # Отобранных — вон из Xray: в отличие от Hysteria, users.db он сам не
+    # перечитывает. Один проход на весь тик, а не на каждого.
+    [ "$xray_dirty" = 1 ] && declare -F proto_sync_xray >/dev/null 2>&1 \
+        && proto_sync_xray >/dev/null 2>&1
 
     # Выкладываем итог тика: состояние на диске уже актуально, значит и в канале
     # оно должно быть актуально — иначе сосед минуту показывал бы живым то, что
     # мы только что отобрали.
     publish_cluster_demos
+}
+
+# Отобрать доступ, сохранив профиль: пароль уходит в DISABLED_FILE (как у
+# disable_user), токен подписки остаётся. Без sub_refresh — он перебирает всех
+# юзеров кластера, а демо локальное; Xray синхронизирует вызывающий.
+# ponytail: rmu не рвёт уже открытые TCP-сессии Xray — начатая по VLESS закачка
+# доживёт до своего закрытия. Демо час и 500 МБ, перерасход — одна сессия;
+# станет важно — рвать по stats-сессиям или рестартом по таймеру.
+demo_disable() {   # user
+    local user="$1" pass
+    pass=$(get_user_password "$user")
+    [ -n "$pass" ] || return 0
+    grep -q "^${user}|" "$DISABLED_FILE" 2>/dev/null || echo "${user}|${pass}" >> "$DISABLED_FILE"
+    db_remove_user "$user"
+    hy_kick_user "$user" &>/dev/null
+}
+
+# Демо → обычный профиль: человек оплатил, и ключ, уже вставленный в
+# приложение, продолжает работать — та же ссылка, тот же пароль. Снимаем всё
+# демо-шное (строку demos.db, скорость, одно устройство), публикуем профиль в
+# кластер и пересобираем подписку целиком: в ней появляются ключи всех нод и
+# всех протоколов, как у любого платного. Дни начисляет следующий шаг (extend).
+# Коды: 0 — повышен; 2 — такого демо нет или профиль уже стёрт (прошло больше
+# DEMO_KEEP_SEC); 3 — демо выдано на другой ноде.
+# ponytail: только локальные демо — DEMO_NODES сейчас пуст. Появятся выдачи на
+# соседях — нужна ручка promote у ноды-владельца, как у demo_create_remote.
+demo_promote() {   # user
+    local user="$1" pass node
+    demo_is "$user" || return 2
+    node=$(demo_field "$user" 8)
+    [ -z "$node" ] || [ "$node" = "$(node_host)" ] || return 3
+    if ! db_user_exists "$user"; then
+        pass=$(get_disabled_password "$user")
+        [ -n "$pass" ] || return 2
+        db_add_user "$user" "$pass"
+        db_user_exists "$user" || return 1
+        sed -i "/^${user}|/d" "$DISABLED_FILE" 2>/dev/null
+    fi
+    demo_remove "$user"
+    set_user_limits "$user" "$DEFAULT_DEVICES" 0 "" 0 >/dev/null 2>&1
+    declare -F cluster_share_user >/dev/null 2>&1 && cluster_share_user "$user" nosync >/dev/null 2>&1
+    write_authlimits >/dev/null 2>&1 || true
+    sub_refresh >/dev/null 2>&1 || true
+    return 0
 }

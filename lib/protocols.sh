@@ -395,13 +395,13 @@ proto_sync_certs() {
 }
 
 # ---------------- Генерация клиентских записей для конфигов ----------------
-# Демо-профили (lib/demo.sh) в доп. протоколы НЕ попадают: демо живёт на одной
-# Hysteria2, чья аутентификация читает users.db на каждом подключении — выдача
-# мгновенна и никого не задевает. Любая правка конфигов Xray/sing-box означала бы
-# их РЕСТАРТ на каждое нажатие гостевой кнопки (рвутся живые сессии платящих),
-# а TUIC демо противопоказан и сам по себе — там нет пер-юзерного учёта трафика,
-# то есть квоту не проверить.
-_proto_skip_user() { declare -F demo_is >/dev/null 2>&1 && demo_is "$1"; }
+# Демо-профили (lib/demo.sh) живут в Xray наравне со всеми: юзеры в нём меняются
+# на лету (_proto_xray_hot_apply, без рестарта), трафик считается statsquery, а
+# скорость режет общий пер-IP шейпер по портам всех протоколов. Hysteria не
+# пробивает часть сетей — демо на одной Hysteria там бесполезно.
+# В TUIC демо НЕ попадает: sing-box правится только рестартом, и у TUIC нет
+# пер-юзерного учёта трафика — квоту демо не проверить.
+_proto_skip_tuic_user() { declare -F demo_is >/dev/null 2>&1 && demo_is "$1"; }
 # VLESS-клиенты Xray: [{ "id":UUID, "email":user, "flow":<flow> }, ...]
 # Vision требует raw-TCP инбаунд (network:tcp) — с XHTTP/WS flow невалиден и Xray
 # отвергнет клиента, поэтому flow приходит аргументом: "xtls-rprx-vision" для
@@ -410,7 +410,6 @@ _proto_xray_vless_clients() {   # [flow]
     local flow="${1-xtls-rprx-vision}" u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
-        _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"id":"%s","email":"%s","flow":"%s"}' "$(proto_uuid "$u" "$p")" "$u" "$flow"
         first=0
@@ -421,7 +420,6 @@ _proto_xray_ss_clients() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
-        _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"password":"%s","email":"%s"}' "$(proto_upsk "$u" "$p")" "$u"
         first=0
@@ -433,7 +431,6 @@ _proto_xray_trojan_clients() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
-        _proto_skip_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"password":"%s","email":"%s"}' "$(proto_uuid "$u" "$p")" "$u"
         first=0
@@ -444,7 +441,7 @@ _proto_singbox_tuic_users() {
     local u p first=1
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
-        _proto_skip_user "$u" && continue
+        _proto_skip_tuic_user "$u" && continue
         [ "$first" = 1 ] || printf ','
         printf '{"name":"%s","uuid":"%s","password":"%s"}' "$u" "$(proto_uuid "$u" "$p")" "$p"
         first=0
@@ -735,7 +732,6 @@ _proto_xray_desired_users() {
     local u p
     while IFS=: read -r u p; do
         [ -n "$u" ] || continue
-        _proto_skip_user "$u" && continue
         printf '%s\t%s\t%s\n' "$u" "$(proto_uuid "$u" "$p")" "$(proto_upsk "$u" "$p")"
     done < "$USERS_DB" | LC_ALL=C sort
 }
@@ -820,17 +816,23 @@ _proto_xray_hot_apply() {
     return 0
 }
 
+# Только Xray: состав юзеров из users.db → конфиг → живой процесс (без рестарта,
+# если менялись одни юзеры). Отдельно от sing-box ради демо: выдача и отбор демо
+# зовут её на каждое нажатие, а TUIC демо не касается (см. _proto_skip_tuic_user).
+proto_sync_xray() {
+    proto_xray_needed || return 0
+    proto_write_xray_config
+    if ! _proto_xray_hot_apply; then
+        _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
+        _proto_xray_save_state
+    fi
+}
+
 # Пересобрать конфиги из users.db и применить. Вызывается из sub_refresh.
 proto_sync_users() {
     rublock_hysteria_apply   # Hysteria не в proto_any_enabled: её acl правим всегда
     proto_any_enabled || return 0
-    if proto_xray_needed; then
-        proto_write_xray_config
-        if ! _proto_xray_hot_apply; then
-            _proto_apply_service "$XRAY_SERVICE" "$XRAY_CONFIG" "$XRAY_APPLIED_HASH"
-            _proto_xray_save_state
-        fi
-    fi
+    proto_sync_xray
     if proto_tuic_enabled; then
         proto_write_singbox_config
         proto_tuic_apply       # рестарт с отсрочкой: не рвём чужие сессии из-за одного юзера
