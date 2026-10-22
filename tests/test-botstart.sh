@@ -50,6 +50,15 @@ bot_miniapp_start 111 222 "" "" "" && bad "ok:false должен давать 1"
 CURL_REPLY=''
 bot_miniapp_start 111 222 "" "" "" && bad "пустой ответ должен давать 1" || ok "нет ответа → фолбэк на меню"
 
+echo "── чей /start-параметр: надстройки или код привязки"
+for p in ref_ABCD1234 wl_42 own_Abc123xyz sub_abcdefghijklmnopqrstuvwxyz0123456789ABCD \
+         tariffs balance subscription mydevices buydevice; do
+    bot_start_param_for_miniapp "$p" && ok "$p → надстройке" || bad "$p ушёл бы в поиск кода привязки"
+done
+for p in a1b2c3d4 unknownscreen; do
+    bot_start_param_for_miniapp "$p" && bad "$p не должен уходить надстройке" || ok "$p → код привязки"
+done
+
 echo
 [ "$FAIL" -eq 0 ] && echo "ВСЁ ЗЕЛЁНОЕ" || echo "ЕСТЬ ПАДЕНИЯ"
 exit "$FAIL"
