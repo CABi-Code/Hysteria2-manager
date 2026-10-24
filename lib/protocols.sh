@@ -115,6 +115,19 @@ proto_spx()        { local v; v=$(proto_get PROTO_SPX);        echo "${v:-/}"; }
 proto_xhttp_mode() { local v; v=$(proto_get PROTO_XHTTP_MODE); echo "${v:-stream-one}"; }
 # TUIC: контроль перегрузки (bbr / cubic / new_reno), режим UDP (native / quic),
 # ALPN. На потерях bbr обычно лучше, но не всегда — потому и настройка.
+# TCP keepalive на входах Xray. Без него сервер никогда не узнаёт, что клиент
+# исчез молча (сменил сеть, CGNAT, ТСПУ «заморозил» соединение и съел FIN/RST):
+# сокет висит ESTABLISHED до рестарта Xray. На ноде за 26 дней набралось ~2200
+# таких на двух портах — 7,6 тыс. дескрипторов и четверть гигабайта памяти
+# (P-158). Первая проба после PROTO_TCP_KA_IDLE секунд тишины, дальше каждые
+# PROTO_TCP_KA_INTERVAL; ядро рвёт соединение после 9 неотвеченных проб.
+# Живому клиенту пробы ничего не стоят: на них отвечает его ядро, не приложение.
+proto_tcp_ka_idle()     { local v; v=$(proto_get PROTO_TCP_KA_IDLE);     echo "${v:-300}"; }
+proto_tcp_ka_interval() { local v; v=$(proto_get PROTO_TCP_KA_INTERVAL); echo "${v:-30}"; }
+_proto_sockopt() {
+    printf '"sockopt":{"tcpKeepAliveIdle":%s,"tcpKeepAliveInterval":%s}' \
+        "$(proto_tcp_ka_idle)" "$(proto_tcp_ka_interval)"
+}
 proto_tuic_cc()    { local v; v=$(proto_get PROTO_TUIC_CC);    echo "${v:-bbr}"; }
 proto_tuic_urm()   { local v; v=$(proto_get PROTO_TUIC_URM);   echo "${v:-native}"; }
 proto_tuic_alpn()  { local v; v=$(proto_get PROTO_TUIC_ALPN);  echo "${v:-h3}"; }
@@ -458,9 +471,10 @@ proto_write_xray_config() {
         # Vision splice'ит uplink напрямую в TCP → без отдельного стрима выгрузки
         # (как было у XHTTP, где upload шёл POST'ом и мог вставать в 0). Это и
         # самый совместимый (Happ/Hiddify/v2rayNG) и самый устойчивый к DPI РФ.
-        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]},%s},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
             "$(proto_vless_port)" "$(_proto_xray_vless_clients)" "$(proto_reality_dest)" \
-            "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)")
+            "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)" \
+            "$(_proto_sockopt)")
         comma=","
     fi
     if proto_vlessx_enabled; then
@@ -472,24 +486,24 @@ proto_write_xray_config() {
         # mode:auto — сервер принимает любой из packet-up/stream-up/stream-one,
         # режим выбирает клиент; в ссылку кладём stream-one (см. proto_build_vlessx).
         inbounds+="${comma}"
-        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-xhttp-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]},"xhttpSettings":{"path":"%s","mode":"auto"}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"vless","tag":"vless-xhttp-in","settings":{"clients":[%s],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"reality","realitySettings":{"show":false,"dest":"%s","xver":0,"serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]},"xhttpSettings":{"path":"%s","mode":"auto"},%s},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
             "$(proto_vlessx_port)" "$(_proto_xray_vless_clients '')" "$(proto_reality_dest)" \
             "$(proto_reality_sni)" "$(proto_reality_privkey)" "$(proto_reality_shortid)" \
-            "$(proto_xhttp_path)")
+            "$(proto_xhttp_path)" "$(_proto_sockopt)")
         comma=","
     fi
     if proto_ss_enabled; then
         inbounds+="${comma}"
-        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"shadowsocks","tag":"ss-in","settings":{"method":"%s","password":"%s","clients":[%s],"network":"tcp,udp"}}' \
-            "$(proto_ss_port)" "$(proto_ss_method)" "$(proto_ipsk)" "$(_proto_xray_ss_clients)")
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"shadowsocks","tag":"ss-in","settings":{"method":"%s","password":"%s","clients":[%s],"network":"tcp,udp"},"streamSettings":{%s}}' \
+            "$(proto_ss_port)" "$(proto_ss_method)" "$(proto_ipsk)" "$(_proto_xray_ss_clients)" "$(_proto_sockopt)")
         comma=","
     fi
     if proto_trojan_enabled; then
         # TLS на том же самоподписанном серте, что и TUIC (клиент идёт с allowInsecure=1).
         proto_gen_tuic_cert || return 1
         inbounds+="${comma}"
-        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"trojan","tag":"trojan-in","settings":{"clients":[%s]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"certificates":[{"certificateFile":"%s","keyFile":"%s"}]},"wsSettings":{"path":"%s"}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
-            "$(proto_trojan_port)" "$(_proto_xray_trojan_clients)" "$TUIC_CRT" "$TUIC_KEY" "$(proto_trojan_ws_path)")
+        inbounds+=$(printf '{"listen":"0.0.0.0","port":%s,"protocol":"trojan","tag":"trojan-in","settings":{"clients":[%s]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"certificates":[{"certificateFile":"%s","keyFile":"%s"}]},"wsSettings":{"path":"%s"},%s},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"]}}' \
+            "$(proto_trojan_port)" "$(_proto_xray_trojan_clients)" "$TUIC_CRT" "$TUIC_KEY" "$(proto_trojan_ws_path)" "$(_proto_sockopt)")
         comma=","
     fi
     # Локальный gRPC API для статистики и hot-add (только 127.0.0.1).

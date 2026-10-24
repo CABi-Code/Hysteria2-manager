@@ -131,9 +131,10 @@
 | [P-135](OPS.md#p-135) | Секрет кластера читался любым локальным процессом (Caddyfile 0644) | `lib/caddy.sh` | [ops](OPS.md) | ✅ |
 | [P-136](PROTOCOLS.md#p-136) | `bind` уводил Caddy с loopback, а dest REALITY на него смотрит | `lib/caddy.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-153](OPS.md#p-153) | Напоминание об истечении приходило дважды: таймаут лички и соседние ноды | `lib/notify.sh` | [ops](OPS.md) | ✅ |
+| [P-158](OPS.md#p-158) | Xray копил мёртвые соединения неделями: нет TCP keepalive на входах | `lib/protocols.sh` | [ops](OPS.md) | ✅ |
 | [P-154](OPS.md#p-154) | `/start sub_…` не доходил до надстройки — «код неверен» | `lib/tgbot_daemon.sh` | [ops](OPS.md) | ✅ |
 
-Следующий свободный номер — **P-158**.
+Следующий свободный номер — **P-159**.
 
 Номера **P-74** и **P-75** выданы задним числом: обе линии — `main` и
 `integration-multiprotocol` — независимо заняли `P-52` и `P-53` под разные
