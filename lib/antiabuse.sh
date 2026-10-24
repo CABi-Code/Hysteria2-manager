@@ -59,6 +59,43 @@ cluster_active_node_count() {   # user -> число
     echo $(( la + peers ))
 }
 
+# Сколько РАЗНЫХ устройств сейчас гонят трафик юзера — по адресам, а не по
+# нодам: одно устройство, идущее через несколько нод с одного адреса, — одно.
+# Без этого жёсткая проверка и анти-абуз считали иначе, чем счётчик устройств
+# (cluster_user_connections, P-45): клиент с одним телефоном, у которого трафик
+# шёл через две-три ноды сразу (Happ так делает), получал балл «шаринга»,
+# авто-жёсткую проверку и кик каждые несколько минут — «то TLS-ошибка, то не
+# работает вовсе» (P-159). Правило «устройство = адрес» то же, что у лимита
+# устройств: семья за одним роутером — одно устройство и там, и здесь.
+# Нода без адресов в stats (старая версия) даёт синтетические токены, то есть
+# считается отдельным устройством, как раньше. Больше числа активных нод не
+# бывает.
+cluster_active_device_count() {   # user -> число
+    local user="$1" nodes f name csv n
+    nodes=$(cluster_active_node_count "$user")
+    [ "${nodes:-0}" -gt 1 ] 2>/dev/null || { echo "${nodes:-0}"; return; }
+    n=$(
+        {
+            if [ "$(get_user_active "$user")" = "1" ]; then
+                _online_tokens self 1 "$(get_user_online_ips "$user" 2>/dev/null | paste -sd, -)"
+            fi
+            if [ -d "$PEERS_DIR" ]; then
+                for f in "$PEERS_DIR"/*.stats; do
+                    [ -f "$f" ] || continue
+                    name=$(basename "$f" .stats)
+                    csv=$(awk -F'\t' -v u="$user" 'NF>=7 && $1==u && $7==1{print (NF>=9?$9:"-"); exit}' "$f" 2>/dev/null)
+                    [ -n "$csv" ] || continue
+                    [ "$csv" = "-" ] && csv=""
+                    _online_tokens "$name" 1 "$csv"
+                done
+            fi
+        } | _online_count_tokens
+    )
+    [[ "$n" =~ ^[0-9]+$ ]] || n=$nodes
+    [ "$n" -gt "$nodes" ] && n=$nodes
+    echo "$n"
+}
+
 # ---- Ежеминутное НАБЛЮДЕНИЕ (вызывается из cluster_online_sync) ----
 # Для каждого активного юзера смотрим, на скольких нодах он СЕЙЧАС активен по
 # трафику. Если больше эффективного лимита устройств (pool_cap) — минута
@@ -66,7 +103,7 @@ cluster_active_node_count() {   # user -> число
 # Ничего не кикаем — только накапливаем наблюдения часа в ABUSE_OBS_FILE.
 abuse_observe() {
     sub_enabled || return 0
-    local now user cap cn conn line viol samples esum pa pconn
+    local now user cap cn dev conn line viol samples esum pa pconn
     now=$(date +%s)
     local tmp="${ABUSE_OBS_FILE}.tmp.$BASHPID"; : > "$tmp"
     while IFS= read -r user; do
@@ -85,8 +122,10 @@ abuse_observe() {
         samples=$(( samples + 1 ))
         [ "$cn" -gt "$pa" ] 2>/dev/null && pa=$cn
         [ "$conn" -gt "$pconn" ] 2>/dev/null && pconn=$conn
-        if [ "$cap" -gt 0 ] && [ "$cn" -gt "$cap" ] 2>/dev/null; then
-            viol=$(( viol + 1 )); esum=$(( esum + (cn - cap) ))
+        # Нарушение — больше УСТРОЙСТВ, чем разрешено, а не больше нод (P-159).
+        dev=$(cluster_active_device_count "$user")
+        if [ "$cap" -gt 0 ] && [ "$dev" -gt "$cap" ] 2>/dev/null; then
+            viol=$(( viol + 1 )); esum=$(( esum + (dev - cap) ))
         fi
         printf '%s|%s|%s|%s|%s|%s\n' "$user" "$viol" "$samples" "$esum" "$pa" "$pconn" >> "$tmp"
     done < <(get_active_users)
