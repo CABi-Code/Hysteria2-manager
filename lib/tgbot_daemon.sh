@@ -262,7 +262,11 @@ ${tl:-нет тарифов}
                 tariffs|balance|subscription|mydevices|buydevice) _screen=1 ;;
                 *) _screen=0 ;;
             esac
+            # sub_/own_ — привязка Telegram к доступу, купленному без него:
+            # её решает надстройка. Без этой строки параметр падал в поиск
+            # кода привязки, и человек получал «код неверен» (P-154).
             if [ "${code#ref_}" != "$code" ] || [ "${code#wl_}" != "$code" ] \
+               || [ "${code#sub_}" != "$code" ] || [ "${code#own_}" != "$code" ] \
                || [ "$_screen" = 1 ]; then
                 bot_miniapp_start "$chat" "$from" "$code" "$(echo "$upd" | jq -r '.message.from.username // empty')" \
                     "$(echo "$upd" | jq -r '.message.from.first_name // empty')" \

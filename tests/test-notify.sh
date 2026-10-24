@@ -20,11 +20,18 @@ fail() { echo "❌ $1"; exit 1; }
 # Заглушки Telegram: считаем реальные отправки в личку. Как и bot_enabled, они
 # живут в lib/tgbot.sh, который тут не сорсится, — включая проверку модуля
 # notify (см. docs/design/SALES/README.md); здесь модуль всегда включён.
-SENDS=0; CHAN=0; DM_OK=0; LAST_TEXT=''
+SENDS=0; CHAN=0; DM_OK=0; LAST_TEXT=''; RUNNING=0
+# DM_RESP — что «ответил» Telegram на отказ: отказ ("ok":false) или пустота (таймаут).
+DM_RESP='{"ok":false,"error_code":403}'
 bot_mod_on()    { return 0; }
 bot_enabled()   { return 0; }
+bot_running()   { return "$RUNNING"; }
 bot_token()     { printf 'TESTTOKEN'; }
-tg_send()       { SENDS=$((SENDS+1)); LAST_TEXT="$2"; return "$DM_OK"; }
+tg_send()       {
+    SENDS=$((SENDS+1)); LAST_TEXT="$2"
+    if [ "$DM_OK" -eq 0 ]; then TG_LAST_RESP='{"ok":true}'; else TG_LAST_RESP="$DM_RESP"; fi
+    return "$DM_OK"
+}
 chandm_send()   { CHAN=$((CHAN+1)); }
 tg_user_chats() { printf '555\n'; }
 bot_username()  { printf 'testbot'; }
@@ -68,7 +75,22 @@ bot_notify_sweep
 SENDS=0; CHAN=0; DM_OK=1
 bot_notify_sweep
 [ "$CHAN" -eq 1 ] || fail "личка отказала — обязан быть один заход в канал, было $CHAN"
-DM_OK=0
+
+# --- ответ Telegram потерялся (таймаут): сообщение скорее всего дошло, копии
+# в канал быть не должно — иначе человек получает напоминание дважды (P-153) ---
+: > "$NOTIFY_STATE_FILE"
+SENDS=0; CHAN=0; DM_RESP=''
+bot_notify_sweep
+[ "$SENDS" -eq 1 ] && [ "$CHAN" -eq 0 ] || fail "таймаут лички не повод слать копию в канал (личка=$SENDS, канал=$CHAN)"
+DM_OK=0; DM_RESP='{"ok":false,"error_code":403}'
+
+# --- демон бота на этой ноде не запущен: напоминания шлёт другая нода, эта
+# молчит — иначе каждая нода кластера слала бы своё (P-153) ---
+: > "$NOTIFY_STATE_FILE"
+SENDS=0; RUNNING=1
+bot_notify_sweep
+[ "$SENDS" -eq 0 ] || fail "без запущенного бота нода не шлёт напоминаний, а слала $SENDS"
+RUNNING=0
 
 # --- остаток словами порога, без «23ч 59м» ---
 [[ "$LAST_TEXT" == *"24 часа"* ]] || fail "остаток должен писаться как «24 часа», а текст: $LAST_TEXT"

@@ -77,7 +77,12 @@ notify_user() {   # user  html_text  [kb_json]  [channel_cta_html]
     BOT_TOKEN=${BOT_TOKEN:-$(bot_token)}; [ -n "$BOT_TOKEN" ] || return 0
     for c in $(tg_user_chats "$user"); do
         [ -n "$c" ] || continue
-        tg_send "$c" "$text" "$kb" || chandm_send "$c" "$text" "$cta"
+        # В директ канала — только при ЯВНОМ отказе лички ("ok":false). Пустой
+        # ответ (таймаут) почти всегда значит «доставлено, ответ потерялся», и
+        # копия в канал приходила вторым сообщением (P-153, тот же класс, что P-102).
+        if ! tg_send "$c" "$text" "$kb" && [[ "$TG_LAST_RESP" == *'"ok":false'* ]]; then
+            chandm_send "$c" "$text" "$cta"
+        fi
         delivered=$(( delivered + 1 ))
     done
     # Ни одного чата — уведомление не «тихо прошло», оно потеряно: у человека
@@ -471,6 +476,12 @@ notify_foreign_devices() {
 # Гонять из cron часто (каждые ~5 мин), иначе поймать 10мин/1ч нельзя.
 bot_notify_sweep() {
     bot_enabled || return 0
+    # Сроки и привязки Telegram приезжают на каждую ноду кластера, и крон
+    # sweep стоит на каждой. Ноды, где лежит токен того же бота, слали бы
+    # одно напоминание каждая — человек получал его дважды-трижды (P-153).
+    # Шлёт только нода, где демон бота реально запущен: двух живых демонов на
+    # один токен не бывает — getUpdates второго Telegram отвергает (409).
+    bot_running || return 0
     BOT_TOKEN=$(bot_token); [ -n "$BOT_TOKEN" ] || return 0
     [ -f "$EXPIRY_FILE" ] || return 0
     touch "$NOTIFY_STATE_FILE"
