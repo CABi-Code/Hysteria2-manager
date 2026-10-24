@@ -157,6 +157,8 @@ PROTO_TUIC_PORT|proto_tuic_port|TUIC v5 — порт (UDP)|port|
 PROTO_TUIC_CC|proto_tuic_cc|TUIC — контроль перегрузки|choice:bbr,cubic,new_reno|на потерях обычно bbr
 PROTO_TUIC_URM|proto_tuic_urm|TUIC — режим UDP|choice:native,quic|
 PROTO_TUIC_ALPN|proto_tuic_alpn|TUIC — ALPN|text|обычно h3
+PROTO_TCP_KA_IDLE|proto_tcp_ka_idle|Xray — keepalive после тишины, с|secs|мёртвые соединения не копятся (P-158)
+PROTO_TCP_KA_INTERVAL|proto_tcp_ka_interval|Xray — интервал проб keepalive, с|secs|разрыв после 9 неотвеченных
 TBL
 }
 
@@ -178,6 +180,9 @@ _proto_param_valid() {   # тип значение
         path)
             [ "${2:0:1}" = "/" ] && return 0
             echo "  ❌ Путь начинается со «/»." ;;
+        secs)
+            [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -ge 10 ] && [ "$2" -le 86400 ] && return 0
+            echo "  ❌ Секунды — число 10..86400." ;;
         choice:*)
             # Разбор по ЗАПЯТОЙ, а не словами: варианты хранятся как в таблице,
             # чтобы список в подсказке и список в проверке были одной строкой.

@@ -75,6 +75,8 @@ PROTO_SPX=/                      # spiderX REALITY
 PROTO_TUIC_CC=bbr                # контроль перегрузки TUIC
 PROTO_TUIC_URM=native            # режим UDP TUIC
 PROTO_TUIC_ALPN=h3               # ALPN TUIC
+PROTO_TCP_KA_IDLE=300            # TCP keepalive входов Xray: первая проба после тишины, с
+PROTO_TCP_KA_INTERVAL=30         # интервал проб; разрыв после 9 неотвеченных (P-158)
 ```
 
 Все они правятся в TUI: Протоколы → Параметры. Список там **табличный**
