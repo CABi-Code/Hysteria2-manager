@@ -224,7 +224,7 @@ freeplan_tick() {
     free_enabled || return 0
     [ -s "$FREEPLAN_FILE" ] || return 0
     local now wk_lim mo_lim user state start wks wkb mos mob notif ts
-    local bytes wk_used mo_used wk_new mo_new left changed
+    local bytes wk_used mo_used wk_new mo_new left changed rolled
     now=$(date +%s)
     wk_lim=$(free_wk_limit); mo_lim=$(free_mo_limit)
 
@@ -251,13 +251,13 @@ freeplan_tick() {
         fi
 
         bytes=$(freeplan_user_bytes "$user")
-        changed=0
+        changed=0; rolled=0
 
         # Прокрутка окон: новое окно — новая база (расход обнуляется).
         wk_new=$(freeplan_window_start "$wks" "$FREE_WEEK_SEC" "$now")
         mo_new=$(freeplan_window_start "$mos" "$FREE_MONTH_SEC" "$now")
-        if [ "$wk_new" != "$wks" ]; then wks=$wk_new; wkb=$bytes; changed=1; fi
-        if [ "$mo_new" != "$mos" ]; then mos=$mo_new; mob=$bytes; changed=1; fi
+        if [ "$wk_new" != "$wks" ]; then wks=$wk_new; wkb=$bytes; changed=1; rolled=1; fi
+        if [ "$mo_new" != "$mos" ]; then mos=$mo_new; mob=$bytes; changed=1; rolled=1; fi
 
         wk_used=$(( bytes - ${wkb:-0} )); [ "$wk_used" -lt 0 ] && wk_used=0
         mo_used=$(( bytes - ${mob:-0} )); [ "$mo_used" -lt 0 ] && mo_used=0
@@ -294,15 +294,22 @@ freeplan_tick() {
                 state=blocked; notif=4; changed=1
             fi
         else
-            # Есть остаток: если были заблокированы — окно прокрутилось, впускаем.
-            if [ "$state" = "blocked" ]; then
+            # Есть остаток: если были заблокированы — впускаем, но ТОЛЬКО когда
+            # окно действительно прокрутилось. Остаток без прокрутки значит
+            # одно: эта нода видит меньше байт, чем та, что заблокировала
+            # (статистика соседа приезжает с опозданием до 30 минут). Раньше
+            # такая нода впускала обратно, та снова блокировала, состояние
+            # переезжало между нодами по LWW, и человек каждые несколько минут
+            # получал «доступ снова работает» и «трафик закончился» (P-160).
+            if [ "$state" = "blocked" ] && [ "$rolled" = 1 ]; then
                 is_user_disabled "$user" && enable_user "$user" >/dev/null 2>&1
                 declare -F cstate_mark >/dev/null 2>&1 && cstate_mark "$user" active
                 declare -F bot_notify_free_reset >/dev/null 2>&1 && bot_notify_free_reset "$user" "$left"
                 state=active; notif=0; changed=1
             fi
             # Пороги «осталось немного»: 1 ГБ → 500 МБ → 50 МБ, по одному разу.
-            if [ "$has" = 1 ]; then
+            # Заблокированному (остаток виден только отстающей ноде) — молчим.
+            if [ "$has" = 1 ] && [ "$state" != "blocked" ]; then
                 local step=0
                 [ "$left" -le $((1024*1024*1024)) ] && step=1
                 [ "$left" -le $((500*1024*1024)) ] && step=2
