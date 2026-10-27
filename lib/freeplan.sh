@@ -402,6 +402,7 @@ freeplan_notify_sync() {
     k="${FREEPLAN_NOTIFIED_FILE}.tmp.$BASHPID"
     awk -F'|' 'NR==FNR { on[$1]=1; next } ($1 in on)' "$FREEPLAN_FILE" "$FREEPLAN_NOTIFIED_FILE" > "$k" 2>/dev/null \
         && mv "$k" "$FREEPLAN_NOTIFIED_FILE" || rm -f "$k"
+    chmod 600 "$FREEPLAN_NOTIFIED_FILE" 2>/dev/null   # mv принёс права временного файла
 }
 
 # Наружу состояние отдаёт Web API: он и так читает stats/peers для traffic,
