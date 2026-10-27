@@ -72,9 +72,14 @@ _online_hysteria_ip_lines() {   # json {user: conns}
     while IFS='|' read -r user n; do
         [ -n "$user" ] || continue
         [ "${n:-0}" -gt 0 ] 2>/dev/null || continue
+        # Последние n ЗАПИСЕЙ, а не n последних РАЗНЫХ адресов. Раньше поиск
+        # «ещё одного разного» уходил в историю: телефон с двумя QUIC-сессиями
+        # с одного адреса подтягивал вчерашний мобильный адрес как второе
+        # устройство, и юзера на лимите 1 выбивало по всему кластеру (P-163).
+        # Недосчёт здесь безопаснее пересчёта: лишний кик рвёт платящего.
         ips=$(awk -F'|' -v u="$user" -v lim="$n" '
                 $1==u && $2!="" { a[++total]=$2 }
-                END { for (i=total; i>0 && k<lim; i--) if (!s[a[i]]++) { print u "|" a[i]; k++ } }
+                END { for (i=total; i>0 && i>total-lim; i--) if (!s[a[i]]++) print u "|" a[i] }
               ' "$AUTHMAP_FILE" 2>/dev/null)
         [ -n "$ips" ] && echo "$ips" || printf '%s|?\n' "$user"
     done < <(echo "$1" | jq -r '
