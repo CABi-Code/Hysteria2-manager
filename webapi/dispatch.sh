@@ -258,13 +258,16 @@ case "$verb" in
         printf 'sub_url=%s\n' "$(subscription_url "$1")"
         ;;
 
-    tg-bind)     # <tg_id> <user>
-        [ $# -eq 2 ] || fail 64 bad_args "tg-bind <tg_id> <user>"
+    tg-bind)     # <tg_id> <user> [replace]
+        # replace — перенести привязку с другого профиля этого же человека
+        # (потребитель объединил два его доступа в один). Без флага чужую
+        # привязку не трогаем: молча переписать её значит угнать уведомления.
+        [ $# -ge 2 ] && [ $# -le 3 ] || fail 64 bad_args "tg-bind <tg_id> <user> [replace]"
         valid_tgid "$1"; valid_user "$2"
         db_user_exists "$2" || is_user_disabled "$2" || fail 2 user_not_found "пользователь не найден"
         take_lock
         existing=$(tg_bound_user "$1" || true)
-        if [ -n "$existing" ] && [ "$existing" != "$2" ]; then
+        if [ -n "$existing" ] && [ "$existing" != "$2" ] && [ "${3:-}" != replace ]; then
             fail 3 already_bound "tg_id уже привязан к другому пользователю"
         fi
         tg_bind "$1" "$2" >/dev/null 2>&1

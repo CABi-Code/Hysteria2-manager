@@ -570,7 +570,10 @@ class Handler(BaseHTTPRequestHandler):
     def h_bind(self):
         tg_id = need_tg_id(self.body.get("tg_id"))
         user = need_username(self.body.get("username"))
-        self.dispatch("tg-bind", tg_id, user)
+        # replace: true — перенести привязку с другого профиля (объединение
+        # доступов одного человека). Без него 409 already_bound, как раньше.
+        args = [tg_id, user] + (["replace"] if self.body.get("replace") is True else [])
+        self.dispatch("tg-bind", *args)
         return {"tg_id": tg_id, "username": user, "bound": True}
 
     def h_redeem(self):

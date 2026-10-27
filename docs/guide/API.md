@@ -595,10 +595,14 @@ curl -X POST -H "$H" -H 'Content-Type: application/json' \
 ### POST /v1/telegram/bind — привязать Telegram (scope: telegram)
 
 `409 already_bound`, если `tg_id` уже привязан к другому пользователю.
+`"replace": true` переносит привязку с того пользователя на этого — для
+потребителя, который объединил два доступа одного человека в один. Без флага
+чужая привязка не трогается никогда.
 
 ```bash
 curl -X POST -H "$H" -H 'Content-Type: application/json' \
      -d '{"tg_id":"123456789","username":"alice"}' "$BASE/v1/telegram/bind"
+# перенос: -d '{"tg_id":"123456789","username":"alice","replace":true}'
 ```
 
 ### POST /v1/codes/redeem — погасить код привязки (scope: telegram)
