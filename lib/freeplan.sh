@@ -107,9 +107,10 @@ freeplan_enter() {   # user [quiet]
     freeplan_has "$1" && return 0          # уже на free — идемпотентно
     freeplan_set "$1" pending 0 0 0 0 0 0
     # quiet — юзер включил тариф сам кнопкой в кабинете: он видит результат на
-    # экране, а «платный доступ закончился» в такой момент прямая ложь.
-    [ "${2:-}" = quiet ] && return 0
-    declare -F bot_notify_free_entered >/dev/null 2>&1 && bot_notify_free_entered "$1"
+    # экране, а «платный доступ закончился» в такой момент прямая ложь. Отметка
+    # в журнале — чтобы и freeplan_notify_sync не прислал это позже.
+    [ "${2:-}" = quiet ] && { _freeplan_mark "$1" entered; return 0; }
+    freeplan_notify_sync
 }
 
 # Подключить бесплатный тариф ПО ЖЕЛАНИЮ (кнопка в кабинете), а не по истечении
@@ -278,19 +279,6 @@ freeplan_tick() {
             if [ "$state" != "blocked" ]; then
                 disable_user "$user" silent >/dev/null 2>&1
                 declare -F cstate_mark >/dev/null 2>&1 && cstate_mark "$user" disabled
-                # Когда доступ вернётся: сброс ТОГО окна, которое выбрано.
-                # Выбраны оба — ждать позднего из них (пока не освободятся оба
-                # лимита, юзер всё равно заблокирован). Раньше здесь всегда
-                # стоял недельный сброс, и выбравшему месячную квоту бот
-                # обещал доступ на три недели раньше, чем он появлялся.
-                local reset=0 mreset
-                [ "$wk_lim" -gt 0 ] && [ "$wk_used" -ge "$wk_lim" ] && reset=$(( wks + FREE_WEEK_SEC ))
-                if [ "$mo_lim" -gt 0 ] && [ "$mo_used" -ge "$mo_lim" ]; then
-                    mreset=$(( mos + FREE_MONTH_SEC ))
-                    [ "$mreset" -gt "$reset" ] && reset=$mreset
-                fi
-                [ "$reset" -gt 0 ] || reset=$(( wks + FREE_WEEK_SEC ))
-                declare -F bot_notify_free_blocked >/dev/null 2>&1 && bot_notify_free_blocked "$user" "$reset"
                 state=blocked; notif=4; changed=1
             fi
         else
@@ -304,7 +292,6 @@ freeplan_tick() {
             if [ "$state" = "blocked" ] && [ "$rolled" = 1 ]; then
                 is_user_disabled "$user" && enable_user "$user" >/dev/null 2>&1
                 declare -F cstate_mark >/dev/null 2>&1 && cstate_mark "$user" active
-                declare -F bot_notify_free_reset >/dev/null 2>&1 && bot_notify_free_reset "$user" "$left"
                 state=active; notif=0; changed=1
             fi
             # Пороги «осталось немного»: 1 ГБ → 500 МБ → 50 МБ, по одному разу.
@@ -315,7 +302,6 @@ freeplan_tick() {
                 [ "$left" -le $((500*1024*1024)) ] && step=2
                 [ "$left" -le $((50*1024*1024)) ] && step=3
                 if [ "$step" -gt "${notif:-0}" ] 2>/dev/null; then
-                    declare -F bot_notify_free_low >/dev/null 2>&1 && bot_notify_free_low "$user" "$left"
                     notif=$step; changed=1
                 fi
             fi
@@ -323,6 +309,99 @@ freeplan_tick() {
 
         [ "$changed" = 1 ] && freeplan_set "$user" "$state" "$start" "$wks" "$wkb" "$mos" "$mob" "$notif"
     done < "$FREEPLAN_FILE"
+    freeplan_notify_sync
+}
+
+# ---------- уведомления: из состояния, один раз, одной нодой ----------
+# Состояние бесплатного тарифа кластерное (LWW), а переход в нём делает та
+# нода, что посчитала первой. Слать сообщение из самого перехода значило:
+# нода без бота его теряла, а каждая нода с токеном того же бота — дублировала,
+# и любая качель состояния превращалась в поток сообщений (P-160, P-162).
+# Поэтому переходы молчат, а сообщения выводит из СОСТОЯНИЯ нода с запущенным
+# демоном бота (двух живых на один токен не бывает) — по своему журналу
+# отправленного: событие уходит один раз на окно квоты, как бы ни качалось.
+#   entered             — перевод на бесплатный (раз за пребывание на нём);
+#   blocked:<wk>:<mo>   — квота выбрана в этих окнах;
+#   reset:<wk>:<mo>     — доступ вернулся в новых окнах (только после blocked);
+#   low<N>:<wk>:<mo>    — порог «осталось немного» N в этих окнах.
+# Журнал локальный: его читатель — только эта нода. Ушёл юзер с тарифа —
+# строки уходят, следующий заход начнётся с «entered».
+FREEPLAN_NOTIFIED_FILE="${FREEPLAN_NOTIFIED_FILE:-$DATA_DIR/freeplan_notified.dat}"
+
+_freeplan_marked() { grep -qxF "$1|$2" "$FREEPLAN_NOTIFIED_FILE" 2>/dev/null; }
+_freeplan_mark()   { _freeplan_marked "$1" "$2" || printf '%s|%s\n' "$1" "$2" >> "$FREEPLAN_NOTIFIED_FILE"; }
+
+# Остаток до ближайшего лимита и момент возврата доступа — те же правила, что
+# у freeplan_tick. Печатает «left reset_ts».
+_freeplan_left_reset() {   # user wks wkb mos mob
+    local bytes wk_lim mo_lim wk_used mo_used left=0 has=0 reset=0 mreset l2
+    bytes=$(freeplan_user_bytes "$1"); wk_lim=$(free_wk_limit); mo_lim=$(free_mo_limit)
+    wk_used=$(( bytes - ${3:-0} )); [ "$wk_used" -lt 0 ] && wk_used=0
+    mo_used=$(( bytes - ${5:-0} )); [ "$mo_used" -lt 0 ] && mo_used=0
+    if [ "$wk_lim" -gt 0 ]; then left=$(( wk_lim - wk_used )); has=1; fi
+    if [ "$mo_lim" -gt 0 ]; then
+        l2=$(( mo_lim - mo_used ))
+        if [ "$has" = 0 ] || [ "$l2" -lt "$left" ]; then left=$l2; fi
+    fi
+    [ "$left" -lt 0 ] && left=0
+    # Выбраны оба окна — доступ вернётся с позднейшим из сбросов: пока не
+    # освободятся оба лимита, юзер всё равно заблокирован.
+    [ "$wk_lim" -gt 0 ] && [ "$wk_used" -ge "$wk_lim" ] && reset=$(( $2 + FREE_WEEK_SEC ))
+    if [ "$mo_lim" -gt 0 ] && [ "$mo_used" -ge "$mo_lim" ]; then
+        mreset=$(( $4 + FREE_MONTH_SEC ))
+        [ "$mreset" -gt "$reset" ] && reset=$mreset
+    fi
+    [ "$reset" -gt 0 ] || reset=$(( $2 + FREE_WEEK_SEC ))
+    printf '%s %s' "$left" "$reset"
+}
+
+freeplan_notify_sync() {
+    declare -F bot_running >/dev/null 2>&1 && bot_running || return 0
+    [ -f "$FREEPLAN_FILE" ] || return 0
+    local prime=0 user state start wks wkb mos mob notif ts win lr step k
+    # Первый запуск: всё, что уже есть, считается отправленным — иначе
+    # выкатка разослала бы каждому на бесплатном тарифе его историю заново.
+    [ -f "$FREEPLAN_NOTIFIED_FILE" ] || prime=1
+    touch "$FREEPLAN_NOTIFIED_FILE" 2>/dev/null || return 0
+    chmod 600 "$FREEPLAN_NOTIFIED_FILE" 2>/dev/null
+
+    while IFS='|' read -r user state start wks wkb mos mob notif ts; do
+        [[ "$user" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+        win="$wks:$mos"
+        if ! _freeplan_marked "$user" entered; then
+            [ "$prime" = 1 ] || { declare -F bot_notify_free_entered >/dev/null 2>&1 && bot_notify_free_entered "$user"; }
+            _freeplan_mark "$user" entered
+        fi
+        case "$state" in
+            blocked)
+                if ! _freeplan_marked "$user" "blocked:$win"; then
+                    lr=$(_freeplan_left_reset "$user" "$wks" "$wkb" "$mos" "$mob")
+                    [ "$prime" = 1 ] || { declare -F bot_notify_free_blocked >/dev/null 2>&1 && bot_notify_free_blocked "$user" "${lr#* }"; }
+                    _freeplan_mark "$user" "blocked:$win"
+                fi ;;
+            active)
+                # Вернулся после блокировки — в НОВЫХ окнах и один раз.
+                if grep -q "^${user}|blocked:" "$FREEPLAN_NOTIFIED_FILE" 2>/dev/null \
+                   && ! _freeplan_marked "$user" "blocked:$win" && ! _freeplan_marked "$user" "reset:$win"; then
+                    lr=$(_freeplan_left_reset "$user" "$wks" "$wkb" "$mos" "$mob")
+                    [ "$prime" = 1 ] || { declare -F bot_notify_free_reset >/dev/null 2>&1 && bot_notify_free_reset "$user" "${lr%% *}"; }
+                    _freeplan_mark "$user" "reset:$win"
+                fi
+                # Порог: шлём один, самый строгий из неотправленных, остальные
+                # отмечаем — без пачки «1 ГБ, 500 МБ, 50 МБ» разом.
+                [[ "$notif" =~ ^[1-3]$ ]] || continue
+                if ! _freeplan_marked "$user" "low$notif:$win"; then
+                    lr=$(_freeplan_left_reset "$user" "$wks" "$wkb" "$mos" "$mob")
+                    [ "$prime" = 1 ] || { declare -F bot_notify_free_low >/dev/null 2>&1 && bot_notify_free_low "$user" "${lr%% *}"; }
+                fi
+                for step in $(seq 1 "$notif"); do _freeplan_mark "$user" "low$step:$win"; done ;;
+        esac
+    done < "$FREEPLAN_FILE"
+
+    # Уборка: ушёл с бесплатного — его отметки больше не нужны.
+    k="${FREEPLAN_NOTIFIED_FILE}.tmp.$BASHPID"
+    awk -F'|' 'NR==FNR { on[$1]=1; next } ($1 in on)' "$FREEPLAN_FILE" "$FREEPLAN_NOTIFIED_FILE" > "$k" 2>/dev/null \
+        && mv "$k" "$FREEPLAN_NOTIFIED_FILE" || rm -f "$k"
 }
 
 # Наружу состояние отдаёт Web API: он и так читает stats/peers для traffic,
@@ -357,4 +436,6 @@ cluster_apply_freeplan() {
     [ -n "$merged" ] || return 0
     printf '%s\n' "$merged" > "$FREEPLAN_FILE"
     publish_cluster_freeplan
+    # Переход мог сделать сосед — сообщение всё равно уходит отсюда, один раз.
+    freeplan_notify_sync
 }

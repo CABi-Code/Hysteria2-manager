@@ -32,6 +32,10 @@ is_user_disabled()    { [ "$DISABLED" = 1 ]; }
 disable_user()        { DISABLED=1; }
 enable_user()         { DISABLED=0; }
 sub_enabled()         { return 1; }   # без кластера — публикация не нужна
+# Сообщения выводит из состояния нода с демоном бота (freeplan_notify_sync).
+# Журнал уже есть — это не первый запуск, ничего не глушится.
+bot_running() { return 0; }
+: > "$HY2M_DATA_DIR/freeplan_notified.dat"
 bot_notify_free_low()     { NOTIFY+="low "; }
 bot_notify_free_blocked() { NOTIFY+="blocked "; BLOCK_RESET="$2"; }
 bot_notify_free_reset()   { NOTIFY+="reset "; }
