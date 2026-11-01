@@ -227,7 +227,7 @@ proto_verify_sha256() {   # файл  ожидаемая_sha256  что_став
 }
 
 proto_install_xray() {
-    command -v "$XRAY_BIN" >/dev/null 2>&1 && [ -x "$XRAY_BIN" ] && return 0
+    [ -z "$XRAY_FORCE_INSTALL" ] && command -v "$XRAY_BIN" >/dev/null 2>&1 && [ -x "$XRAY_BIN" ] && return 0
     echo "  📦 Устанавливаю Xray-core (VLESS/REALITY/XHTTP, Shadowsocks-2022)..."
     local arch zip tmp url ver sum
     case "$(_proto_arch)" in
@@ -285,6 +285,39 @@ proto_install_singbox() {
     install -m 0755 "$binpath" "$SINGBOX_BIN"
     rm -rf "$tmp"
     "$SINGBOX_BIN" version >/dev/null 2>&1
+}
+
+# CVE-2026-98432 (P-164): use-after-free в TCP/IPv4 ядра, через MPTCP — удалённый
+# root. Ноде MPTCP не нужен, а Go 1.24+ включает его на каждом listen: публичные
+# порты xray, caddy, hysteria слушали как MPTCP. Выключаем MPTCP в ядре, ставим
+# xray с фиксом (>= v26.10.31) и перезапускаем тех, кто ещё держит MPTCP-сокет —
+# старый listen сам не переоткроется. Ядро обновляет владелец: apt + ребут.
+# Терминируется сама: после прохода MPTCP-слушателей нет, xray свежий.
+MPTCP_SYSCTL="/etc/sysctl.d/99-hy2-no-mptcp.conf"
+XRAY_MIN_SAFE="26.10.31"
+migrate_mptcp_off() {
+    if [ "$(sysctl -n net.mptcp.enabled 2>/dev/null)" = 1 ]; then
+        echo 'net.mptcp.enabled=0' > "$MPTCP_SYSCTL"
+        sysctl -q -p "$MPTCP_SYSCTL" >/dev/null 2>&1
+    fi
+    local cur mark="$PROTO_DIR/.xray_cve_try"
+    cur=$("$XRAY_BIN" version 2>/dev/null | awk 'NR==1{print $2}')
+    # Попытка не чаще раза в 6 ч: пин на старую версию или лежащий GitHub не
+    # должны качать архив каждую минуту под локом online-sync.
+    if [ -n "$cur" ] && [ "$(printf '%s\n' "$XRAY_MIN_SAFE" "$cur" | sort -V | head -1)" != "$XRAY_MIN_SAFE" ] \
+       && [ -z "$(find "$mark" -mmin -360 2>/dev/null)" ]; then
+        mkdir -p "$PROTO_DIR"; touch "$mark"
+        XRAY_FORCE_INSTALL=1 proto_install_xray >/dev/null 2>&1 \
+            && systemctl try-restart "$XRAY_SERVICE" >/dev/null 2>&1
+    fi
+    # Рестарт только если MPTCP реально выключен — иначе сервис поднимется снова
+    # на MPTCP и мы рвали бы клиентов каждую минуту.
+    [ "$(sysctl -n net.mptcp.enabled 2>/dev/null)" = 0 ] || return 0
+    local pid unit
+    for pid in $(ss -Mltnp 2>/dev/null | awk '$1=="mptcp"' | grep -oP 'pid=\K[0-9]+' | sort -u); do
+        unit=$(ps -o unit= -p "$pid" 2>/dev/null | tr -d ' ')
+        case "$unit" in *.service) systemctl try-restart "$unit" >/dev/null 2>&1 ;; esac
+    done
 }
 
 # Ключи REALITY (x25519) — генерятся один раз, приватный в конфиг, публичный (pbk)
