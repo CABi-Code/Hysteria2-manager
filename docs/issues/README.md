@@ -46,7 +46,7 @@
 | [P-139](CLUSTER.md#p-139) | Имя профиля из кластерного состояния уходит в `sed` без экранирования | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-166](PROTOCOLS.md#p-166) | Основной VLESS — raw TCP + Vision, связка, которую ТСПУ ловит по поведению | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-167](PROTOCOLS.md#p-167) | TUIC — голый QUIC, SNI ноды виден в Initial | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
-| [P-168](PROTOCOLS.md#p-168) | Hysteria на одном UDP-порту без hopping, маскарад под чужой домен | `lib/config.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-168](PROTOCOLS.md#p-168) | Hysteria на одном UDP-порту без hopping (маскарад закрыт) | `lib/perf.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-170](PROTOCOLS.md#p-170) | Все ноды — поддомены одного домена сервиса; вход и выход на одном адресе | — | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-147](OPS.md#p-147) | Все ноды кластера в одной подсети одного хостера, доступность из РФ никто не меряет | — | [ops](OPS.md) | 🟡 |
 | [P-145](OPS.md#p-145) | Длинный опрос Telegram зависает несколько раз в сутки: бот молчит до минуты | `lib/tgbot_daemon.sh` | [ops](OPS.md) | 🟡 |

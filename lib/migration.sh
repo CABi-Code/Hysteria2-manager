@@ -228,3 +228,36 @@ migrate_to_command_auth() {
         sleep 2
     fi
 }
+
+# Маскарад Hysteria — своя нейтральная страница, а не чужой популярный сайт
+# (P-168). Сейчас маскарад не срабатывает (без пароля salamander сервер
+# молчит), но если obfs выключат, сканер увидит наш сертификат и чужое
+# содержимое: то же расхождение, что стоило бана адреса в P-129.
+#
+# Только при настоящем серте. Без него SNI ссылки берётся из хоста маскарада
+# (get_sni), а sniGuard рвёт хендшейк при SNI мимо SAN самоподписанного серта,
+# так что убрать url значит сломать ссылки (P-74). Условие — «нет нужного»
+# (урок P-133). Конфиг меняется, только если сервис с новым поднялся, иначе откат.
+migrate_hy_masquerade() {
+    [ -f "$CONFIG" ] || return 0
+    declare -F proto_tls_trusted >/dev/null 2>&1 && proto_tls_trusted || return 0
+    grep -qE "^[[:space:]]*dir:[[:space:]]*${NODEPAGE_DIR}\$" "$CONFIG" 2>/dev/null && return 0
+    write_nodepage || return 0
+    local bak; bak=$(mktemp) || return 0
+    cp -p "$CONFIG" "$bak"
+    # Блок masquerade: от строки «masquerade:» до следующего ключа верхнего уровня.
+    awk -v dir="$NODEPAGE_DIR" '
+        /^masquerade:/ { print "masquerade:\n  type: file\n  file:\n    dir: " dir; skip=1; done=1; next }
+        skip && /^[^[:space:]#]/ { skip=0 }
+        !skip { print }
+        END { if (!done) print "\nmasquerade:\n  type: file\n  file:\n    dir: " dir }
+    ' "$bak" > "$CONFIG.new" && cat "$CONFIG.new" > "$CONFIG"
+    rm -f "$CONFIG.new"
+    systemctl restart "$SERVICE" >/dev/null 2>&1
+    sleep 2
+    if ! systemctl is-active --quiet "$SERVICE"; then
+        cat "$bak" > "$CONFIG"
+        systemctl restart "$SERVICE" >/dev/null 2>&1
+    fi
+    rm -f "$bak"
+}

@@ -182,6 +182,10 @@ Trojan).
 * SS-2022 — без TLS.
 * TUIC (QUIC) и Trojan/WS — нужен TLS, серт общий (`$DATA_DIR/proto/tuic.{crt,key}`).
 * Hysteria 2 — свой серт по путям из её `config.yaml`.
+  Маскарад при настоящем серте — `type: file` с нейтральной страницей
+  `NODEPAGE_DIR`, той же, что в корне 443 и за dest REALITY: всё, что видит
+  сканер на любом порту ноды, — один и тот же «пустой» сайт её домена
+  ([P-165](../issues/PROTOCOLS.md#p-165), [P-168](../issues/PROTOCOLS.md#p-168)).
 
 **Серт берётся у Caddy, самоподписанный — только запасной вариант.**
 `proto_sync_certs` копирует по движкам тот самый Let's Encrypt, который Caddy

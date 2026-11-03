@@ -358,6 +358,9 @@ get_obfs_pass() {
 get_sni() {
     local result
     result=$(grep -oP '(?<=url: https://)[^/]+' "$CONFIG" 2>/dev/null | head -1)
+    # Маскарад без url (type: file, P-168) — имени в нём нет; домен ноды и есть
+    # SAN её серта. Чужой хост — только для ноды без домена.
+    [ -n "$result" ] || result=$(node_host 2>/dev/null)
     echo "${result:-www.twitch.tv}"
 }
 
