@@ -167,6 +167,7 @@ if [ "$1" = "--online-sync" ]; then
     migrate_device_limit    # на случай, если меню ещё не открывали после апгрейда
     migrate_caddy_api_prefix # /api/* без снятия префикса — Web API был мёртв снаружи
     migrate_caddy_bind_loopback # bind без 127.0.0.1 — dest REALITY был мёртв изнутри (P-136)
+    migrate_caddy_nodepage  # корень 443 = нейтральная страница, а не текст про клиентов (P-165)
     migrate_mptcp_off       # CVE-2026-98432: MPTCP off + свежий xray на каждой ноде (P-164)
     rates_timer_ensure      # таймер спидометра ставится сам после обновления ноды
     # TUIC-трафик считаем ЗДЕСЬ (раз в минуту): по дельтам соединений, иначе они
@@ -210,6 +211,7 @@ migrate_to_command_auth
 migrate_device_limit        # старый device_limit -> общекластерный POOL_LIMIT
 migrate_caddy_api_prefix    # /api/* без снятия префикса — Web API был мёртв снаружи
 migrate_caddy_bind_loopback # bind без 127.0.0.1 — dest REALITY был мёртв изнутри (P-136)
+migrate_caddy_nodepage      # корень 443 = нейтральная страница, а не текст про клиентов (P-165)
 rates_timer_ensure          # таймер тика скорости (спидометр мини-аппа)
 setup_stats_api
 collect_traffic

@@ -983,8 +983,12 @@ proto_user_uris() {   # user pass ip tag
     # local создаст user, и дефолтный тег получался пустым.
     local user="$1" pass="$2" ip="${3:-$(link_host)}" tag="${4:-$1}"
     proto_any_enabled || return 0
-    proto_vless_enabled  && { proto_build_vless  "$user" "$pass" "$ip" "$tag"; echo; }
+    # VLESS-X раньше VLESS: raw TCP + Vision ТСПУ с 2026 ловит по рисунку
+    # первых пакетов, а XHTTP (с xmux на клиенте) — другой рисунок. Клиенты,
+    # которые берут первый подходящий ключ, должны брать устойчивый (P-166).
+    # Кто XHTTP не умеет (Happ), пропустит его и возьмёт следующий.
     proto_vlessx_enabled && { proto_build_vlessx "$user" "$pass" "$ip" "$tag"; echo; }
+    proto_vless_enabled  && { proto_build_vless  "$user" "$pass" "$ip" "$tag"; echo; }
     proto_ss_enabled     && { proto_build_ss     "$user" "$pass" "$ip" "$tag"; echo; }
     proto_trojan_enabled && { proto_build_trojan "$user" "$pass" "$ip" "$tag"; echo; }
     proto_tuic_enabled   && { proto_build_tuic   "$user" "$pass" "$ip" "$tag"; echo; }

@@ -164,6 +164,7 @@ DEMOS_DB="$DATA_DIR/demos.db"
 # если ничего не менялось (см. _subs_inputs_changed в lib/sub_links.sh).
 SUBS_SIG_FILE="$DATA_DIR/.subs.sig"
 WEBROOT="${HY2M_WEBROOT:-/var/www/hy2sub}"  # корень статики Caddy (sub/ и cluster/)
+NODEPAGE_DIR="${HY2M_NODEPAGE_DIR:-/var/www/nodepage}"  # нейтральный корень домена ноды (P-165)
                                             # отдельно от DATA_DIR: его читает caddy, не hysteria
 PEERS_DIR="$DATA_DIR/peers"                 # кэш манифестов и онлайна пиров
 PEERS_HEALTH_FILE="$PEERS_DIR/.health"      # «host|name|ok|ts|причина» — итог последнего

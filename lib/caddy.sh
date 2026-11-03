@@ -17,6 +17,7 @@ setup_caddy() {
     [ -n "$domain" ] || return 1
     secret=$(cluster_secret)
     mkdir -p "$(dirname "$CADDYFILE")" "$WEBROOT/sub" "$WEBROOT/cluster"
+    write_nodepage
 
     # Если домен указывает на один из локальных IP — фиксируем его как NODE_IP,
     # чтобы при нескольких IP Caddy сел на нужный (свободный), а не на занятый.
@@ -151,7 +152,8 @@ ${sub_redir}    handle /sub/* {
 ${sub_hdrs}        file_server
     }
     handle {
-        respond "Subscription endpoint. Open your personal /sub/<token> URL inside a client app (Hiddify, Nekobox, sing-box) as a subscription - not in a browser." 200
+        root * ${NODEPAGE_DIR}
+        file_server
     }
 }
 EOF
@@ -181,6 +183,49 @@ EOF
     systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null
     systemctl is-active --quiet caddy 2>/dev/null || systemctl start caddy 2>/dev/null
     systemctl is-active --quiet caddy 2>/dev/null
+}
+
+# Нейтральная страница в корне домена ноды. Её видит не только человек с
+# браузером: dest REALITY — этот же Caddy, поэтому любой, кто стучится в порт
+# VLESS без ключа, получает именно её. Раньше тут был текст «откройте /sub/ в
+# Hiddify/Nekobox», то есть нода сама называла себя сервером ключей (P-165).
+# Ни слов «подписка», «клиент», ни названий приложений здесь быть не должно.
+# Файл не перезаписывается: владелец может положить туда свой сайт.
+write_nodepage() {
+    [ -f "$NODEPAGE_DIR/index.html" ] && return 0
+    mkdir -p "$NODEPAGE_DIR" || return 1
+    cat > "$NODEPAGE_DIR/index.html" <<'HTML'
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome</title>
+<style>
+  body{font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       margin:0;min-height:100vh;display:grid;place-items:center;
+       background:#fafafa;color:#333}
+  main{max-width:34rem;padding:2rem}
+  h1{font-size:1.3rem;font-weight:600;margin:0 0 .75rem}
+  p{margin:0 0 .75rem;color:#666}
+  @media (prefers-color-scheme:dark){body{background:#151515;color:#ddd}p{color:#999}}
+</style>
+<main>
+  <h1>Server ready</h1>
+  <p>This host is configured and serving over HTTPS. There is no public
+     content at this address.</p>
+</main>
+HTML
+    chmod 644 "$NODEPAGE_DIR/index.html"
+}
+
+# Разовая миграция: корень домена отвечал текстом про клиентов подписки, а это
+# же видит активная проверка порта REALITY (P-165). Условие — «в Caddyfile НЕТ
+# корня на NODEPAGE_DIR», а не «есть старый текст» (урок P-133). Терминируется
+# сама: после регенерации строка root на месте.
+migrate_caddy_nodepage() {
+    sub_enabled || return 0
+    [ -f "$CADDYFILE" ] || return 0
+    grep -qF "root * ${NODEPAGE_DIR}" "$CADDYFILE" 2>/dev/null && return 0
+    setup_caddy >/dev/null 2>&1
 }
 
 # Разовая миграция: до 4.26.123 блок прокси стоял на «handle /api/*», который

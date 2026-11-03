@@ -41,7 +41,7 @@
 
 | # | Проблема | Где | Тема | Статус |
 |:--:|---|---|---|:--:|
-| [P-165](PROTOCOLS.md#p-165) | Корень 443 и dest REALITY отдают текст про клиентов подписки (P-129 только в доке) | `lib/caddy.sh` | [protocols](PROTOCOLS.md) | 🔴 |
+| [P-165](PROTOCOLS.md#p-165) | Корень 443 и dest REALITY отдают текст про клиентов подписки (P-129 только в доке) | `lib/caddy.sh` | [protocols](PROTOCOLS.md) | ✅ |
 | [P-138](CLUSTER.md#p-138) | Токен подписки из данных пира становится путём записи от root | `lib/sub_links.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-139](CLUSTER.md#p-139) | Имя профиля из кластерного состояния уходит в `sed` без экранирования | `lib/cluster.sh` | [cluster](CLUSTER.md) | 🔴 |
 | [P-166](PROTOCOLS.md#p-166) | Основной VLESS — raw TCP + Vision, связка, которую ТСПУ ловит по поведению | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
