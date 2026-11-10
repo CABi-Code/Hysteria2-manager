@@ -29,11 +29,11 @@
 
 | Файл | О чём | Проблем |
 |---|---|:--:|
-| [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 18 |
+| [PROTOCOLS.md](PROTOCOLS.md) | Движки, их API, учёт трафика и онлайна по протоколам | 21 |
 | [CLUSTER.md](CLUSTER.md) | Обмен между нодами, жизненный цикл профиля, подписка | 27 |
-| [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 16 |
+| [LIMITS.md](LIMITS.md) | Лимит устройств, жёсткая проверка, анти-абуз, скорость | 17 |
 | [BILLING.md](BILLING.md) | Оплаты, тарифы, разделение ролей издателя и оператора | 6 |
-| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 31 |
+| [OPS.md](OPS.md) | Гонки кронов, отдача данных наружу, мелочи | 32 |
 
 ## Сводка
 
@@ -47,6 +47,9 @@
 | [P-166](PROTOCOLS.md#p-166) | Основной VLESS — raw TCP + Vision, связка, которую ТСПУ ловит по поведению | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-167](PROTOCOLS.md#p-167) | TUIC — голый QUIC, SNI ноды виден в Initial | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-168](PROTOCOLS.md#p-168) | Hysteria на одном UDP-порту без hopping (маскарад закрыт) | `lib/perf.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-171](PROTOCOLS.md#p-171) | Hysteria на мобильной сети: сессия умирает через ~30 с, переподключения без конца | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟡 |
+| [P-172](LIMITS.md#p-172) | Кик «2 устройства» при одном известном адресе — после P-163 | `lib/publish.sh` | [limits](LIMITS.md) | 🟡 |
+| [P-173](PROTOCOLS.md#p-173) | `geoip:ru` режет anycast-адрес зарубежного CDN | `lib/rublock.sh` | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-170](PROTOCOLS.md#p-170) | Все ноды — поддомены одного домена сервиса; вход и выход на одном адресе | — | [protocols](PROTOCOLS.md) | 🟡 |
 | [P-147](OPS.md#p-147) | Все ноды кластера в одной подсети одного хостера, доступность из РФ никто не меряет | — | [ops](OPS.md) | 🟡 |
 | [P-145](OPS.md#p-145) | Длинный опрос Telegram зависает несколько раз в сутки: бот молчит до минуты | `lib/tgbot_daemon.sh` | [ops](OPS.md) | 🟡 |
@@ -88,6 +91,8 @@
 | [P-35](OPS.md#p-35) | Трафик Xray в менеджере обновлялся раз в полчаса — выглядел зависшим | `lib/traffic.sh` | [ops](OPS.md) | ✅ |
 | [P-22](CLUSTER.md#p-22) | Кластерная сумма трафика немонотонна, free-план строит на ней разницу | `lib/freeplan.sh` | [cluster](CLUSTER.md) | 🟡 |
 | [P-169](PROTOCOLS.md#p-169) | Trojan/WS: путь `/` и не заданный в ссылке отпечаток TLS | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟢 |
+| [P-174](PROTOCOLS.md#p-174) | Trojan: сотни TLS-рукопожатий в сутки обрываются по тайм-ауту | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟢 |
+| [P-175](OPS.md#p-175) | Caddy перечитывает конфиг каждые 2–3 минуты (SSE `/api` под ударом, не проверено) | `lib/sub_links.sh` | [ops](OPS.md) | 🟢 |
 | [P-10](LIMITS.md#p-10) | tc-классы привязаны к имени юзера из `users.db` | `lib/perf.sh` | [limits](LIMITS.md) | 🟢 |
 | [P-12](OPS.md#p-12) | Возможный двойной счёт скорости на релейном трафике | `lib/publish.sh` | [ops](OPS.md) | 🟢 |
 | [P-72](OPS.md#p-72) | `onlineips.dat` осиротел: файл лежит, никто его не пишет и не читает | `lib/online.sh` | [ops](OPS.md) | 🟢 |
@@ -145,7 +150,7 @@
 | [P-154](OPS.md#p-154) | `/start sub_…` не доходил до надстройки — «код неверен» | `lib/tgbot_daemon.sh` | [ops](OPS.md) | ✅ |
 | [P-164](OPS.md#p-164) | CVE-2026-98432: удалённый root через MPTCP, xray на нодах не обновлялся | `lib/protocols.sh` | [ops](OPS.md) | 🟡 |
 
-Следующий свободный номер — **P-171**.
+Следующий свободный номер — **P-176**.
 
 Номера **P-74** и **P-75** выданы задним числом: обе линии — `main` и
 `integration-multiprotocol` — независимо заняли `P-52` и `P-53` под разные
