@@ -81,7 +81,7 @@ publish_* ──> $WEBROOT/cluster/<раздел>
   сделайте у себя». Не сливаются: получатель решает сам и своё решение не
   перепубликовывает.
 * **Справка** (`manifest`, `subtokens`, `roster`, `ips`, `subips`, `stats`,
-  `rates`, `nodeinfo`, `version`, `protocols`, `demos`) — читается как есть.
+  `rates`, `nodeinfo`, `version`, `protocols`, `demos`, `netday`) — читается как есть.
 
 `nodeinfo` — единственный раздел, где нода утверждает факты **о себе**
 (`LABEL`, `WEBAPI`), и слияния у него нет: сосед такое перезаписывать не должен.

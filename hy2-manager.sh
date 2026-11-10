@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish rublock protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish rublock protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo report ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -101,6 +101,7 @@ if [ "$1" = "--collect" ]; then
     proto_sync_certs
     publish_ips        # разослать свежие IP по кластеру (видны на всех нодах)
     publish_subips     # разослать IP по токенам подписки
+    publish_netday     # сеть ноды за сутки — для суточного отчёта (DAILY-REPORT.md)
     # Убитый на полуслове публикатор (systemctl stop, kill) оставляет свой
     # «файл.tmp.<pid>». Два часа — заведомо больше любой живой записи, так что
     # под метлу попадают только осиротевшие. См. docs/guide/MAINTENANCE.md.
@@ -187,6 +188,16 @@ if [ "$1" = "--online-sync" ]; then
     write_authlimits    # снимок для жёсткой проверки (работает и на одиночной ноде)
     klimit_sync_port    # перегенерировать лимит, если сменился порт ИЛИ набор протоколов (SHAPE-дрейф)
     klimit_reconcile    # разложить активные IP по тарифным классам скорости (tc)
+    report_sample       # выборка скорости и здоровья пиров для суточного отчёта
+    exit 0
+fi
+
+if [ "$1" = "--daily-report" ]; then
+    # Суточный отчёт HTML-текстом в stdout; доставку настраивает оператор
+    # (docs/guide/DAILY-REPORT.md). Замок — чтобы два прогона не съели один снимок.
+    cron_lock daily-report
+    setup_stats_api
+    daily_report
     exit 0
 fi
 

@@ -440,7 +440,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols updatereq demos"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols updatereq demos netday"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -451,6 +451,7 @@ _section_label() {
         pwreset)    echo "сбросы ключей" ;;
         ipforget)   echo "просьбы забыть адреса" ;;
         nodeinfo)   echo "метка узла" ;;
+        netday)     echo "сеть за сутки" ;;
         freeplan)   echo "бесплатный тариф (квоты)" ;;
         ips)        echo "IP-адреса" ;;
         expiry)     echo "сроки действия" ;;
