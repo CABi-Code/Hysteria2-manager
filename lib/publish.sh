@@ -167,6 +167,13 @@ _online_count_tokens() {   # stdin: токены
 # Нода, которая ещё не публикует адреса (кол. 9 в stats), даёт синтетические
 # токены — её сессии считаются как раньше, отдельными.
 cluster_user_connections() {
+    _cluster_user_tokens "$1" | _online_count_tokens
+}
+
+# Токены, из которых cluster_user_connections считает устройства: адрес или
+# «нода#N» для сессии без адреса. Отдельной функцией — их же пишет журнал киков,
+# чтобы в нём было ровно посчитанное, а не пересчёт рядом (P-172).
+_cluster_user_tokens() {   # user
     local user="$1" f name row n csv
     {
         _online_tokens "$(node_host 2>/dev/null || echo self)" \
@@ -182,7 +189,7 @@ cluster_user_connections() {
                 _online_tokens "$name" "$n" "$csv"
             done
         fi
-    } | _online_count_tokens
+    }
 }
 
 # Суммарный трафик по кластеру: печатает «tx rx».

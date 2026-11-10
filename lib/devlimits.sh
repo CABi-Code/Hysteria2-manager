@@ -60,17 +60,28 @@ _peer_host() {   # имя файла -> хост
 # только тот, кому места не хватило. Данные у всех нод одни (свой онлайн +
 # кол. 2 из stats-кэшей пиров), поэтому решение совпадает без переговоров.
 node_yields() {   # user localn -> 0 = кикаем мы
-    local user="$1" localn="$2" pc nc self f
+    local user="$1" localn="$2" pc nc self
     nc=$(node_cap "$user")
     # Нода превысила свой собственный лимит — режем без всякого арбитража.
     { [ "${nc:-0}" -gt 0 ] && [ "${localn:-0}" -gt "$nc" ]; } 2>/dev/null && return 0
     pc=$(pool_cap "$user")
     [ "${pc:-0}" -gt 0 ] 2>/dev/null || return 1
     self=$(node_host); [ -n "$self" ] || self=$(node_name)
-    # Оставляем ноды, где юзер РЕАЛЬНО гонит трафик (active), и только потом —
-    # где у него больше подключений. Раньше порядок был только по числу
-    # подключений: нода с двумя пустыми сессиями «пинга» побеждала ту, где
-    # человек сидел и качал, и выбивали именно его рабочую (P-163).
+    _yield_order "$user" "$localn" \
+      | awk -F'\t' -v cap="$pc" -v me="$self" '
+            { if (used < cap && $3 == me) keep = 1; used += $2 }
+            END { exit(keep ? 1 : 0) }'
+}
+
+# Порядок нод для node_yields: строки «active<TAB>сессий<TAB>хост», первые
+# занимают места в пределах pool_cap. Оставляем ноды, где юзер РЕАЛЬНО гонит
+# трафик (active), и только потом — где у него больше подключений. Раньше
+# порядок был только по числу подключений: нода с двумя пустыми сессиями
+# «пинга» побеждала ту, где человек сидел и качал, и выбивали именно его
+# рабочую (P-163). Отдельной функцией — тот же порядок пишет журнал киков.
+_yield_order() {   # user localn
+    local user="$1" localn="$2" self f
+    self=$(node_host); [ -n "$self" ] || self=$(node_name)
     {
         printf '%s\t%s\t%s\n' "$(get_user_active "$user" 2>/dev/null || echo 0)" "${localn:-0}" "$self"
         if [ -d "$PEERS_DIR" ]; then
@@ -80,10 +91,49 @@ node_yields() {   # user localn -> 0 = кикаем мы
                     'NF>=2 && $1==u && ($2+0)>0 {print (NF>=7 && $7==1 ? 1 : 0)"\t"$2"\t"n}' "$f"
             done
         fi
-    } | LC_ALL=C sort -t$'\t' -k1,1nr -k2,2nr -k3,3 \
-      | awk -F'\t' -v cap="$pc" -v me="$self" '
-            { if (used < cap && $3 == me) keep = 1; used += $2 }
-            END { exit(keep ? 1 : 0) }'
+    } | LC_ALL=C sort -t$'\t' -k1,1nr -k2,2nr -k3,3
+}
+
+# Хвост строки limit.log: из чего сложилось решение о кике, по источникам.
+# Строка остаётся ОДНОЙ и начинается с «<дата> <юзер>:» — по этому префиксу
+# её находят удаление юзера и wa_footprint. Адреса полные: файл локальный, в
+# DATA_DIR, а для разбора CGNAT нужна вся сеть, а не маска (P-172).
+#   hc/active    жёсткая проверка и трафик юзера на этой ноде
+#   hy           сессии Hysteria по слотам (id «юзер.<hex>» = доп. ссылка)
+#   auth         последние записи authmap: адрес@сколько секунд назад; из них
+#                _online_hysteria_ip_lines берёт столько, сколько сессий
+#   proto        адреса Xray/TUIC
+#   peer         по соседу: сессий/active/адреса и возраст его stats у нас —
+#                старый файл значит, что свежие данные соседа не доехали
+#   tokens       ровно то, что посчитал cluster_user_connections
+#   order        порядок нод node_yields (active/сессий/хост)
+_kick_details() {   # user localn
+    local user="$1" localn="$2" now f name row hy auth peers
+    now=$(date +%s)
+    hy=$(printf '%s' "${CACHED_HY_ONLINE:-{\}}" | jq -r --arg u "$user" '
+            to_entries[] | select(.value > 0)
+            | select(.key == $u or (.key | startswith($u + ".")))
+            | "\(.key)=\(.value)"' 2>/dev/null | paste -sd, -)
+    auth=$(awk -F'|' -v u="$user" -v now="$now" '$1==u {a[++n]=$2"@"(now-$3)"s"}
+            END {for (i=n; i>0 && i>n-5; i--) o=o (o?",":"") a[i]; printf "%s", o}' \
+            "$AUTHMAP_FILE" 2>/dev/null)
+    peers=""
+    if [ -d "$PEERS_DIR" ]; then
+        for f in "$PEERS_DIR"/*.stats; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .stats)
+            row=$(awk -F'\t' -v u="$user" '$1==u {printf "%s/%s/%s", $2, (NF>=7?$7:"-"), (NF>=9&&$9!=""?$9:"-"); exit}' "$f" 2>/dev/null)
+            peers="${peers} peer=${name}:${row:--}@$(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") ))s"
+        done
+    fi
+    printf 'hc=%s active=%s hy=[%s] auth=[%s] proto=[%s]%s tokens=[%s] order=[%s]' \
+        "$(get_user_hardcheck_effective "$user" 2>/dev/null)" \
+        "$(get_user_active "$user" 2>/dev/null || echo 0)" \
+        "$hy" "$auth" \
+        "$(printf '%s\n' "${CACHED_PROTO_IPS:-}" | awk -F'|' -v u="$user" '$1==u && $2!="" {print $2}' | sort -u | paste -sd, -)" \
+        "$peers" \
+        "$(_cluster_user_tokens "$user" | sort -u | paste -sd, -)" \
+        "$(_yield_order "$user" "$localn" | tr '\t' '/' | paste -sd' ' -)"
 }
 
 # Превышен ли у юзера лимит подключений (для ⚠️ в списке и решений о кике).
@@ -166,7 +216,7 @@ enforce_device_limits() {
             # Доп. протоколы рвутся своими способами: без этого лимит держался
             # только на Hysteria, а протокол выбирает клиент (P-16).
             declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
-            echo "$(date '+%F %T') $user: cluster=$total local=$localn pool_cap=$(pool_cap "$user") node_cap=$(node_cap "$user") — кик на $(node_name)" \
+            echo "$(date '+%F %T') $user: cluster=$total local=$localn pool_cap=$(pool_cap "$user") node_cap=$(node_cap "$user") — кик на $(node_name) | $(_kick_details "$user" "$localn")" \
                 >> "$DATA_DIR/limit.log" 2>/dev/null
         fi
     done < <(echo "$online_json" | jq -r 'to_entries[] | select(.value>0) | .key' 2>/dev/null)
@@ -226,7 +276,7 @@ enforce_active_node_limit() {
         if ! printf '%s\n' "$keep" | grep -qx "${my_since}|${self}"; then
             hy_kick_user "$user" &>/dev/null
             declare -F proto_kick_user >/dev/null && proto_kick_user "$user"
-            echo "$(date '+%F %T') $user: активных нод=$total > cap=$cap — обрезаю $self (active_since=$my_since), оставляю ранние" \
+            echo "$(date '+%F %T') $user: активных нод=$total > cap=$cap — обрезаю $self (active_since=$my_since), оставляю ранние | устройств=$(cluster_active_device_count "$user") нод=[$(printf '%s\n' "$active_list" | paste -sd' ' -)] $(_kick_details "$user" "$(get_user_online_count "$user")")" \
                 >> "$DATA_DIR/limit.log" 2>/dev/null
         fi
     done < <(get_active_users)

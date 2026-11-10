@@ -32,10 +32,14 @@ refresh_online() {   # [force]
     # нод, от нескольких разных (cluster_user_connections). Раньше наружу уходил
     # только счётчик, и такое устройство считалось за столько, на скольких нодах
     # его видели (P-45).
+    # Сырой ответ Hysteria и адреса доп. протоколов держим и по отдельности:
+    # по ним журнал киков показывает, какой источник дал какой адрес (P-172).
+    CACHED_HY_ONLINE=$hy
+    CACHED_PROTO_IPS=$(declare -F proto_online_ip_lines >/dev/null 2>&1 && proto_online_ip_lines 2>/dev/null)
     CACHED_ONLINE_IPS=$(
         {
             _online_hysteria_ip_lines "$hy"
-            declare -F proto_online_ip_lines >/dev/null 2>&1 && proto_online_ip_lines 2>/dev/null
+            printf '%s\n' "$CACHED_PROTO_IPS"
         } | awk -F'|' 'NF>=2 && $1!="" && $2!="" && !seen[$1"|"$2]++ {print $1"|"$2}'
     )
     CACHED_ONLINE=$(

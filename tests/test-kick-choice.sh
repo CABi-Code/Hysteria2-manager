@@ -57,4 +57,20 @@ printf 'me|0|0|0\n' > "$ACTIVITY_FILE"
 printf 'me\t1\t0\t0\t0\t0\t0\t0\t1.1.1.1\n' > "$PEERS_DIR/a.stats"
 node_yields me 2 && fail "без трафика остаётся нода с большим числом сессий (мы)"
 
+# ---------- 3) журнал кика показывает, из чего сложилось решение (P-172) ----------
+get_user_hardcheck_effective() { echo 0; }
+CACHED_HY_ONLINE='{"me.0a1b2c3d":1,"other":4}'
+CACHED_PROTO_IPS=$'me|3.3.3.3\nother|8.8.8.8'
+CACHED_ONLINE='{"me":2}'
+CACHED_ONLINE_IPS=$'me|2.2.2.2\nme|3.3.3.3'
+printf 'me\t1\t0\t0\t0\t0\t0\t0\t\n' > "$PEERS_DIR/a.stats"     # сосед без адресов
+d=$(_kick_details me 2)
+case "$d" in *$'\n'*) fail "подробности кика должны быть одной строкой: $d" ;; esac
+for want in 'hc=0' 'hy=[me.0a1b2c3d=1]' 'auth=[2.2.2.2@' 'proto=[3.3.3.3]' 'peer=a:1/0/-@' 'a#1' '2.2.2.2' 'order=['; do
+    case "$d" in *"$want"*) ;; *) fail "в подробностях кика нет «$want»: $d" ;; esac
+done
+case "$d" in *8.8.8.8*|*other=*) fail "в подробности кика попал чужой юзер: $d" ;; esac
+tok=$(_cluster_user_tokens me | sort -u | paste -sd, -)
+[ "$(cluster_user_connections me)" = "3" ] || fail "токены [$tok] должны дать 3 устройства"
+
 echo "✅ test-kick-choice: вчерашний адрес не устройство, рабочую ноду не выбивают"
