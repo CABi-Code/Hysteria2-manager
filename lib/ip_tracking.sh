@@ -155,42 +155,102 @@ raw_authmap_trim() {
 # ExecStart демона, чей вывод уходит в journald только через фильтр адресов.
 # Демон и фильтр — один конвейер: упал демон — закончился ввод фильтра, а
 # pipefail отдаёт systemd код самого демона, так что Restart= работает как раньше.
-logscrub_execstart() {   # "команда демона" -> значение ExecStart
-    printf "/bin/bash -c 'set -o pipefail; %s 2>&1 | python3 -u %s scrub %s'" "$1" "$IPHASH_PY" "$IP_SALT_FILE"
+#
+# ФИЛЬТР НЕ ИМЕЕТ ПРАВА УБИТЬ ДЕМОНА (P-177). Умер читатель трубы — демон на
+# следующей строке лога получает SIGPIPE и падает; так на двух нодах легли
+# Hysteria и Xray. Поэтому:
+#   * после фильтра трубу дочитывает `cat >/dev/null` — что бы с ним ни
+#     случилось, остаток лога уходит в никуда, а не в смерть демона;
+#   * нет python3 или служба помечена «тихой» (_logscrub_quiet) — фильтра нет
+#     вовсе, вывод демона выбрасывается. Адресов в журнале нет и так, а
+#     доступность важнее строк журнала.
+LOGSCRUB_QUIET_DIR="$DATA_DIR/logscrub_quiet"   # файл = имя службы, у которой фильтр отключён
+_logscrub_quiet() { [ -n "${1:-}" ] && [ -e "$LOGSCRUB_QUIET_DIR/$1" ]; }
+logscrub_execstart() {   # "команда демона" [служба] -> значение ExecStart
+    if ! command -v python3 >/dev/null 2>&1 || _logscrub_quiet "${2:-}"; then
+        printf "/bin/bash -c 'exec %s >/dev/null 2>&1'" "$1"
+        return
+    fi
+    printf "/bin/bash -c 'set -o pipefail; %s 2>&1 | { python3 -u %s scrub %s; cat >/dev/null; }'" \
+        "$1" "$IPHASH_PY" "$IP_SALT_FILE"
+}
+
+# Перезапуск после смены обёртки с проверкой: служба не встала — помечаем её
+# «тихой» и поднимаем без фильтра. Пометка не снимается сама, иначе следующий
+# тик вернул бы сломанную обёртку и перезапускал бы службу по кругу; её видно
+# в суточном отчёте (logscrub_quiet), снимают руками после разбора.
+_logscrub_restart() {   # служба функция_переписать_юнит
+    local svc="$1" rewrite="$2" i
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl restart "$svc" >/dev/null 2>&1
+    for i in 1 2 3 4 5; do
+        sleep 1
+        systemctl is-active --quiet "$svc" 2>/dev/null || break
+        [ "$i" = 5 ] && return 0
+    done
+    mkdir -p "$LOGSCRUB_QUIET_DIR" && : > "$LOGSCRUB_QUIET_DIR/$svc"
+    echo "[$(date '+%F %T')] $svc не встал с фильтром журнала — запущен без него (P-177)" >&2
+    "$rewrite"
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl reset-failed "$svc" >/dev/null 2>&1
+    systemctl restart "$svc" >/dev/null 2>&1
 }
 
 # Вывод Hysteria — через фильтр. Юнит ставит её установщик, поэтому не правим
 # его, а кладём drop-in с исходной командой из самого юнита. Поменялся — один
 # рестарт Hysteria (клиенты переподключатся сами).
-hy_logscrub_ensure() {
+_hy_logscrub_write() {
     local frag orig dropin want
     frag=$(systemctl show "$SERVICE" -p FragmentPath --value 2>/dev/null)
-    [ -f "$frag" ] || return 0
+    [ -f "$frag" ] || return 1
     orig=$(sed -n 's/^ExecStart=\(.\+\)$/\1/p' "$frag" | head -1)
-    [ -n "$orig" ] || return 0
+    [ -n "$orig" ] || return 1
     dropin="/etc/systemd/system/${SERVICE%.service}.service.d/20-hy2-logscrub.conf"
     want="# hy2-manager (P-176): адреса клиентов в журнал — только хэшем
 [Service]
 ExecStart=
-ExecStart=$(logscrub_execstart "$orig")"
-    [ "$(cat "$dropin" 2>/dev/null)" = "$want" ] && return 0
-    mkdir -p "$(dirname "$dropin")" && printf '%s\n' "$want" > "$dropin" || return 1
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl restart "$SERVICE" >/dev/null 2>&1
+ExecStart=$(logscrub_execstart "$orig" "$SERVICE")"
+    [ "$(cat "$dropin" 2>/dev/null)" = "$want" ] && return 2
+    mkdir -p "$(dirname "$dropin")" && printf '%s\n' "$want" > "$dropin"
+}
+hy_logscrub_ensure() {
+    _hy_logscrub_write; [ $? = 0 ] || return 0
+    _logscrub_restart "$SERVICE" _hy_logscrub_write
+}
+
+# python3 нужен хэшеру. Установщик ставит его сам, но нода, обновлённая только
+# менеджером, его могла не получить. Ставим из крона не чаще раза в час: apt
+# может висеть на чужом замке, и пытаться каждые две минуты бессмысленно.
+_python3_install() {
+    local stamp="$DATA_DIR/.python3_try" now; now=$(date +%s)
+    [ $(( now - $(cat "$stamp" 2>/dev/null || echo 0) )) -ge 3600 ] || return 1
+    echo "$now" > "$stamp"
+    command -v apt-get >/dev/null 2>&1 || return 1
+    DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq python3 >/dev/null 2>&1 \
+        || { timeout 120 apt-get update -qq >/dev/null 2>&1 \
+             && DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq python3 >/dev/null 2>&1; }
+    command -v python3 >/dev/null 2>&1
 }
 
 # Всё, что держит адреса скрытыми, — одной идемпотентной точкой. Зовётся из
 # --online-sync: на ноду, куда никто не заходит, приезжает с ближайшим кроном.
 ip_privacy_ensure() {
-    command -v python3 >/dev/null 2>&1 || return 0
+    # Обёртки журналов — первыми и без python3: они обязаны держать движки
+    # живыми и без хэшера (logscrub_execstart, P-177).
+    hy_logscrub_ensure
+    declare -F proto_logscrub_ensure >/dev/null && proto_logscrub_ensure
+    if ! command -v python3 >/dev/null 2>&1; then
+        _python3_install || return 0
+        # python3 появился — обёртки с фильтром вместо «вывод в никуда».
+        hy_logscrub_ensure
+        declare -F proto_logscrub_ensure >/dev/null && proto_logscrub_ensure
+    fi
     raw_dirs_ensure
     ip_salt_sync
     # Скрипт аутентификации старой версии пишет адреса открытыми — переложить.
     [ -f "$AUTH_SCRIPT" ] && ! grep -q '^RAWMAP=' "$AUTH_SCRIPT" 2>/dev/null \
         && declare -F install_auth_script >/dev/null && install_auth_script
     raw_authmap_trim
-    hy_logscrub_ensure
-    declare -F proto_logscrub_ensure >/dev/null && proto_logscrub_ensure
     declare -F caddy_rawlog_ensure >/dev/null && caddy_rawlog_ensure
     return 0
 }

@@ -617,9 +617,11 @@ proto_logscrub_ensure() {
     proto_xray_needed || return 0
     local unit="/etc/systemd/system/${XRAY_SERVICE}"
     [ -f "$unit" ] || return 0
-    grep -qF "$IPHASH_PY" "$unit" && return 0
+    # Сверка с ТЕКУЩЕЙ обёрткой, а не «фильтр упомянут»: иначе юнит со старой,
+    # смертельной для Xray обёрткой считался бы готовым (P-177).
+    grep -qxF "ExecStart=$(logscrub_execstart "${XRAY_BIN} run -c ${XRAY_CONFIG}" "$XRAY_SERVICE")" "$unit" && return 0
     proto_write_units
-    systemctl restart "$XRAY_SERVICE" >/dev/null 2>&1
+    _logscrub_restart "$XRAY_SERVICE" proto_write_units
 }
 
 proto_write_units() {
@@ -631,7 +633,7 @@ After=network.target nss-lookup.target
 
 [Service]
 Type=simple
-ExecStart=$(logscrub_execstart "${XRAY_BIN} run -c ${XRAY_CONFIG}")
+ExecStart=$(logscrub_execstart "${XRAY_BIN} run -c ${XRAY_CONFIG}" "$XRAY_SERVICE")
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
