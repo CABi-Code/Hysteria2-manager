@@ -788,8 +788,11 @@ publish_cluster_nodeinfo() {
     mkdir -p "$WEBROOT/cluster"
     local api=0
     declare -F webapi_enabled >/dev/null 2>&1 && webapi_enabled && api=1
+    # IPSALT — месяц соли наших хэшей адресов: по нему сосед решает, сравнимы
+    # ли наши адреса с его (_peer_ips_trusted, P-176).
     { printf 'LABEL=%s\n' "$(node_label)"
       printf 'WEBAPI=%s\n' "$api"
+      [ -s "$IP_SALT_FILE" ] && printf 'IPSALT=%s\n' "$(awk '{print $1; exit}' "$IP_SALT_FILE")"
     } > "$WEBROOT/cluster/nodeinfo" 2>/dev/null || true
     secure_web_files
 }

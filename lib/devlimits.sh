@@ -211,10 +211,7 @@ enforce_device_limits() {
         total=$(cluster_user_connections "$user")
         # node_yields: при превышении ПО КЛАСТЕРУ кикает одна нода, а не все
         # сразу — иначе юзера рвало на каждой, а суммарно не убывало ничего.
-        # После смены соли адресов (P-176) одно устройство на минуты выглядит
-        # двумя — в это окно не кикаем, лишний кик рвёт платящего.
-        if user_over_limit "$user" "$total" "$localn" && node_yields "$user" "$localn" \
-           && ! ip_rotation_quiet; then
+        if user_over_limit "$user" "$total" "$localn" && node_yields "$user" "$localn"; then
             hy_kick_user "$user" &>/dev/null
             # Доп. протоколы рвутся своими способами: без этого лимит держался
             # только на Hysteria, а протокол выбирает клиент (P-16).
@@ -272,7 +269,6 @@ enforce_active_node_limit() {
         # нодах): клиент сам гонит трафик через несколько серверов. Это не
         # шаринг, и кик его только рвёт — P-159.
         [ "$(cluster_active_device_count "$user")" -gt "$cap" ] 2>/dev/null || continue
-        ip_rotation_quiet && continue    # окно после смены соли адресов (P-176)
 
         # Оставляем cap самых ранних (по active_since, tie-break по имени ноды).
         # Если МЫ не среди «оставленных» — кикаем свои сессии на этой ноде.

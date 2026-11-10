@@ -86,6 +86,7 @@ cluster_active_device_count() {   # user -> число
                     csv=$(awk -F'\t' -v u="$user" 'NF>=7 && $1==u && $7==1{print (NF>=9?$9:"-"); exit}' "$f" 2>/dev/null)
                     [ -n "$csv" ] || continue
                     [ "$csv" = "-" ] && csv=""
+                    _peer_ips_trusted "$f" || csv="?"   # чужая соль или устаревший файл (P-176)
                     _online_tokens "$name" 1 "$csv"
                 done
             fi
@@ -103,9 +104,6 @@ cluster_active_device_count() {   # user -> число
 # Ничего не кикаем — только накапливаем наблюдения часа в ABUSE_OBS_FILE.
 abuse_observe() {
     sub_enabled || return 0
-    # Сразу после смены соли адресов одно устройство на минуты выглядит двумя
-    # (старые хэши у соседей, новые у нас) — такой час наблюдений не в счёт (P-176).
-    declare -F ip_rotation_quiet >/dev/null && ip_rotation_quiet && return 0
     local now user cap cn dev conn line viol samples esum pa pconn
     now=$(date +%s)
     local tmp="${ABUSE_OBS_FILE}.tmp.$BASHPID"; : > "$tmp"

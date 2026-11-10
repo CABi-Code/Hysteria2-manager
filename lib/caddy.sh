@@ -9,6 +9,34 @@
 # в URL и параметрах клиентов им делать нечего.
 _caddy_hval() { printf '%s' "$1" | tr -d '"\\\n\r'; }
 
+# Применить только что записанный Caddyfile; $1 — копия прежнего для отката.
+_caddy_apply() {
+    # Caddy сам выпускает и БЕССРОЧНО продлевает сертификаты, пока сервис активен.
+    # Работающий Caddy только перечитываем. Неудачное перечитывание безвредно:
+    # он остаётся на прежнем конфиге и продолжает отвечать. Перезапуск в этом
+    # месте превращал отказ нового конфига в простой всех сайтов машины —
+    # validate проходит, а открыть свой лог от юзера Caddy не может (P-176,
+    # 8 минут простоя). Поэтому при отказе возвращаем прежний файл и не трогаем
+    # процесс. Запуск — только если Caddy и так лежит, и с откатом, если новый
+    # конфиг не поднялся.
+    local bak="$1" rc=0
+    if systemctl is-active --quiet caddy 2>/dev/null; then
+        if ! systemctl reload caddy 2>/dev/null; then
+            [ -n "$bak" ] && cp -f "$bak" "$CADDYFILE"
+            rc=1
+        fi
+    elif ! { systemctl start caddy 2>/dev/null && sleep 1 && systemctl is-active --quiet caddy 2>/dev/null; }; then
+        if [ -n "$bak" ]; then
+            cp -f "$bak" "$CADDYFILE"
+            systemctl reset-failed caddy 2>/dev/null
+            systemctl start caddy 2>/dev/null
+        fi
+        rc=1
+    fi
+    [ -n "$bak" ] && rm -f "$bak"
+    [ "$rc" = 0 ] && systemctl is-active --quiet caddy 2>/dev/null
+}
+
 # Пишет Caddyfile под домен ноды и перезагружает Caddy. Идемпотентно.
 # /sub/* — публично; /cluster/* — только при заголовке X-Cluster-Auth.
 setup_caddy() {
@@ -180,12 +208,8 @@ EOF
             return 1
         fi
     fi
-    [ -n "$bak" ] && rm -f "$bak"
 
-    # Caddy сам выпускает и БЕССРОЧНО продлевает сертификаты, пока сервис активен.
-    systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null
-    systemctl is-active --quiet caddy 2>/dev/null || systemctl start caddy 2>/dev/null
-    systemctl is-active --quiet caddy 2>/dev/null
+    _caddy_apply "$bak"
 }
 
 # Нейтральная страница в корне домена ноды. Её видит не только человек с
@@ -235,6 +259,8 @@ caddy_rawlog_ensure() {
     [ -f "$CADDYFILE" ] || return 0
     grep -qF "output file ${CADDY_RAW_LOG}" "$CADDYFILE" 2>/dev/null && return 0
     raw_dirs_ensure
+    # Лог должен уже принадлежать юзеру Caddy — иначе новый конфиг не поднимется.
+    [ "$(stat -c %U "$CADDY_RAW_LOG" 2>/dev/null)" = "$(id -un caddy 2>/dev/null || echo root)" ] || return 0
     setup_caddy >/dev/null 2>&1
 }
 

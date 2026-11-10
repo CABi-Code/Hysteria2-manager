@@ -61,7 +61,6 @@ check "один адрес — один хэш во всех файлах" \
     "$(cut -d'|' -f2 "$IPS_FILE")/$(head -1 "$AUTHMAP_FILE" | cut -d'|' -f2)/$(cut -f9 "$PEERS_DIR/a.stats" | cut -d, -f1)" "$H/$H/$H"
 check "tc-раскладка получила последний час настоящих адресов" "$(cut -d'|' -f2 "$RAW_AUTHMAP" | paste -sd, -)" "1.2.3.4"
 [ ! -f "$DATA_DIR/onlineips.dat" ] && ok "сирота onlineips.dat удалён" || bad "onlineips.dat остался"
-ip_rotation_quiet && ok "сразу после выдачи соли кики молчат" || bad "нет тихого окна после выдачи соли"
 
 echo "── auth-скрипт: на диск хэш, в память — адрес"
 printf 'bob:pw\n' > "$USERS_DB"
@@ -108,12 +107,35 @@ echo "── смена месяца"
 printf 'alice|%s|1|2|1\n' "$H" > "$IPS_FILE"
 printf 'alice|%s|1|2|1\n' "$H" > "$PEERS_DIR/a.ips"
 printf '200001 oldsalt 1\n' > "$IP_SALT_FILE"
-ip_rotation_quiet && bad "тихое окно не должно длиться месяцами" || ok "старая смена — окно давно закрыто"
 ip_salt_sync
 check "эпоха обновилась" "$(awk '{print $1}' "$IP_SALT_FILE")" "$(date -u +%Y%m)"
 check "хэши прошлого месяца стёрты" "$(wc -c < "$IPS_FILE")" "0"
 [ ! -f "$PEERS_DIR/a.ips" ] && ok "кэш адресов соседа стёрт" || bad "кэш адресов соседа остался"
-ip_rotation_quiet && ok "после смены соли кики молчат" || bad "нет тихого окна после смены"
+
+echo "── окно по каждому клиенту: адреса соседа сравниваются, только если им можно верить"
+source "$SCRIPT_DIR/lib/online.sh"; source "$SCRIPT_DIR/lib/publish.sh"
+node_host() { echo self.example; }
+EP=$(awk '{print $1}' "$IP_SALT_FILE")
+CACHED_ONLINE='{"alice":1}'; CACHED_ONLINE_IPS="alice|$(h 1.2.3.4)"
+rm -f "$PEERS_DIR"/*
+# Сосед видит того же клиента с ДРУГОГО адреса: настоящие два устройства.
+printf 'alice\t1\t0\t0\t0\t0\t1\t100\t%s\n' "$(h 5.6.7.8)" > "$PEERS_DIR/b.stats"
+printf 'LABEL=b\nIPSALT=%s\n' "$EP" > "$PEERS_DIR/b.nodeinfo"
+check "та же соль, свежие данные — два адреса считаются" "$(cluster_user_connections alice)" "2"
+printf 'LABEL=b\nIPSALT=200001\n' > "$PEERS_DIR/b.nodeinfo"
+check "у соседа старая соль — его адрес не второе устройство" "$(cluster_user_connections alice)" "1"
+printf 'LABEL=b\n' > "$PEERS_DIR/b.nodeinfo"
+check "сосед без хэширования (адреса хэшируем мы) — сравнивается" "$(cluster_user_connections alice)" "2"
+printf 'LABEL=b\nIPSALT=%s\n' "$EP" > "$PEERS_DIR/b.nodeinfo"
+touch -d '-20 minutes' "$PEERS_DIR/b.stats"
+check "данные соседа устарели (не отвечает) — адрес не в счёт" "$(cluster_user_connections alice)" "1"
+check "  и в счёте активных устройств тоже" "$(get_user_active() { echo 1; }; cluster_active_node_count() { echo 2; }; source "$SCRIPT_DIR/lib/antiabuse.sh"; get_user_active() { echo 1; }; cluster_active_node_count() { echo 2; }; cluster_active_device_count alice)" "1"
+touch "$PEERS_DIR/b.stats"
+check "  а свежие — снова в счёте" "$(get_user_active() { echo 1; }; source "$SCRIPT_DIR/lib/antiabuse.sh"; get_user_active() { echo 1; }; cluster_active_node_count() { echo 2; }; cluster_active_device_count alice)" "2"
+publish_cluster_nodeinfo() { :; }; unset -f publish_cluster_nodeinfo; source "$SCRIPT_DIR/lib/cluster.sh"
+sub_enabled() { return 0; }; node_label() { echo me; }; secure_web_files() { :; }
+publish_cluster_nodeinfo
+check "своя соль публикуется соседям" "$(grep '^IPSALT=' "$WEBROOT/cluster/nodeinfo")" "IPSALT=$EP"
 
 echo "── каталоги в памяти: владельцы-писатели заранее"
 service_identity() { echo "nobody nogroup"; }

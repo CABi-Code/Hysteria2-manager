@@ -53,20 +53,8 @@ JOURNALD_DROPIN="/etc/systemd/journald.conf.d/10-hy2-retention.conf"
 # Пути (IPHASH_PY, IP_SALT_FILE, RAW_DIR, RAW_AUTHMAP, CADDY_RAW_LOG) — в config.sh.
 RAW_RETENTION_SEC="${RAW_RETENTION_SEC:-3600}"
 TMPFILES_CONF="${HY2M_TMPFILES_CONF:-${HY2M_DATA_DIR:+$HY2M_DATA_DIR/tmpfiles.conf}}"; TMPFILES_CONF="${TMPFILES_CONF:-/etc/tmpfiles.d/hy2-manager.conf}"
-# Сразу после смены соли старые хэши у соседей и новые у нас — разные метки
-# одного адреса, и одно устройство на пару минут выглядит двумя. Кик в это окно
-# рвал бы платящего, поэтому лимит устройств его пропускает.
-IP_ROTATE_QUIET_SEC="${IP_ROTATE_QUIET_SEC:-900}"
-
 ip_scrub()    { python3 "$IPHASH_PY" scrub "$IP_SALT_FILE"; }   # stdin → адреса заменены хэшами
 ip_hash_map() { python3 "$IPHASH_PY" map "$IP_SALT_FILE"; }     # адрес на строку → «адрес<TAB>хэш»
-
-# В окне после смены соли (или первой выдачи) кикать нельзя — см. выше.
-ip_rotation_quiet() {
-    local ts
-    ts=$(awk '{print $3; exit}' "$IP_SALT_FILE" 2>/dev/null)
-    [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - ts )) -lt "$IP_ROTATE_QUIET_SEC" ]
-}
 
 # Переписать файл, заменив адреса хэшами. `cat >`, а не mv: владельца и права
 # (auth-скрипт пишет от юзера сервиса) сохраняем как есть.
@@ -80,7 +68,9 @@ _ip_scrub_file() {
 # Соль текущего месяца. Идемпотентна, зовётся раз в минуту. Первая выдача —
 # разовая миграция: всё, что уже лежит открытым, переводится в хэши. Смена —
 # хэши прошлого месяца стираются: с новыми они не сравнимы, то есть никому не
-# нужны, а держать их значит держать вечную метку адреса.
+# нужны, а держать их значит держать вечную метку адреса. Общей паузы киков
+# после смены нет: адреса соседа со старой солью не сравниваются по каждому
+# клиенту отдельно (_peer_ips_trusted в publish.sh).
 ip_salt_sync() {
     local epoch cur salt tmp first=0 f owner group
     epoch=$(date -u +%Y%m)
