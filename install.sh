@@ -71,6 +71,9 @@ SERVICE="hysteria-server.service"
 # обновления менеджер упадёт с «Модуль не найден» (файл не скачался).
 MANAGER_LIBS=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
 
+# Файлы lib/, которые не модули bash: их нет в _required_libs.
+MANAGER_LIB_FILES="iphash.py"
+
 # === УТИЛИТА: скачивание файлов менеджера ===
 download_file() {
     local src="$1" dst="$2"
@@ -98,6 +101,11 @@ install_manager_files() {
     local f
     for f in $libs; do
         download_file "$REPO_URL/lib/${f}.sh" "$INSTALL_DIR/lib/${f}.sh"
+    done
+    # Не-bash файлы lib/ список модулей не покрывает. Хэшер адресов не доезжал до
+    # нод, обновлённых установщиком, и обёртка журнала роняла движки (P-177).
+    for f in $MANAGER_LIB_FILES; do
+        download_file "$REPO_URL/lib/${f}" "$INSTALL_DIR/lib/${f}"
     done
     # Модуль, выпавший из списка (разбит на части, удалён при рефакторинге),
     # на ноде оставался НАВСЕГДА: качаем только то, что в списке, и ничего не

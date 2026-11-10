@@ -94,7 +94,7 @@
 | [P-174](PROTOCOLS.md#p-174) | Trojan: сотни TLS-рукопожатий в сутки обрываются по тайм-ауту | `lib/protocols.sh` | [protocols](PROTOCOLS.md) | 🟢 |
 | [P-175](OPS.md#p-175) | Caddy перечитывает конфиг каждые 2–3 минуты (SSE `/api` под ударом, не проверено) | `lib/sub_links.sh` | [ops](OPS.md) | 🟢 |
 | [P-176](OPS.md#p-176) | Адреса клиентов открытыми в файлах, журналах и у соседей — теперь хэш с солью месяца | `lib/iphash.py` | [ops](OPS.md) | ✅ |
-| [P-177](OPS.md#p-177) | Фильтр журнала уронил Hysteria и Xray на соседях: умер читатель трубы — SIGPIPE демону | `lib/ip_tracking.sh` | [ops](OPS.md) | 🟡 |
+| [P-177](OPS.md#p-177) | Фильтр журнала уронил Hysteria и Xray на соседях: установщик не возил `iphash.py`, умер читатель трубы — SIGPIPE демону | `install.sh`, `lib/ip_tracking.sh` | [ops](OPS.md) | 🟡 |
 | [P-10](LIMITS.md#p-10) | tc-классы привязаны к имени юзера из `users.db` | `lib/perf.sh` | [limits](LIMITS.md) | 🟢 |
 | [P-12](OPS.md#p-12) | Возможный двойной счёт скорости на релейном трафике | `lib/publish.sh` | [ops](OPS.md) | 🟢 |
 | [P-72](OPS.md#p-72) | `onlineips.dat` осиротел: файл лежит, никто его не пишет и не читает | `lib/online.sh` | [ops](OPS.md) | 🟢 |

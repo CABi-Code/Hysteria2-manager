@@ -108,7 +108,7 @@ report_netday() {
     echo "fails=$fl"
     echo "down=$dn"
     echo "quiet=$(ls "$LOGSCRUB_QUIET_DIR" 2>/dev/null | sed 's/\.service$//' | paste -sd, -)"
-    echo "py=$(command -v python3 >/dev/null 2>&1 && echo 1 || echo 0)"
+    echo "py=$(iphash_ok && echo 1 || echo 0)"
     # Сертификат — тем же путём, каким его видит клиент: истёк — встают все TLS-протоколы.
     h=$(node_host 2>/dev/null)
     if [ -n "$h" ]; then
@@ -165,7 +165,7 @@ _report_node_alerts() {   # метка файл_netday
             if (v["down"] != "")       printf "U|%s: не работает %s\n", L, v["down"]
             if (v["fails"] != "")      printf "U|%s: падения служб за сутки — %s\n", L, v["fails"]
             if (v["quiet"] != "")      printf "W|%s: %s запущены без фильтра журнала — не встали с ним (P-177)\n", L, v["quiet"]
-            if (("py" in v) && v["py"] == "0") printf "W|%s: нет python3 — адреса не хэшируются, лимит устройств слеп\n", L
+            if (("py" in v) && v["py"] == "0") printf "W|%s: хэшер адресов недоступен (нет python3 или lib/iphash.py) — лимит устройств слеп\n", L
             if (n("oom"))              printf "U|%s: OOM-убийств %d — не хватает памяти\n", L, n("oom")
             if (n("disk") >= du)       printf "U|%s: диск занят на %d%%\n", L, n("disk")
             else if (n("disk") >= dw)  printf "W|%s: диск занят на %d%%\n", L, n("disk")

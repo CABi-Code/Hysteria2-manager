@@ -32,4 +32,10 @@ grep -q python3 <<< "$es" && bad "у тихой службы остался фи
 [ -z "$(run "$es")" ] && ok "вывод выброшен" || bad "вывод тихой службы виден"
 run "$es"; [ $? = 7 ] && ok "код демона доходит до systemd" || bad "код потерян"
 
+echo "── файла хэшера нет (установщик его не привёз)"
+rm -f "$LOGSCRUB_QUIET_DIR/t.service"
+es=$(IPHASH_PY=/nonexistent/iphash.py logscrub_execstart "$D" t.service)
+grep -q python3 <<< "$es" && bad "обёртка зовёт отсутствующий хэшер" || ok "без хэшера — тихий запуск"
+grep -q 'MANAGER_LIB_FILES="[^"]*iphash.py' "$SCRIPT_DIR/install.sh" && ok "установщик возит iphash.py" || bad "установщик не возит iphash.py"
+
 [ "$FAIL" = 0 ] && echo "✅ test-logscrub-safe" || { echo "❌ test-logscrub-safe"; exit 1; }

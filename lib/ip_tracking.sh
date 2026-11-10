@@ -166,8 +166,10 @@ raw_authmap_trim() {
 #     доступность важнее строк журнала.
 LOGSCRUB_QUIET_DIR="$DATA_DIR/logscrub_quiet"   # файл = имя службы, у которой фильтр отключён
 _logscrub_quiet() { [ -n "${1:-}" ] && [ -e "$LOGSCRUB_QUIET_DIR/$1" ]; }
+# Хэшер пригоден: есть и python3, и сам файл (установщик долго его не возил, P-177).
+iphash_ok() { command -v python3 >/dev/null 2>&1 && [ -r "$IPHASH_PY" ]; }
 logscrub_execstart() {   # "команда демона" [служба] -> значение ExecStart
-    if ! command -v python3 >/dev/null 2>&1 || _logscrub_quiet "${2:-}"; then
+    if ! iphash_ok || _logscrub_quiet "${2:-}"; then
         printf "/bin/bash -c 'exec %s >/dev/null 2>&1'" "$1"
         return
     fi
@@ -239,6 +241,7 @@ ip_privacy_ensure() {
     # живыми и без хэшера (logscrub_execstart, P-177).
     hy_logscrub_ensure
     declare -F proto_logscrub_ensure >/dev/null && proto_logscrub_ensure
+    [ -r "$IPHASH_PY" ] || return 0   # нечем хэшировать — дальше только порча данных
     if ! command -v python3 >/dev/null 2>&1; then
         _python3_install || return 0
         # python3 появился — обёртки с фильтром вместо «вывод в никуда».
