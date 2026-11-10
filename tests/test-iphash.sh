@@ -115,6 +115,21 @@ check "хэши прошлого месяца стёрты" "$(wc -c < "$IPS_FIL
 [ ! -f "$PEERS_DIR/a.ips" ] && ok "кэш адресов соседа стёрт" || bad "кэш адресов соседа остался"
 ip_rotation_quiet && ok "после смены соли кики молчат" || bad "нет тихого окна после смены"
 
+echo "── каталоги в памяти: владельцы-писатели заранее"
+service_identity() { echo "nobody nogroup"; }
+raw_dirs_ensure
+check "authmap.raw принадлежит юзеру сервиса" "$(stat -c %U "$RAW_AUTHMAP" 2>/dev/null)" "nobody"
+if id caddy >/dev/null 2>&1; then
+    # caddy validate от root открыл бы лог сам и создал его root:600 — Caddy не стартовал бы.
+    check "лог Caddy создан заранее и принадлежит caddy" "$(stat -c %U "$CADDY_RAW_LOG" 2>/dev/null)" "caddy"
+fi
+chown root "$RAW_AUTHMAP"; raw_dirs_ensure
+check "чужой владелец исправляется на следующем прогоне" "$(stat -c %U "$RAW_AUTHMAP")" "nobody"
+check "тест с подменённым DATA_DIR не трогает боевой /run" \
+    "$(env -u HY2M_RAW_DIR -u HY2M_TMPFILES_CONF HY2M_DATA_DIR=/x bash -c 'source "'"$SCRIPT_DIR"'/lib/config.sh"; source "'"$SCRIPT_DIR"'/lib/ip_tracking.sh"; echo "$RAW_DIR $TMPFILES_CONF"')" \
+    "/x/run /x/tmpfiles.conf"
+service_identity() { echo "root root"; }
+
 echo "── без соли адрес не уходит открытым"
 check "нет соли — «?»" "$(printf '1.2.3.4\n' | python3 "$IPHASH_PY" scrub "$HY2M_DATA_DIR/none")" "?"
 

@@ -210,7 +210,9 @@ AUTHMAP_FILE="$DATA_DIR/authmap.dat"
 # лишь в RAW_DIR: это /run, то есть память, и не дольше часа.
 IPHASH_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/iphash.py"
 IP_SALT_FILE="$DATA_DIR/ip_salt"                 # «эпоха соль ts_смены»
-RAW_DIR="${HY2M_RAW_DIR:-/run/hy2-manager}"
+# С подменённым DATA_DIR (тесты) и RAW_DIR свой: иначе тест создал бы каталоги
+# в боевом /run с чужими владельцами, и Caddy с Hysteria не смогли бы в них писать.
+RAW_DIR="${HY2M_RAW_DIR:-${HY2M_DATA_DIR:+$HY2M_DATA_DIR/run}}"; RAW_DIR="${RAW_DIR:-/run/hy2-manager}"
 RAW_AUTHMAP="$RAW_DIR/hy/authmap.raw"            # пишет auth-скрипт (юзер сервиса)
 CADDY_RAW_LOG="$RAW_DIR/caddy/access.log"        # пишет Caddy, разбирает collect_sub_ips
 # Уникальные IP, скачавшие подписку по КОНКРЕТНОМУ токену. «token|ip|first|last|count».

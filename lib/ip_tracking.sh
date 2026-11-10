@@ -52,7 +52,7 @@ JOURNALD_DROPIN="/etc/systemd/journald.conf.d/10-hy2-retention.conf"
 # docs/guide/DATA-RETENTION.md.
 # Пути (IPHASH_PY, IP_SALT_FILE, RAW_DIR, RAW_AUTHMAP, CADDY_RAW_LOG) — в config.sh.
 RAW_RETENTION_SEC="${RAW_RETENTION_SEC:-3600}"
-TMPFILES_CONF="${HY2M_TMPFILES_CONF:-/etc/tmpfiles.d/hy2-manager.conf}"
+TMPFILES_CONF="${HY2M_TMPFILES_CONF:-${HY2M_DATA_DIR:+$HY2M_DATA_DIR/tmpfiles.conf}}"; TMPFILES_CONF="${TMPFILES_CONF:-/etc/tmpfiles.d/hy2-manager.conf}"
 # Сразу после смены соли старые хэши у соседей и новые у нас — разные метки
 # одного адреса, и одно устройство на пару минут выглядит двумя. Кик в это окно
 # рвал бы платящего, поэтому лимит устройств его пропускает.
@@ -123,6 +123,12 @@ ip_salt_sync() {
 # Каталоги для настоящих адресов: в /run, то есть в памяти. tmpfiles.d
 # пересоздаёт их на загрузке ДО старта Caddy — иначе он не открыл бы свой лог
 # и не поднялся бы.
+#
+# Файлы создаются здесь же, сразу с владельцем-писателем, и это не мелочь:
+# `caddy validate` от root (setup_caddy) открывает логи заранее и создал бы
+# access.log от root с правами 600 — Caddy от своего юзера его не открыл бы
+# и не стартовал. Так и случилось при первой выкатке (P-176). Применяем на
+# каждом вызове: `d`/`f` правят владельца уже существующих, а не только новых.
 raw_dirs_ensure() {
     local owner group cuser want
     owner=root; group=root
@@ -131,17 +137,19 @@ raw_dirs_ensure() {
     want="# hy2-manager: настоящие адреса клиентов живут только в памяти (P-176)
 d ${RAW_DIR} 0755 root root -
 d ${RAW_DIR}/hy 0700 ${owner:-root} ${group:-root} -
-d ${RAW_DIR}/caddy 0700 ${cuser} ${cuser} -"
+f ${RAW_AUTHMAP} 0600 ${owner:-root} ${group:-root} -
+d ${RAW_DIR}/caddy 0700 ${cuser} ${cuser} -
+f ${CADDY_RAW_LOG} 0600 ${cuser} ${cuser} -"
     if [ "$(cat "$TMPFILES_CONF" 2>/dev/null)" != "$want" ]; then
         mkdir -p "$(dirname "$TMPFILES_CONF")" 2>/dev/null
         printf '%s\n' "$want" > "$TMPFILES_CONF" 2>/dev/null
     fi
-    [ -d "$RAW_DIR/hy" ] && [ -d "$RAW_DIR/caddy" ] && return 0
     systemd-tmpfiles --create "$TMPFILES_CONF" >/dev/null 2>&1 || {
         mkdir -p "$RAW_DIR/hy" "$RAW_DIR/caddy"
-        chown "${owner:-root}:${group:-root}" "$RAW_DIR/hy" 2>/dev/null
-        chown "$cuser:$cuser" "$RAW_DIR/caddy" 2>/dev/null
-        chmod 700 "$RAW_DIR/hy" "$RAW_DIR/caddy"
+        touch "$RAW_AUTHMAP" "$CADDY_RAW_LOG"
+        chown "${owner:-root}:${group:-root}" "$RAW_DIR/hy" "$RAW_AUTHMAP" 2>/dev/null
+        chown "$cuser:$cuser" "$RAW_DIR/caddy" "$CADDY_RAW_LOG" 2>/dev/null
+        chmod 700 "$RAW_DIR/hy" "$RAW_DIR/caddy"; chmod 600 "$RAW_AUTHMAP" "$CADDY_RAW_LOG"
     }
 }
 
