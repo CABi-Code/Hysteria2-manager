@@ -206,6 +206,13 @@ AUTHLIMITS_FILE="$DATA_DIR/authlimits.dat"
 # активные IP по тарифным классам скорости в реальном времени (см. lib/perf.sh).
 # Пишет процесс hysteria (владелец — сервис), читает менеджер (root).
 AUTHMAP_FILE="$DATA_DIR/authmap.dat"
+# Адреса клиентов — только хэшем (P-176, lib/ip_tracking.sh). Настоящие живут
+# лишь в RAW_DIR: это /run, то есть память, и не дольше часа.
+IPHASH_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/iphash.py"
+IP_SALT_FILE="$DATA_DIR/ip_salt"                 # «эпоха соль ts_смены»
+RAW_DIR="${HY2M_RAW_DIR:-/run/hy2-manager}"
+RAW_AUTHMAP="$RAW_DIR/hy/authmap.raw"            # пишет auth-скрипт (юзер сервиса)
+CADDY_RAW_LOG="$RAW_DIR/caddy/access.log"        # пишет Caddy, разбирает collect_sub_ips
 # Уникальные IP, скачавшие подписку по КОНКРЕТНОМУ токену. «token|ip|first|last|count».
 # Источник — access-лог Caddy, который пишется в stderr → journald (НЕ в файл: файл
 # в /var/log/caddy процессу caddy под systemd недоступен и ломает старт Caddy).

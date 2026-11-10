@@ -21,6 +21,7 @@ Bash-менеджер нод защищённого доступа: Hysteria2 + 
 | трафик и счётчики | `lib/traffic.sh` |
 | онлайн-активность | `lib/online.sh` |
 | антиабуз, трекинг IP | `lib/antiabuse.sh`, `lib/ip_tracking.sh` |
+| хэш адресов клиентов (адрес нигде не хранится открытым), соль месяца | `lib/iphash.py`, `lib/ip_tracking.sh` |
 | free-план | `lib/freeplan.sh` |
 | тарифы (`tariffs.conf`: цены, валюты, опции) | `lib/tariffs.sh` |
 | демо-ключи | `lib/demo.sh` |

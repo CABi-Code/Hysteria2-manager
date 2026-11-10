@@ -684,13 +684,16 @@ klimit_reconcile() {
                 # вовсе (P-18). Такой клиент оставался в общем классе, хотя
                 # именно ему класс и нужен. Данные берём из кэша онлайна — в
                 # --online-sync он уже прогрет, лишнего опроса движков нет.
+                # Правилам tc нужен НАСТОЯЩИЙ адрес, а в файлах данных — хэши
+                # (P-176). Поэтому только два источника, и оба в памяти: живые
+                # адреса Xray/TUIC из опроса движков и маппинг Hysteria из RAW_DIR
+                # (tmpfs, последний час) — ровно окно, которое здесь и смотрится.
                 if declare -F refresh_online >/dev/null 2>&1; then
                     refresh_online 2>/dev/null
-                    printf '%s\n' "${CACHED_ONLINE_IPS:-}" \
+                    printf '%s\n' "${CACHED_PROTO_IPS_RAW:-}" \
                         | awk -F'|' -v n="$now" 'NF>=2 && $1!="" && $2!="" && $2!="?" {print $1"|"$2"|"n}'
                 fi
-                [ -f "$AUTHMAP_FILE" ] && cat "$AUTHMAP_FILE"
-                [ -f "$IPS_FILE" ] && awk -F'|' 'NF>=4{printf "%s|%s|%s\n",$1,$2,$4}' "$IPS_FILE"; } 2>/dev/null )
+                [ -f "$RAW_AUTHMAP" ] && cat "$RAW_AUTHMAP"; } 2>/dev/null )
 
     # 2) подпись; если не изменилась — обычно ничего не трогаем (0 команд tc).
     # НО: каркас классов мог быть пересобран (рестарт/бут сервиса hy2-limit,

@@ -96,7 +96,8 @@ KLIMIT_SIG="$DATA_DIR/sig"
 KLIMIT_CONF="$DATA_DIR/klimit.conf"; printf 'DOWN_MBIT=30\nUP_MBIT=30\n' > "$KLIMIT_CONF"
 printf 'olduser|10.0.0.9|1\n' > "$AUTHMAP_FILE"      # ts=1 — заведомо старее часа
 : > "$IPS_FILE"
-CACHED_ONLINE_IPS='liveuser|203.0.113.7
+# Живые адреса движков — настоящие, только в памяти (P-176): CACHED_PROTO_IPS_RAW.
+CACHED_PROTO_IPS_RAW='liveuser|203.0.113.7
 ghost|?'
 refresh_online() { :; }
 klimit_get() { case "$1" in PORT) echo 38268 ;; SHAPE) echo "17:38268" ;; TARIFFS) echo "" ;; esac; }

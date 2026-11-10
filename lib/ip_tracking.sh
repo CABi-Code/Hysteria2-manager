@@ -38,6 +38,165 @@ SLOTMAP_RETENTION_HOURS="${SLOTMAP_RETENTION_HOURS:-6}"
 JOURNAL_RETENTION_DAYS="${JOURNAL_RETENTION_DAYS:-3}"
 JOURNALD_DROPIN="/etc/systemd/journald.conf.d/10-hy2-retention.conf"
 
+# ---------------- Адреса — только хэшем (P-176) ----------------
+# Ни в файлах данных, ни в журналах, ни соседям адрес клиента открытым не
+# уходит: вместо него «h<16 hex>» = HMAC(соль, адрес) — lib/iphash.py, одна
+# реализация на всё. Сравнение «тот же адрес или нет» хэш сохраняет, поэтому
+# счёт устройств, анти-абуз и «чужое устройство» не заметили подмены.
+# Соль общая на кластер (выводится из секрета кластера) и меняется раз в месяц
+# по UTC — у всех нод одновременно, без переговоров.
+#
+# Настоящий адрес нужен ровно одному: tc-правилам тарифной скорости. Для них —
+# RAW_DIR в /run (tmpfs, не пишется на диск): маппинг Hysteria «юзер|адрес|ts»
+# и лог Caddy, и тот и другой живут не дольше часа. Разбор —
+# docs/guide/DATA-RETENTION.md.
+# Пути (IPHASH_PY, IP_SALT_FILE, RAW_DIR, RAW_AUTHMAP, CADDY_RAW_LOG) — в config.sh.
+RAW_RETENTION_SEC="${RAW_RETENTION_SEC:-3600}"
+TMPFILES_CONF="${HY2M_TMPFILES_CONF:-/etc/tmpfiles.d/hy2-manager.conf}"
+# Сразу после смены соли старые хэши у соседей и новые у нас — разные метки
+# одного адреса, и одно устройство на пару минут выглядит двумя. Кик в это окно
+# рвал бы платящего, поэтому лимит устройств его пропускает.
+IP_ROTATE_QUIET_SEC="${IP_ROTATE_QUIET_SEC:-900}"
+
+ip_scrub()    { python3 "$IPHASH_PY" scrub "$IP_SALT_FILE"; }   # stdin → адреса заменены хэшами
+ip_hash_map() { python3 "$IPHASH_PY" map "$IP_SALT_FILE"; }     # адрес на строку → «адрес<TAB>хэш»
+
+# В окне после смены соли (или первой выдачи) кикать нельзя — см. выше.
+ip_rotation_quiet() {
+    local ts
+    ts=$(awk '{print $3; exit}' "$IP_SALT_FILE" 2>/dev/null)
+    [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - ts )) -lt "$IP_ROTATE_QUIET_SEC" ]
+}
+
+# Переписать файл, заменив адреса хэшами. `cat >`, а не mv: владельца и права
+# (auth-скрипт пишет от юзера сервиса) сохраняем как есть.
+_ip_scrub_file() {
+    [ -s "$1" ] || return 0
+    local tmp; tmp=$(mktemp) || return 1
+    ip_scrub < "$1" > "$tmp" && cat "$tmp" > "$1"
+    rm -f "$tmp"
+}
+
+# Соль текущего месяца. Идемпотентна, зовётся раз в минуту. Первая выдача —
+# разовая миграция: всё, что уже лежит открытым, переводится в хэши. Смена —
+# хэши прошлого месяца стираются: с новыми они не сравнимы, то есть никому не
+# нужны, а держать их значит держать вечную метку адреса.
+ip_salt_sync() {
+    local epoch cur salt tmp first=0 f owner group
+    epoch=$(date -u +%Y%m)
+    cur=$(awk '{print $1; exit}' "$IP_SALT_FILE" 2>/dev/null)
+    [ "$cur" = "$epoch" ] && return 0
+    command -v python3 >/dev/null 2>&1 || return 1
+    declare -F cluster_secret >/dev/null && cluster_secret >/dev/null
+    salt=$(python3 "$IPHASH_PY" derive "$CLUSTER_SECRET_FILE" "$epoch" 2>/dev/null)
+    [ -n "$salt" ] || return 1
+    [ -n "$cur" ] || first=1
+    tmp="${IP_SALT_FILE}.tmp.$BASHPID"
+    printf '%s %s %s\n' "$epoch" "$salt" "$(date +%s)" > "$tmp" || return 1
+    # Соль читают auth-скрипт и фильтр журнала Hysteria — оба от юзера сервиса.
+    if declare -F service_identity >/dev/null 2>&1; then
+        read -r owner group < <(service_identity)
+        [ -n "$owner" ] && chown "${owner}:${group}" "$tmp" 2>/dev/null
+    fi
+    chmod 640 "$tmp"; mv "$tmp" "$IP_SALT_FILE"
+
+    if [ "$first" = 1 ]; then
+        # tc-раскладке нужен живой маппинг — последний час переносим в RAW_DIR
+        # до того, как authmap.dat станет хэшами.
+        raw_dirs_ensure
+        awk -F'|' -v cut=$(( $(date +%s) - RAW_RETENTION_SEC )) 'NF>=3 && $3+0>=cut' \
+            "$AUTHMAP_FILE" >> "$RAW_AUTHMAP" 2>/dev/null
+        for f in "$IPS_FILE" "$SUBIPS_FILE" "$AUTHMAP_FILE" "$SLOTMAP_FILE" "$DATA_DIR/limit.log" \
+                 "$PEERS_DIR"/*.stats "$PEERS_DIR"/*.ips "$PEERS_DIR"/*.subips \
+                 "$DATA_DIR/self.stats" "$WEBROOT/cluster/stats" "$WEBROOT/cluster/ips" "$WEBROOT/cluster/subips"; do
+            [ -f "$f" ] && _ip_scrub_file "$f"
+        done
+        rm -f "$DATA_DIR/onlineips.dat" 2>/dev/null    # сирота прежней схемы (P-72), только адреса
+    else
+        for f in "$IPS_FILE" "$SUBIPS_FILE" "$AUTHMAP_FILE" "$SLOTMAP_FILE"; do
+            [ -f "$f" ] && : > "$f"
+        done
+        rm -f "$PEERS_DIR"/*.ips "$PEERS_DIR"/*.subips 2>/dev/null   # соседи пришлют уже новыми
+    fi
+}
+
+# Каталоги для настоящих адресов: в /run, то есть в памяти. tmpfiles.d
+# пересоздаёт их на загрузке ДО старта Caddy — иначе он не открыл бы свой лог
+# и не поднялся бы.
+raw_dirs_ensure() {
+    local owner group cuser want
+    owner=root; group=root
+    declare -F service_identity >/dev/null 2>&1 && read -r owner group < <(service_identity)
+    cuser=$(id -un caddy 2>/dev/null || echo root)
+    want="# hy2-manager: настоящие адреса клиентов живут только в памяти (P-176)
+d ${RAW_DIR} 0755 root root -
+d ${RAW_DIR}/hy 0700 ${owner:-root} ${group:-root} -
+d ${RAW_DIR}/caddy 0700 ${cuser} ${cuser} -"
+    if [ "$(cat "$TMPFILES_CONF" 2>/dev/null)" != "$want" ]; then
+        mkdir -p "$(dirname "$TMPFILES_CONF")" 2>/dev/null
+        printf '%s\n' "$want" > "$TMPFILES_CONF" 2>/dev/null
+    fi
+    [ -d "$RAW_DIR/hy" ] && [ -d "$RAW_DIR/caddy" ] && return 0
+    systemd-tmpfiles --create "$TMPFILES_CONF" >/dev/null 2>&1 || {
+        mkdir -p "$RAW_DIR/hy" "$RAW_DIR/caddy"
+        chown "${owner:-root}:${group:-root}" "$RAW_DIR/hy" 2>/dev/null
+        chown "$cuser:$cuser" "$RAW_DIR/caddy" 2>/dev/null
+        chmod 700 "$RAW_DIR/hy" "$RAW_DIR/caddy"
+    }
+}
+
+# Настоящие адреса Hysteria старше часа не нужны и tc-раскладке.
+raw_authmap_trim() {
+    [ -s "$RAW_AUTHMAP" ] || return 0
+    local tmp="${RAW_AUTHMAP}.tmp.$BASHPID"
+    awk -F'|' -v cut=$(( $(date +%s) - RAW_RETENTION_SEC )) 'NF>=3 && $3+0>=cut' "$RAW_AUTHMAP" > "$tmp" \
+        && cat "$tmp" > "$RAW_AUTHMAP"
+    rm -f "$tmp"
+}
+
+# ExecStart демона, чей вывод уходит в journald только через фильтр адресов.
+# Демон и фильтр — один конвейер: упал демон — закончился ввод фильтра, а
+# pipefail отдаёт systemd код самого демона, так что Restart= работает как раньше.
+logscrub_execstart() {   # "команда демона" -> значение ExecStart
+    printf "/bin/bash -c 'set -o pipefail; %s 2>&1 | python3 -u %s scrub %s'" "$1" "$IPHASH_PY" "$IP_SALT_FILE"
+}
+
+# Вывод Hysteria — через фильтр. Юнит ставит её установщик, поэтому не правим
+# его, а кладём drop-in с исходной командой из самого юнита. Поменялся — один
+# рестарт Hysteria (клиенты переподключатся сами).
+hy_logscrub_ensure() {
+    local frag orig dropin want
+    frag=$(systemctl show "$SERVICE" -p FragmentPath --value 2>/dev/null)
+    [ -f "$frag" ] || return 0
+    orig=$(sed -n 's/^ExecStart=\(.\+\)$/\1/p' "$frag" | head -1)
+    [ -n "$orig" ] || return 0
+    dropin="/etc/systemd/system/${SERVICE%.service}.service.d/20-hy2-logscrub.conf"
+    want="# hy2-manager (P-176): адреса клиентов в журнал — только хэшем
+[Service]
+ExecStart=
+ExecStart=$(logscrub_execstart "$orig")"
+    [ "$(cat "$dropin" 2>/dev/null)" = "$want" ] && return 0
+    mkdir -p "$(dirname "$dropin")" && printf '%s\n' "$want" > "$dropin" || return 1
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl restart "$SERVICE" >/dev/null 2>&1
+}
+
+# Всё, что держит адреса скрытыми, — одной идемпотентной точкой. Зовётся из
+# --online-sync: на ноду, куда никто не заходит, приезжает с ближайшим кроном.
+ip_privacy_ensure() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    raw_dirs_ensure
+    ip_salt_sync
+    # Скрипт аутентификации старой версии пишет адреса открытыми — переложить.
+    [ -f "$AUTH_SCRIPT" ] && ! grep -q '^RAWMAP=' "$AUTH_SCRIPT" 2>/dev/null \
+        && declare -F install_auth_script >/dev/null && install_auth_script
+    raw_authmap_trim
+    hy_logscrub_ensure
+    declare -F proto_logscrub_ensure >/dev/null && proto_logscrub_ensure
+    declare -F caddy_rawlog_ensure >/dev/null && caddy_rawlog_ensure
+    return 0
+}
+
 # Ставит срок хранения журнала. Идемпотентна: файл на месте и совпадает —
 # выходим молча, поэтому её дёшево звать на каждом старте менеджера. Правит
 # журнал ноды целиком, а не только своих юнитов: journald нарезает срок на
@@ -160,12 +319,14 @@ collect_ips() {
     journalctl -u "$SERVICE" --no-pager -o cat --since="$since_ts" 2>/dev/null \
       | grep -F 'client connected' \
       | awk '{
-            # addr/remote/client — на разных версиях по-разному; берём IPv4 до «:».
+            # addr/remote/client — на разных версиях по-разному; берём адрес до «:».
             # Значение достаём разбором по кавычкам: не зависит от пробелов.
             # Закрывающую кавычку НЕ требуем: адрес в логе с портом («ip:port»),
-            # значение обрывается на первом же символе не из класса.
+            # значение обрывается на первом же символе не из класса. В журнале
+            # уже хэш «h<hex>» (фильтр вывода Hysteria, P-176), в строках до
+            # фильтра — IPv4; их ниже переводит ip_scrub.
             ip = ""; user = ""
-            if (match($0, /"(addr|remote|client)"[ \t]*:[ \t]*"[0-9.]+/)) {
+            if (match($0, /"(addr|remote|client)"[ \t]*:[ \t]*"[0-9a-f.h]+/)) {
                 s = substr($0, RSTART, RLENGTH); n = split(s, q, "\""); ip = q[n]
             }
             # id (имя из auth-скрипта); username — на случай иного формата лога.
@@ -174,6 +335,7 @@ collect_ips() {
             }
             if (ip != "" && user != "" && ip != "127.0.0.1") printf "%s\t%s\n", user, ip
         }' \
+      | ip_scrub \
       | _ips_merge "$IPS_FILE" "$now"
 }
 
@@ -292,6 +454,19 @@ get_user_ips() {
 # X-Hwid + модель + версию ОС; Hiddify и v2rayNG — только User-Agent. Поэтому
 # hwid может быть пустым, и «-» тут не «неизвестное устройство», а «клиент не
 # представился»: все такие запросы по одному токену сливаются в одну строку.
+# Отдаёт накопленный лог Caddy и обнуляет его. Caddy пишет с O_APPEND, поэтому
+# обнуление безопасно: следующая строка ляжет в начало. Строка, пришедшая между
+# cat и обнулением, теряется — это одна загрузка подписки, IP вернётся со
+# следующей. Ротированные куски (roll_size) забираем и удаляем.
+_caddy_rawlog_take() {
+    local f
+    for f in "${CADDY_RAW_LOG%.log}"-*.log "$CADDY_RAW_LOG"; do
+        [ -s "$f" ] || continue
+        cat "$f"
+        if [ "$f" = "$CADDY_RAW_LOG" ]; then : > "$f"; else rm -f "$f"; fi
+    done
+}
+
 collect_sub_ips() {
     command -v jq >/dev/null 2>&1 || return 0
     command -v journalctl >/dev/null 2>&1 || return 0
@@ -307,12 +482,18 @@ collect_sub_ips() {
 
     # Один проход по журналу на оба файла: journalctl по трём суткам лога — самая
     # дорогая часть сбора, и делать её дважды только ради второй проекции нельзя.
-    raw=$(mktemp) || return 0
+    # Промежуточный файл держит настоящие адреса — значит, он в памяти (RAW_DIR).
+    raw_dirs_ensure
+    raw=$(mktemp -p "$RAW_DIR" 2>/dev/null) || return 0
 
+    # Источник — лог Caddy в RAW_DIR (caddy_rawlog_ensure, P-176): забираем и
+    # обнуляем, так адреса в нём живут до ближайшего сбора. Журнал — для ноды,
+    # где Caddy ещё не переключён, и для строк, записанных до переключения.
     # fromjson? пропускает не-JSON и служебные строки Caddy. remote_ip (новые
     # версии) или remote_addr «ip:port» (старые). Значения заголовков у Caddy —
     # массивы, отсюда `// [""] | .[0]`.
-    journalctl -u caddy --no-pager -o cat --since="$since" 2>/dev/null \
+    { _caddy_rawlog_take
+      journalctl -u caddy --no-pager -o cat --since="$since" 2>/dev/null; } \
       | grep -F '/sub/' \
       | jq -rR 'fromjson?
                 | select(.request?.uri != null)
@@ -375,6 +556,7 @@ collect_sub_ips() {
             }' > "$raw"
 
     awk -F'\t' -v OFS='\t' '$1 == "IP" { print $2, $3 }' "$raw" \
+      | ip_scrub \
       | _ips_merge "$SUBIPS_FILE" "$now"
     awk -F'\t' -v OFS='\t' '$1 == "APP" { print $2, $3, $4, $5, $6, $7 }' "$raw" \
       | _ips_merge "$SUBAPPS_FILE" "$now" 4

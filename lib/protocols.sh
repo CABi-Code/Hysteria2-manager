@@ -610,6 +610,18 @@ EOF
 }
 
 # ---------------- systemd-юниты ----------------
+# Xray пишет в журнал адреса клиентов («TLS handshake error from <адрес>»), поэтому
+# его вывод идёт через фильтр адресов (P-176, logscrub_execstart). Юнит старой
+# формы переписываем и перезапускаем Xray один раз.
+proto_logscrub_ensure() {
+    proto_xray_needed || return 0
+    local unit="/etc/systemd/system/${XRAY_SERVICE}"
+    [ -f "$unit" ] || return 0
+    grep -qF "$IPHASH_PY" "$unit" && return 0
+    proto_write_units
+    systemctl restart "$XRAY_SERVICE" >/dev/null 2>&1
+}
+
 proto_write_units() {
     if proto_xray_needed; then
         cat > "/etc/systemd/system/${XRAY_SERVICE}" <<EOF
@@ -619,7 +631,7 @@ After=network.target nss-lookup.target
 
 [Service]
 Type=simple
-ExecStart=${XRAY_BIN} run -c ${XRAY_CONFIG}
+ExecStart=$(logscrub_execstart "${XRAY_BIN} run -c ${XRAY_CONFIG}")
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
@@ -1089,6 +1101,15 @@ proto_disable_protocol() {   # name
 # юзер (общий CGNAT, семья, офис), НЕ попадает в вывод вовсе: на нём атрибуция
 # по IP означала бы записать чужие байты в чужую квоту. Недосчитать безопаснее.
 TUIC_IP_OWNER_WINDOW_DAYS="${TUIC_IP_OWNER_WINDOW_DAYS:-7}"
+
+# sing-box отдаёт настоящий sourceIP, а ips.dat/authmap.dat держат хэши (P-176).
+# Печатает «адрес<TAB>хэш» по уникальным адресам ответа /connections — одним
+# вызовом хэшера на весь снимок, а не по процессу на соединение.
+_tuic_source_hash_lines() {   # json /connections
+    printf '%s' "$1" | jq -r '(.connections // [])[] | .metadata.sourceIP // empty' 2>/dev/null \
+        | sort -u | ip_hash_map
+}
+
 _proto_ip_sole_owner_lines() {
     local cut=$(( $(date +%s) - TUIC_IP_OWNER_WINDOW_DAYS * 86400 ))
     {
@@ -1131,11 +1152,16 @@ proto_collect_tuic_traffic() {
             [ -n "$id" ] && [[ "$bytes" =~ ^[0-9]+$ ]] && _prev[$id]=$bytes
         done < "$prev"
     fi
-    # ip -> ЕДИНСТВЕННЫЙ юзер этого адреса (см. _proto_ip_sole_owner_lines).
-    local ip user
+    # хэш адреса -> ЕДИНСТВЕННЫЙ юзер (см. _proto_ip_sole_owner_lines), адрес
+    # соединения -> его хэш (_tuic_source_hash_lines).
+    local ip user h
+    declare -A _hash
     while IFS=$'\t' read -r ip user; do
         [ -n "$ip" ] && [ -n "$user" ] && _owner[$ip]=$user
     done < <(_proto_ip_sole_owner_lines)
+    while IFS=$'\t' read -r ip h; do
+        [ -n "$ip" ] && _hash[$ip]=$h
+    done < <(_tuic_source_hash_lines "$conns")
 
     : > "$newprev"
     local id bytes p d
@@ -1146,7 +1172,8 @@ proto_collect_tuic_traffic() {
         # следующем тике их байты пришли бы дельтой «с нуля» и, если адрес к тому
         # времени стал однозначным, разом записались бы одному юзеру.
         printf '%s\t%s\n' "$id" "$bytes" >> "$newprev"
-        user=${_owner[$ip]:-}; [ -n "$user" ] || continue
+        h=${_hash[$ip]:-}; [ -n "$h" ] || continue
+        user=${_owner[$h]:-}; [ -n "$user" ] || continue
         p=${_prev[$id]:-0}
         if [ "$bytes" -ge "$p" ]; then d=$(( bytes - p )); else d=$bytes; fi   # d<0 = переоткрытый id
         [ "$d" -gt 0 ] && _du[$user]=$(( ${_du[$user]:-0} + d ))
@@ -1241,11 +1268,20 @@ proto_tuic_activity_lines() {   # [bytes|conns|ips]
     # sourceIP+bytes каждого TUIC-соединения -> резолв в юзера -> сумма.
     # В режиме ips вместо суммы печатаем сами пары «user|ip» (разные IP одного
     # юзера, без повторов) — из них считается число устройств, см. refresh_online.
+    # ips.dat держит хэши: адрес соединения сначала переводим в хэш. В режиме
+    # ips печатаем настоящий адрес — refresh_online хэширует его сам, а tc-раскладке
+    # (CACHED_PROTO_IPS_RAW) нужен именно он.
+    declare -A _hash
+    local h
+    while IFS=$'\t' read -r ip h; do
+        [ -n "$ip" ] && _hash[$ip]=$h
+    done < <(_tuic_source_hash_lines "$conns")
     declare -A _du _seen
     local bytes u2
     while IFS=$'\t' read -r ip bytes; do
         [ -n "$ip" ] || continue
-        u2=${_ipuser[$ip]:-}; [ -n "$u2" ] || continue
+        h=${_hash[$ip]:-}; [ -n "$h" ] || continue
+        u2=${_ipuser[$h]:-}; [ -n "$u2" ] || continue
         if [ "$mode" = ips ]; then
             [ -n "${_seen[$u2|$ip]:-}" ] || { _seen[$u2|$ip]=1; echo "${u2}|${ip}"; }
             continue
@@ -1455,7 +1491,10 @@ proto_tuic_kick() {   # user -> 0 если что-то закрыли
         "http://127.0.0.1:${SINGBOX_API_PORT}/connections" 2>/dev/null)
     { [ -n "$conns" ] && echo "$conns" | jq empty 2>/dev/null; } || return 1
 
-    ips=$(_proto_ip_sole_owner_lines | awk -F'\t' -v u="$user" '$2==u{print $1}')
+    # Владельцы известны по хэшу, а блокировать файрволом надо настоящий адрес:
+    # берём адреса живых соединений, чей хэш принадлежит этому юзеру (P-176).
+    ips=$(awk -F'\t' 'NR==FNR { if ($2==u) mine[$1]=1; next } ($2 in mine) { print $1 }' u="$user" \
+            <(_proto_ip_sole_owner_lines) <(_tuic_source_hash_lines "$conns"))
     [ -n "$ips" ] || return 1
 
     # Сначала запираем дверь, потом выставляем: закрой мы потоки первыми,

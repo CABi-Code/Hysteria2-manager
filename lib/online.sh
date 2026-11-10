@@ -34,11 +34,18 @@ refresh_online() {   # [force]
     # его видели (P-45).
     # Сырой ответ Hysteria и адреса доп. протоколов держим и по отдельности:
     # по ним журнал киков показывает, какой источник дал какой адрес (P-172).
+    # Движки отдают настоящие адреса — они остаются только в памяти этого
+    # процесса (CACHED_PROTO_IPS_RAW, для tc-раскладки), всё остальное видит
+    # хэши: адреса Hysteria уже хэшами лежат в authmap.dat (P-176).
     CACHED_HY_ONLINE=$hy
-    CACHED_PROTO_IPS=$(declare -F proto_online_ip_lines >/dev/null 2>&1 && proto_online_ip_lines 2>/dev/null)
+    CACHED_PROTO_IPS_RAW=$(declare -F proto_online_ip_lines >/dev/null 2>&1 && proto_online_ip_lines 2>/dev/null)
+    CACHED_PROTO_IPS=$([ -n "$CACHED_PROTO_IPS_RAW" ] && printf '%s\n' "$CACHED_PROTO_IPS_RAW" | ip_scrub)
+    # Через хэшер идёт и Hysteria: в authmap.dat уже хэши, но строка, которую
+    # старый auth-скрипт успел дописать открытой (окно выкатки), иначе стала бы
+    # вторым «устройством» рядом с хэшем того же адреса — и кик.
     CACHED_ONLINE_IPS=$(
         {
-            _online_hysteria_ip_lines "$hy"
+            _online_hysteria_ip_lines "$hy" | ip_scrub
             printf '%s\n' "$CACHED_PROTO_IPS"
         } | awk -F'|' 'NF>=2 && $1!="" && $2!="" && !seen[$1"|"$2]++ {print $1"|"$2}'
     )

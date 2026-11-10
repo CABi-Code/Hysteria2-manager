@@ -74,6 +74,7 @@ KNOWN = {
     "cluster_state.dat": ("Состояние соседних узлов", False),
     "cluster.conf": ("Список узлов кластера", False),
     "cluster.secret": ("Общий секрет кластера", False),
+    "ip_salt": ("Соль хэширования адресов на текущий месяц: адреса хранятся только хэшем", False),
     "cluster_pwreset.dat": ("Очередь смены паролей по кластеру", False),
     "node.conf": ("Настройки этого узла", False),
     "bot.conf": ("Настройки бота", False),

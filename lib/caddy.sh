@@ -126,7 +126,10 @@ ${extra_block}${domain} {
     root * ${WEBROOT}
 ${bind_line}
     log {
-        output stderr
+        output file ${CADDY_RAW_LOG} {
+            roll_size 10MiB
+            roll_keep 1
+        }
         format json
     }
     @cluster_noauth {
@@ -221,6 +224,20 @@ HTML
 # же видит активная проверка порта REALITY (P-165). Условие — «в Caddyfile НЕТ
 # корня на NODEPAGE_DIR», а не «есть старый текст» (урок P-133). Терминируется
 # сама: после регенерации строка root на месте.
+# Access-лог сайта ноды — в файл в RAW_DIR (память), а не в journald: в нём
+# адреса тех, кто скачивает подписку, и в журнале они жили бы открытыми
+# JOURNAL_RETENTION_DAYS. collect_sub_ips забирает его, хэширует адреса и
+# обнуляет (P-176). Условие — «нет нужного»: регенерация саму себя завершает.
+# Каталог создаём ДО перечитывания: Caddy без него не откроет лог и откажется
+# от нового конфига (setup_caddy при этом откатит на прежний).
+caddy_rawlog_ensure() {
+    sub_enabled || return 0
+    [ -f "$CADDYFILE" ] || return 0
+    grep -qF "output file ${CADDY_RAW_LOG}" "$CADDYFILE" 2>/dev/null && return 0
+    raw_dirs_ensure
+    setup_caddy >/dev/null 2>&1
+}
+
 migrate_caddy_nodepage() {
     sub_enabled || return 0
     [ -f "$CADDYFILE" ] || return 0

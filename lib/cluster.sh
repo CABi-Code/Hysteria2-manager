@@ -113,7 +113,15 @@ cluster_peer_name() {   # host -> name
 cluster_call() {   # host path [timeout] -> stdout
     local host="$1" path="$2" to="${3:-8}" secret
     secret=$(cluster_secret)
-    curl -fsS --max-time "$to" -H "X-Cluster-Auth: $secret" "https://${host}${path}" 2>/dev/null
+    # Разделы с адресами клиентов проходят хэшер ДО записи в кэш: сосед на
+    # старой версии ещё шлёт адреса открытыми, а у нас они так лежать не должны
+    # (P-176). Хэш у соседа с той же солью проходит без изменений.
+    case "$path" in
+        /cluster/stats|/cluster/ips|/cluster/subips|/cluster/online)
+            curl -fsS --max-time "$to" -H "X-Cluster-Auth: $secret" "https://${host}${path}" 2>/dev/null | ip_scrub ;;
+        *)
+            curl -fsS --max-time "$to" -H "X-Cluster-Auth: $secret" "https://${host}${path}" 2>/dev/null ;;
+    esac
 }
 
 # POST к пиру тем же секретом. Отдельно от cluster_call: тот тянет данные

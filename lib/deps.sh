@@ -4,7 +4,7 @@
 # ================================================
 
 check_deps() {
-    for cmd in pwgen jq; do
+    for cmd in pwgen jq python3; do   # python3 — хэшер адресов lib/iphash.py (P-176)
         if ! command -v "$cmd" &>/dev/null; then
             echo "📦 Устанавливаю $cmd..."
             apt update -qq && apt install -y "$cmd" -qq

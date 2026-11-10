@@ -170,6 +170,7 @@ if [ "$1" = "--online-sync" ]; then
     migrate_caddy_nodepage  # корень 443 = нейтральная страница, а не текст про клиентов (P-165)
     migrate_hy_masquerade   # маскарад Hysteria — своя страница, не чужой сайт (P-168)
     migrate_mptcp_off       # CVE-2026-98432: MPTCP off + свежий xray на каждой ноде (P-164)
+    ip_privacy_ensure       # адреса клиентов — только хэшем, соль месяца (P-176)
     rates_timer_ensure      # таймер спидометра ставится сам после обновления ноды
     # TUIC-трафик считаем ЗДЕСЬ (раз в минуту): по дельтам соединений, иначе они
     # успеют закрыться между снимками. До cluster_online_sync — чтобы publish_stats
@@ -214,6 +215,7 @@ migrate_caddy_api_prefix    # /api/* без снятия префикса — We
 migrate_caddy_bind_loopback # bind без 127.0.0.1 — dest REALITY был мёртв изнутри (P-136)
 migrate_caddy_nodepage      # корень 443 = нейтральная страница, а не текст про клиентов (P-165)
 migrate_hy_masquerade       # маскарад Hysteria — своя страница, не чужой сайт (P-168)
+ip_privacy_ensure           # адреса клиентов — только хэшем, соль месяца (P-176)
 rates_timer_ensure          # таймер тика скорости (спидометр мини-аппа)
 setup_stats_api
 collect_traffic

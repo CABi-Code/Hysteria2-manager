@@ -279,7 +279,7 @@ fi
 info "Обновление системы и установка пакетов..."
 export DEBIAN_FRONTEND=noninteractive
 apt update -qq
-apt install -y -qq curl wget unzip sudo ufw openssl pwgen jq ca-certificates cron
+apt install -y -qq curl wget unzip sudo ufw openssl pwgen jq ca-certificates cron python3
 ok "Пакеты установлены"
 
 # ================================================================

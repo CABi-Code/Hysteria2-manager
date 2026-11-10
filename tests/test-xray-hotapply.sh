@@ -24,7 +24,11 @@ EOF
 chmod +x "$XRAY_BIN"
 
 source "$SCRIPT_DIR/lib/config.sh"
+source "$SCRIPT_DIR/lib/ip_tracking.sh"
 source "$SCRIPT_DIR/lib/protocols.sh"
+# ips.dat держит хэши адресов (P-176): тестовые файлы переводим тем же хэшером.
+printf '202611 testsalt 1\n' > "$IP_SALT_FILE"
+h() { printf '%s\n' "$1" | ip_hash_map | cut -f2; }
 
 # systemctl в отдельный лог — в $CALLS должны быть только вызовы xray.
 SYSCALLS="$HY2M_DATA_DIR/syscalls"; : > "$SYSCALLS"
@@ -142,6 +146,7 @@ echo "── Онлайн TUIC (резолв по sourceIP) ──"
 proto_tuic_enabled() { return 0; }   # в п.8 глушили — включаем обратно
 printf 'PROTO_VLESS_ENABLED=1\nPROTO_TROJAN_ENABLED=1\nPROTO_TUIC_ENABLED=1\n' > "$PROTO_CONF"
 printf 'u1|10.0.0.1|100|200|5\nu2|10.0.0.2|100|300|5\n' > "$IPS_FILE"
+_ip_scrub_file "$IPS_FILE"
 curl() {   # заглушка clash_api: у соединений НЕТ metadata.user
     cat <<'JSON'
 {"connections":[
@@ -168,7 +173,8 @@ NOW=$(date +%s)
 printf 'u1|10.0.0.1|%s|%s|3\nu2|10.0.0.2|%s|%s|3\nu3|10.0.0.2|%s|%s|1\n' \
     "$NOW" "$NOW" "$NOW" "$NOW" "$NOW" "$NOW" > "$IPS_FILE"
 : > "$AUTHMAP_FILE"
-is "общий адрес не резолвится" "$(_proto_ip_sole_owner_lines | sort | tr '\n' ' ')" "10.0.0.1	u1 "
+_ip_scrub_file "$IPS_FILE"
+is "общий адрес не резолвится" "$(_proto_ip_sole_owner_lines | sort | tr '\n' ' ')" "$(h 10.0.0.1)	u1 "
 
 curl() {   # два соединения u1 (30+90 байт), одно с общего адреса, одно ничьё
     cat <<'JSON'
@@ -253,7 +259,8 @@ is "сменился порт — применяем сразу" "$(restarts)" "
 echo
 echo "── Схлопывание онлайна по IP ──"
 source "$SCRIPT_DIR/lib/online.sh"
-printf 'u1|10.0.0.1|100|200|5\nu2|10.0.0.2|100|300|5\n' > "$IPS_FILE"   # как в п.9
+printf 'u1|10.0.0.1|100|200|5\nu2|10.0.0.2|100|300|5\n' > "$IPS_FILE"
+_ip_scrub_file "$IPS_FILE"   # как в п.9
 curl() {
     cat <<'JSON'
 {"connections":[
@@ -267,6 +274,10 @@ api_get() { [ "$1" = "/online" ] && echo '{"u1":2,"u2":1,"u3":1}'; }   # заг�
 # u2 — только с 10.0.0.2 (уже учтён по TUIC); u3 в authmap отсутствует вовсе.
 printf 'u1|10.0.0.1|1\nu1|10.0.0.7|2\nu2|10.0.0.2|3\n' > "$AUTHMAP_FILE"
 refresh_online
+is "открытая строка authmap (окно выкатки) не стала вторым устройством" "$(echo "$CACHED_ONLINE" | jq -Sc .)" \
+    '{"u1":4,"u2":1,"u3":1}'
+_ip_scrub_file "$AUTHMAP_FILE"   # в проде auth-скрипт пишет хэши (P-176)
+refresh_online force
 is "адрес, общий для протоколов, считается один раз" "$(echo "$CACHED_ONLINE" | jq -Sc .)" \
    '{"u1":4,"u2":1,"u3":1}'
 # force: подряд в одном процессе refresh_online отдаёт кэш (ONLINE_TTL_SEC),

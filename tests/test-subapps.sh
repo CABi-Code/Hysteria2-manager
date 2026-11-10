@@ -11,10 +11,13 @@ set -uo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export HY2M_DATA_DIR=$(mktemp -d)
+export HY2M_RAW_DIR="$HY2M_DATA_DIR/run"
+export HY2M_TMPFILES_CONF="$HY2M_DATA_DIR/tmpfiles.conf"
 trap 'rm -rf "$HY2M_DATA_DIR"' EXIT
 
 source "$SCRIPT_DIR/lib/config.sh"
 source "$SCRIPT_DIR/lib/ip_tracking.sh"
+printf '202611 testsalt 1\n' > "$IP_SALT_FILE"   # адреса ложатся хэшем (P-176)
 
 FAIL=0
 ok()    { echo "  ✅ $1"; }
@@ -99,7 +102,7 @@ evil=$(awk -F'|' '$2 == "evil"' "$SUBAPPS_FILE")
 check "строка злого клиента не разъехалась" "$(printf '%s' "$evil" | awk -F'|' '{print NF}')" "9"
 printf '%s' "$evil" | grep -qP '\t' && bad "таб от клиента попал в файл" || ok "таб от клиента вычищен"
 
-check "адреса собраны тем же проходом" "$(cut -d'|' -f2 "$SUBIPS_FILE" | sort -u)" "5.5.5.5"
+check "адреса собраны тем же проходом" "$(cut -d'|' -f2 "$SUBIPS_FILE" | sort -u)" "$(printf '5.5.5.5\n' | ip_hash_map | cut -f2)"
 
 echo "── удаление по просьбе человека"
 before=$(grep -c . "$SUBAPPS_FILE")

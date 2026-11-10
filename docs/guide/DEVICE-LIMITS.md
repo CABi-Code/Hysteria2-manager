@@ -161,8 +161,8 @@ node_cap(user) = min(NODE_LIMIT, pool_cap)                   # NODE_LIMIT=0 → 
 У кика по нодам впереди ещё `устройств=` (`cluster_active_device_count`) и
 `нод=[active_since|нода …]`.
 
-Адреса полные: журнал локальный, в `DATA_DIR`, а для разбора мобильного NAT
-нужна вся сеть. Ротацией `limit.log` не покрыт ([MAINTENANCE](MAINTENANCE.md)):
+Вместо адресов — их хэши ([DATA-RETENTION](DATA-RETENTION.md#адреса--только-хэшем)):
+совпадение адресов видно, сами адреса — нет. Ротацией `limit.log` не покрыт ([MAINTENANCE](MAINTENANCE.md)):
 строка выросла до ~0,5 КБ, при сотне киков в сутки это ~20 МБ в год.
 
 С 4.15.52 кикаются и доп. протоколы (`proto_kick_user`), каждый своим

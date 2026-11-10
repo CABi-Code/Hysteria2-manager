@@ -7,10 +7,15 @@ set -uo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export HY2M_DATA_DIR=$(mktemp -d)
+export HY2M_RAW_DIR="$HY2M_DATA_DIR/run"
+export HY2M_TMPFILES_CONF="$HY2M_DATA_DIR/tmpfiles.conf"
 trap 'rm -rf "$HY2M_DATA_DIR"' EXIT
 
 source "$SCRIPT_DIR/lib/config.sh"
 source "$SCRIPT_DIR/lib/ip_tracking.sh"
+# Адреса ложатся хэшем (P-176) — сверяем с хэшем той же соли.
+printf '202611 testsalt 1\n' > "$IP_SALT_FILE"
+h() { printf '%s\n' "$1" | ip_hash_map | cut -f2; }
 
 FAIL=0
 ok()    { echo "  ✅ $1"; }
@@ -68,9 +73,9 @@ EOF
 : > "$IPS_FILE"; : > "$LAST_LOG_TS"
 collect_ips
 check "собрали две пары (127.0.0.1 и disconnect мимо)" "$(wc -l < "$IPS_FILE")" "2"
-check "alice → её адрес" "$(grep -c '^alice|203.0.113.7|' "$IPS_FILE")" "1"
+check "alice → её адрес" "$(grep -c "^alice|$(h 203.0.113.7)|" "$IPS_FILE")" "1"
 check "два коннекта alice слились в count=2" "$(grep '^alice|' "$IPS_FILE" | cut -d'|' -f5)" "2"
-check "bob разобран при пробелах вокруг «:»" "$(grep -c '^bob|198.51.100.3|' "$IPS_FILE")" "1"
+check "bob разобран при пробелах вокруг «:»" "$(grep -c "^bob|$(h 198.51.100.3)|" "$IPS_FILE")" "1"
 
 echo "── разбор access-лога Caddy (токены подписки)"
 if command -v jq >/dev/null 2>&1; then
@@ -85,7 +90,7 @@ EOF
     : > "$SUBIPS_FILE"; : > "$SUBLOG_TS"
     collect_sub_ips
     check "два IP по токену abc123" "$(grep -c '^abc123|' "$SUBIPS_FILE")" "2"
-    check "?query отрезан от токена" "$(grep -c '^abc123|198.51.100.5|' "$SUBIPS_FILE")" "1"
+    check "?query отрезан от токена" "$(grep -c "^abc123|$(h 198.51.100.5)|" "$SUBIPS_FILE")" "1"
     check "локалхост и мусорный токен мимо" "$(wc -l < "$SUBIPS_FILE")" "2"
 else
     echo "  ⏭  jq не установлен — пропуск"

@@ -239,7 +239,7 @@ erase_user() {   # user [nomark]
     #    токена (файлы данных «ключ|…» и «ключ:…») либо упоминает их где угодно
     #    (журналы: путь запроса, событие лимита).
     local file removed=0 n
-    for file in "$DATA_DIR"/*.dat "$DATA_DIR"/*.db "$DATA_DIR"/*.log "$PEERS_DIR"/* /var/log/hy2-manager/*.log; do
+    for file in "$DATA_DIR"/*.dat "$DATA_DIR"/*.db "$DATA_DIR"/*.log "$PEERS_DIR"/* /var/log/hy2-manager/*.log "$RAW_AUTHMAP"; do
         [ -f "$file" ] || continue
         case "$(basename "$file")" in
             cluster_state.dat | tgusers.dat | cluster_erase.dat) continue ;;   # метки удаления

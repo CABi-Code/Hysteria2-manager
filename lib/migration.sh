@@ -58,6 +58,9 @@ install_auth_script() {
         echo "MAP=\"${AUTHMAP_FILE}\""
         echo "SLOTS=\"${SLOTPASS_DB}\""
         echo "SLOTMAP=\"${SLOTMAP_FILE}\""
+        echo "RAWMAP=\"${RAW_AUTHMAP}\""
+        echo "IPHASH=\"${IPHASH_PY}\""
+        echo "IPSALT=\"${IP_SALT_FILE}\""
         echo "NODECONF=\"${NODE_CONF}\""
         echo "APISECRET=\"${API_SECRET_FILE}\""
         echo "APIPORT=\"${API_PORT}\""
@@ -130,13 +133,24 @@ if grep -q '^SLOT_REJECT=1' "$NODECONF" 2>/dev/null && [ -r "$APISECRET" ]; then
                                      if ($1==k && $2!="") { print $2; exit } }')
     [ -n "$live" ] && [ "$live" -ge "$maxs" ] 2>/dev/null && exit 1
 fi
-[ -n "$ip" ] && printf '%s|%s|%s|%s\n' "$user" "$slot" "$ip" "$(date +%s)" >> "$SLOTMAP" 2>/dev/null
+# Адрес на диск — только хэшем (P-176, lib/iphash.py). Настоящий нужен лишь
+# tc-раскладке тарифной скорости и живёт в памяти (RAWMAP в /run, час).
+# Без python или соли — «?»: адрес неизвестен, но и не записан открытым.
+now=$(date +%s)
+rawip="$ip"
+if [ -n "$ip" ]; then
+    ip=$(printf '%s\n' "$ip" | python3 "$IPHASH" map "$IPSALT" 2>/dev/null | cut -f2)
+    [ -n "$ip" ] || ip="?"
+    [ -n "$RAWMAP" ] && printf '%s|%s|%s\n' "$user" "$rawip" "$now" >> "$RAWMAP" 2>/dev/null
+fi
+[ -n "$ip" ] && printf '%s|%s|%s|%s\n' "$user" "$slot" "$ip" "$now" >> "$SLOTMAP" 2>/dev/null
 
-# Живой маппинг user→IP для тарифного шейпинга скорости (klimit_reconcile в perf.sh).
-# Один короткий append на подключение (строка < PIPE_BUF → атомарна), файл создаётся
-# под пользователем сервиса в DATA_DIR. Ошибки записи глушим — на auth не влияют.
+# Маппинг user→хэш адреса: из него онлайн берёт адреса Hysteria-сессий (счёт
+# устройств). Один короткий append на подключение (строка < PIPE_BUF → атомарна),
+# файл создаётся под пользователем сервиса в DATA_DIR. Ошибки записи глушим —
+# на auth не влияют.
 if [ -n "$MAP" ] && [ -n "$ip" ]; then
-    printf '%s|%s|%s\n' "$user" "$ip" "$(date +%s)" >> "$MAP" 2>/dev/null
+    printf '%s|%s|%s\n' "$user" "$ip" "$now" >> "$MAP" 2>/dev/null
 fi
 
 printf '%s\n' "$id"
