@@ -53,7 +53,16 @@ _ruprobe_remote_script() {
 PAD="$1"; PADB="$2"
 chk() { # host proto port l4
     local h=$1 p=$2 port=$3 l4=$4 out rc code sz tc tt
-    if [ "$l4" = udp ]; then echo "$h|$p|$port|skip|0|0"; return; fi
+    if [ "$l4" = udp ]; then
+        # QUIC-рукопожатие curl с HTTP/3 (кладёт владелец пробы в ~/bin/curl-h3).
+        # TUIC отказывает по ALPN — но отказ значит «сервер ответил». Hysteria с
+        # salamander на чистый QUIC молчит намеренно, пароль обфускации — секрет,
+        # пробе его не даём: её не проверить.
+        if [ "$p" = hy2 ] || [ ! -x ~/bin/curl-h3 ]; then echo "$h|$p|$port|skip|0|0"; return; fi
+        s=$(date +%s%N); ~/bin/curl-h3 -s --http3-only -o /dev/null --connect-timeout 6 --max-time 10 "https://$h:$port/" 2>/dev/null; rc=$?
+        case "$rc" in 28|7) r=cls ;; *) r=okt ;; esac
+        echo "$h|$p|$port|$r|$(( ($(date +%s%N)-s)/1000000 ))|0"; return
+    fi
     if [ "$p" = ss ]; then
         s=$(date +%s%N); nc -z -w5 "$h" "$port" 2>/dev/null && r=okt || r=cls
         echo "$h|$p|$port|$r|$(( ($(date +%s%N)-s)/1000000 ))|0"; return
