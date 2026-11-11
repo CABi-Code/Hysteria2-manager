@@ -17,6 +17,7 @@ source lib/ruprobe.sh >/dev/null 2>&1
 fail() { echo "FAIL: $*"; exit 1; }
 
 echo "RUPROBE_SSH=probe" > "$RUPROBE_CONF"
+sub_tokens_all() { :; }
 ruprobe_targets() { printf 'А|a.example|vless|8443|tcp\nА|a.example|https|443|tcp\nБ <b>|b.example|https|443|tcp\n'; }
 
 ANSWER=""
@@ -87,6 +88,15 @@ grep -q 'недоступен весь кластер</b> (2 из 2' <<<"$out" |
 ANSWER=""
 for _ in 1 2; do ruprobe_run >/dev/null; done
 grep -q 'Проба сама не на связи' <<<"$(ruprobe_run)" || fail "долгая слепота не объявлена"
+
+# --- 8б. Ключ служебного профиля не поднял туннель — своя причина ---
+rm -f "$RUPROBE_STATE" "$RUPROBE_EPISODE"
+ANSWER='_ru|ctl|0|ok|0|0
+a.example|vless|8443|ok|1|65536
+a.example|vless|8443|tun|1|0
+a.example|ping|0|ok|1|0'
+ruprobe_run >/dev/null
+grep -q "VLESS — ключ не работает" <<<"$(ruprobe_run)" || fail "итог туннеля не перекрыл внешнюю проверку"
 
 # --- 9. Без конфига функция молчит ---
 rm -f "$RUPROBE_CONF"
