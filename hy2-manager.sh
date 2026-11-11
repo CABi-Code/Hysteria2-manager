@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish rublock protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo report ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish rublock protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo report ruprobe ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -169,6 +169,7 @@ if [ "$1" = "--online-sync" ]; then
     migrate_caddy_api_prefix # /api/* без снятия префикса — Web API был мёртв снаружи
     migrate_caddy_bind_loopback # bind без 127.0.0.1 — dest REALITY был мёртв изнутри (P-136)
     migrate_caddy_nodepage  # корень 443 = нейтральная страница, а не текст про клиентов (P-165)
+    nodepage_pad_ensure     # файл > 16 КБ для пробы из РФ (P-147)
     migrate_hy_masquerade   # маскарад Hysteria — своя страница, не чужой сайт (P-168)
     migrate_mptcp_off       # CVE-2026-98432: MPTCP off + свежий xray на каждой ноде (P-164)
     ip_privacy_ensure       # адреса клиентов — только хэшем, соль месяца (P-176)
@@ -198,6 +199,14 @@ if [ "$1" = "--daily-report" ]; then
     cron_lock daily-report
     setup_stats_api
     daily_report
+    exit 0
+fi
+
+if [ "$1" = "--ruprobe" ]; then
+    # Проба доступности из РФ (docs/guide/RU-PROBE.md): печатает «ключ\nHTML»
+    # живого сообщения, пока инцидент открыт; доставку настраивает оператор.
+    cron_lock ruprobe
+    ruprobe_run
     exit 0
 fi
 
