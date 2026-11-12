@@ -72,7 +72,7 @@ cluster_remove_peer() {   # host
         # новичков, ни rates), и новый раздел молча оставлял бы за собой мусор.
         # Тот же класс ошибки, что P-112: список, о котором надо помнить.
         local s
-        for s in $CLUSTER_SYNC_SECTIONS rates; do
+        for s in $CLUSTER_SYNC_SECTIONS rates stats online peers.list; do
             rm -f "$PEERS_DIR/${name}.${s}" 2>/dev/null
         done
     fi
@@ -131,6 +131,75 @@ cluster_post() {   # host path [timeout] -> stdout
     secret=$(cluster_secret)
     curl -fsS -X POST --max-time "$to" -H "X-Cluster-Auth: $secret" \
         "https://${host}/api${path}" 2>/dev/null
+}
+
+# ---- Единственный вход данных пира в кэш --------------------------------
+# Всё, что приезжает от соседа, ложится в `$PEERS_DIR/<имя>.<раздел>` ТОЛЬКО
+# отсюда. Раньше таких мест было семь, каждое со своим `printf > файл`, и ни
+# одно не смотрело, что именно пишет. Три вещи, ради которых вход один:
+#   * форма. Имя профиля и токен из чужого раздела дальше становятся путём
+#     файла, адресом `sed` и аргументом `rm` под root (P-138, P-139). Строка,
+#     у которой ключевое поле не подошло под форму, в кэш не попадает;
+#   * одно соединение. Разделы пира забираются одним curl по одному TLS-каналу,
+#     а не по рукопожатию на раздел: полная синхронизация стоила 23 рукопожатия
+#     на пира, теперь два (проба + забор);
+#   * атомарность. Раздел пишется во временный файл и встаёт на место `mv` —
+#     читатель (тик скорости, Web API) не видит полфайла.
+# Адреса клиентов по дороге хэшируются (P-176) — как раньше в cluster_call.
+
+# Отбросить строки, у которых ключевое поле не похоже на имя/токен.
+_peer_section_filter() {   # раздел ; stdin -> stdout
+    local fs='|' col=1 max=64 empty=0 hash=0
+    case "$1" in
+        state|erase|pwreset|ipforget|expiry|userlimits|abuse|freeplan|ips|roster) ;;
+        rates)          hash=1 ;;             # строки «#ключ|значение» — шапка
+        manifest|stats) fs='\t' ;;
+        subips)         max=128 ;;            # ключ — токен подписки
+        tgbind)         col=2; empty=1 ;;     # пустое имя = отвязка
+        subtokens)
+            awk -F: 'NF==2 && $1 ~ /^[A-Za-z0-9_-]+$/ && length($1) <= 64 \
+                     && $2 ~ /^[A-Za-z0-9_-]+$/ && length($2) >= 16 && length($2) <= 128'
+            return ;;
+        *) cat; return ;;                     # не про профили: разбирает читатель
+    esac
+    awk -F"$fs" -v c="$col" -v max="$max" -v e="$empty" -v h="$hash" '
+        h && /^#/ { print; next }
+        { k = $c }
+        (k == "" && e) || (k ~ /^[A-Za-z0-9_-]+$/ && length(k) <= max)'
+}
+
+# Забрать разделы пира в кэш. Пустой или неудачный ответ прошлый кэш НЕ
+# затирает — кроме разделов из пятого аргумента: там «не ответил» значит «ноль»
+# (онлайн и скорость недоступного пира не должны залипать на старом значении).
+# Имена реально обновлённых разделов — в PEER_PULL_GOT. Код 0 — пришло хоть что-то.
+PEER_PULL_GOT=""
+peer_pull() {   # host name "разделы" [timeout] ["разделы-обнуляемые"]
+    local host="$1" name="$2" to="${4:-8}" zero=" ${5:-} " s dir args=()
+    PEER_PULL_GOT=""
+    mkdir -p "$PEERS_DIR"
+    dir=$(mktemp -d "$PEERS_DIR/.pull.XXXXXX") || return 1
+    for s in $3; do args+=(-o "$dir/$s" "https://${host}/cluster/$s"); done
+    # --fail: на 404 (раздела у старой ноды нет) файл не создаётся вовсе.
+    # --connect-timeout: мёртвый пир стоит 4 с на раздел, а не полный таймаут.
+    curl -sS --fail --connect-timeout 4 --max-time "$to" \
+        -H "X-Cluster-Auth: $(cluster_secret)" "${args[@]}" >/dev/null 2>&1
+    for s in $3; do
+        if [ -s "$dir/$s" ]; then
+            case "$s" in
+                stats|ips|subips|online) ip_scrub < "$dir/$s" ;;
+                *) cat "$dir/$s" ;;
+            esac | _peer_section_filter "$s" > "$dir/$s.ok" 2>/dev/null
+            # Ответ был, а после фильтра пусто — раздел целиком негодный: это
+            # то же, что «не ответил», прошлый кэш остаётся.
+            if [ -s "$dir/$s.ok" ]; then
+                mv -f "$dir/$s.ok" "$PEERS_DIR/${name}.${s}" && PEER_PULL_GOT="$PEER_PULL_GOT $s"
+                continue
+            fi
+        fi
+        case "$zero" in *" $s "*) : > "$PEERS_DIR/${name}.${s}" ;; esac
+    done
+    rm -rf "$dir"
+    [ -n "$PEER_PULL_GOT" ]
 }
 
 # ---- Крючки «сделай сейчас» ---------------------------------------------
@@ -403,8 +472,7 @@ cluster_stats_live() {
     while IFS= read -r host; do
         [ -n "$host" ] || continue
         name=$(cluster_peer_name "$host")
-        data=$(cluster_call "$host" "/cluster/stats" 3)
-        [ -n "$data" ] && printf '%s' "$data" > "$PEERS_DIR/${name}.stats"
+        peer_pull "$host" "$name" stats 3
     done < <(cluster_peers)
 }
 
@@ -523,7 +591,7 @@ cluster_sync() {
         fi
     fi
 
-    local host name data cnt total=0 okp=0 badp=0 s reason
+    local host name got pn ph total=0 okp=0 badp=0 s reason
     while IFS= read -r host; do
         [ -n "$host" ] || continue
         total=$((total + 1))
@@ -544,29 +612,22 @@ cluster_sync() {
         peer_health_set "$host" "$name" 1 ""
         [ -n "$V" ] && echo "✅ подключено"
 
-        # gossip реестра
-        [ -n "$V" ] && printf '     ⬇ реестр пиров (gossip)... '
-        data=$(cluster_call "$host" "/cluster/peers.list")
-        if [ -n "$data" ]; then
-            printf '%s\n' "$data" | while IFS='|' read -r pn ph; do
+        # Реестр пиров (gossip) и все разделы данных — одним заходом, см. peer_pull.
+        peer_pull "$host" "$name" "peers.list $CLUSTER_SYNC_SECTIONS"
+        got=" $PEER_PULL_GOT "
+        case "$got" in *" peers.list "*)
+            while IFS='|' read -r pn ph; do
                 [ -n "$ph" ] && cluster_add_peer "$pn" "$ph"
+            done < "$PEERS_DIR/${name}.peers.list" ;;
+        esac
+        if [ -n "$V" ]; then
+            for s in $CLUSTER_SYNC_SECTIONS; do
+                case "$got" in
+                    *" $s "*) printf '     ⬇ %s... получено (%s зап.)\n' "$(_section_label "$s")" "$(grep -c . "$PEERS_DIR/${name}.${s}")" ;;
+                    *)        printf '     ⬇ %s... нет данных\n' "$(_section_label "$s")" ;;
+                esac
             done
-            [ -n "$V" ] && echo "ок"
-        else
-            [ -n "$V" ] && echo "пусто"
         fi
-
-        # Тянем все разделы данных пира в кэш, с отчётом по каждому.
-        for s in $CLUSTER_SYNC_SECTIONS; do
-            [ -n "$V" ] && printf '     ⬇ %s... ' "$(_section_label "$s")"
-            data=$(cluster_call "$host" "/cluster/$s")
-            if [ -n "$data" ]; then
-                printf '%s\n' "$data" > "$PEERS_DIR/${name}.${s}"
-                if [ -n "$V" ]; then cnt=$(printf '%s\n' "$data" | grep -c .); echo "получено (${cnt} зап.)"; fi
-            else
-                [ -n "$V" ] && echo "нет данных"
-            fi
-        done
         [ -n "$V" ] && echo "     ✅ данные ноды «$name» получены"
         okp=$((okp + 1))
     done < <(cluster_peers)
@@ -973,6 +1034,7 @@ cluster_versions() {
 # Тихое локальное удаление (без печати/сообщений) — для применения tombstone.
 cluster_delete_local() {   # user
     local user="$1" _t
+    valid_name "$user" || return 0   # имя идёт в адрес sed по боевым базам (P-139)
     if [ -f "$SUBTOKENS_DB" ]; then
         _t=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$SUBTOKENS_DB" 2>/dev/null)
         [ -n "$_t" ] && rm -f "$WEBROOT/sub/$_t" 2>/dev/null
@@ -1163,8 +1225,7 @@ cluster_pull_settings() {
     while IFS= read -r host; do
         [ -n "$host" ] || continue
         name=$(cluster_peer_name "$host")
-        data=$(cluster_call "$host" "/cluster/settings" 5)
-        [ -n "$data" ] && printf '%s\n' "$data" > "$PEERS_DIR/${name}.settings"
+        peer_pull "$host" "$name" settings 5
     done < <(cluster_peers)
 }
 
@@ -1383,8 +1444,7 @@ cluster_rates_sync() {
     while IFS= read -r host; do
         [ -n "$host" ] || continue
         name=$(cluster_peer_name "$host")
-        { cluster_call "$host" "/cluster/rates" 5 > "$PEERS_DIR/${name}.rates.tmp.$BASHPID" 2>/dev/null
-          mv "$PEERS_DIR/${name}.rates.tmp.$BASHPID" "$PEERS_DIR/${name}.rates" 2>/dev/null; } &
+        peer_pull "$host" "$name" rates 5 rates &
     done < <(cluster_peers)
     wait
     cluster_scrub_erased   # спидометр тоже носит имена: стёртого не показываем
@@ -1414,33 +1474,14 @@ cluster_online_sync() {
     # это до 4 × 8 с таймаута НА КАЖДОГО пира: один затупивший пир съедал минуту
     # и тик не успевал закончиться до следующего. Теперь худший случай — один
     # таймаут на всех.
-    local host name d
+    local host name
     while IFS= read -r host; do
         [ -n "$host" ] || continue
         name=$(cluster_peer_name "$host")
-        {
-            # Свежая статистика пира; недоступен -> пусто (= 0), не залипаем на старом.
-            cluster_call "$host" "/cluster/stats" > "$PEERS_DIR/${name}.stats.tmp.$BASHPID" 2>/dev/null
-            mv "$PEERS_DIR/${name}.stats.tmp.$BASHPID" "$PEERS_DIR/${name}.stats" 2>/dev/null
-            # Персональные лимиты и анти-абуз пира -> кэш (быстрое распространение
-            # жёсткой проверки, окна авто-HC и балла шаринга). Пустой ответ
-            # (пир недоступен) прошлый кэш НЕ затирает.
-            d=$(cluster_call "$host" "/cluster/userlimits")
-            [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.userlimits"
-            d=$(cluster_call "$host" "/cluster/abuse")
-            [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.abuse"
-            # Состояние демо-профилей пира: по нему отвечает НАШ /v1/demo про
-            # профиль, живущий у него. Пустой ответ прошлый кэш не затирает —
-            # устаревшая шкала лучше пропавшей (свежесть видна по полю ts).
-            d=$(cluster_call "$host" "/cluster/demos")
-            [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.demos"
-            # Свежий манифест пира (в нём испечён онлайн той ноды). Недоступного пира
-            # НЕ трогаем — оставляем прошлый манифест, чтобы не терять его ключи.
-            if [ -n "$need_online" ]; then
-                d=$(cluster_call "$host" "/cluster/manifest")
-                [ -n "$d" ] && printf '%s\n' "$d" > "$PEERS_DIR/${name}.manifest"
-            fi
-        } &
+        # Одним заходом (peer_pull): статистика — недоступен значит ноль, на
+        # старом не залипаем; лимиты, анти-абуз и демо пустой ответ НЕ затирает
+        # (устаревшая шкала лучше пропавшей); манифест — только ради {online}.
+        peer_pull "$host" "$name" "stats userlimits abuse demos${need_online:+ manifest}" 8 stats &
     done < <(cluster_peers)
     wait
 

@@ -106,6 +106,8 @@ if [ "$1" = "--collect" ]; then
     # «файл.tmp.<pid>». Два часа — заведомо больше любой живой записи, так что
     # под метлу попадают только осиротевшие. См. docs/guide/MAINTENANCE.md.
     find "$DATA_DIR" "$WEBROOT" -name '*.tmp.*' -mmin +120 -delete 2>/dev/null
+    # То же для временных каталогов забора данных пира (peer_pull).
+    find "$PEERS_DIR" -maxdepth 1 -name '.pull.*' -mmin +120 -exec rm -rf {} + 2>/dev/null
     exit 0
 fi
 

@@ -512,7 +512,9 @@ regen_user_subscription() {   # user [ip port obfs sni]
     primary=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$SUBTOKENS_DB" 2>/dev/null)
     locals=$(sub_tokens_all "$user")
     while IFS= read -r tok; do
-        [ -n "$tok" ] || continue
+        # Токен становится именем файла, а часть списка — из кэша пиров. Вход
+        # в кэш уже отсеял негодное (peer_pull), это вторая линия (P-138).
+        valid_token "$tok" || continue
         tokpass=""
         [ -n "$content" ] && [ "$tok" != "$primary" ] \
             && printf '%s\n' "$locals" | grep -qxF "$tok" \
