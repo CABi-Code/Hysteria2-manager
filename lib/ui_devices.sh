@@ -103,7 +103,7 @@ user_devices_menu() {
                     local newtok
                     newtok=$(sub_link_add "$user")
                     if [ -n "$newtok" ]; then
-                        sub_refresh
+                        sub_refresh "$user"
                         echo "  ✅ Новая ссылка подписки:"
                         echo "  https://$(node_host)/sub/$newtok"
                         offer_sync
@@ -122,7 +122,7 @@ user_devices_menu() {
                         if [[ "$dsel" =~ ^[0-9]+$ ]] && [ -n "${LINK_TOKENS[$dsel]:-}" ]; then
                             sub_link_remove "$user" "${LINK_TOKENS[$dsel]}"
                             case $? in
-                                0) sub_refresh; echo "  ✅ Ссылка удалена."; offer_sync ;;
+                                0) sub_refresh "$user"; echo "  ✅ Ссылка удалена."; offer_sync ;;
                                 2) echo "  ❌ Основную ссылку удалить нельзя." ;;
                                 *) echo "  ❌ Ссылка не найдена." ;;
                             esac

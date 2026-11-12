@@ -460,7 +460,7 @@ bot_fulfill_payment() {   # chat_id tg_id payload total_amount currency charge_i
     tariff_raise_devices "$user" "$devices"
     tg_bind "$tgid" "$user"
     write_authlimits 2>/dev/null
-    sub_enabled && sub_refresh >/dev/null 2>&1
+    sub_enabled && sub_refresh "$user" >/dev/null 2>&1
 
     # Журнал и уведомления.
     mkdir -p "$DATA_DIR"

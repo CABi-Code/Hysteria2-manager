@@ -111,7 +111,7 @@ disable_user() {
     grep -q "^${user}|" "$DISABLED_FILE" || echo "${user}|${password}" >> "$DISABLED_FILE"
     db_remove_user "$user"
     hy_kick_user "$user" &>/dev/null
-    sub_refresh
+    sub_refresh "$user"
     [ "$silent" != "silent" ] && echo "  ✅ Пользователь $user отключён (применено сразу)"
 }
 
@@ -130,7 +130,7 @@ enable_user() {
         return 1
     fi
     sed -i "/^${user}|/d" "$DISABLED_FILE"
-    sub_refresh
+    sub_refresh "$user"
     echo "  ✅ Пользователь $user включён (применено сразу)"
 }
 
@@ -162,7 +162,7 @@ delete_user() {
         cstate_set "$user" deleted
         publish_cluster_state
     fi
-    sub_refresh
+    sub_refresh "$user"
     declare -F publish_roster >/dev/null && publish_roster
     echo "  ✅ Пользователь $user полностью удалён (применено сразу)"
     if [ "$was_cluster" = 1 ]; then
@@ -492,7 +492,7 @@ change_user_password() {
         # Кикаем — со старым паролем доступ сразу пропадёт, переподключится по новой ссылке.
         hy_kick_user "$user" &>/dev/null
     fi
-    sub_refresh
+    sub_refresh "$user"
     echo "  ✅ Пароль $user обновлён (применено сразу)"
     echo "  🔑 Новый: ${new_pass}"
 }

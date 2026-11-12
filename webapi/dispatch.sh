@@ -90,7 +90,7 @@ case "$verb" in
         [ -n "$pass" ] || fail 1 provision_failed "пустой пароль"
         if [ "$existed" = 0 ]; then
             write_authlimits >/dev/null 2>&1 || true
-            sub_refresh >/dev/null 2>&1 || true
+            sub_refresh "$1" >/dev/null 2>&1 || true
         fi
         printf 'password=%s\n' "$pass"
         if sub_enabled; then

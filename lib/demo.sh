@@ -411,6 +411,6 @@ demo_promote() {   # user
     set_user_limits "$user" "$DEFAULT_DEVICES" 0 "" 0 >/dev/null 2>&1
     declare -F cluster_share_user >/dev/null 2>&1 && cluster_share_user "$user" nosync >/dev/null 2>&1
     write_authlimits >/dev/null 2>&1 || true
-    sub_refresh >/dev/null 2>&1 || true
+    sub_refresh "$user" >/dev/null 2>&1 || true
     return 0
 }

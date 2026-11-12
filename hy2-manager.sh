@@ -140,6 +140,20 @@ if [ "$1" = "--cluster-sync" ]; then
     # Периодический обмен ключами с пирами + пересборка подписок (cron).
     cluster_sync
     cron_done cluster-sync
+    # Флаг полного перевыпуска мог остаться от гонки с фоновым проходом.
+    [ -e "$SUB_DIRTY_FILE" ] && sub_refresh_bg
+    exit 0
+fi
+
+if [ "$1" = "--sub-refresh" ]; then
+    # Фоновый полный перевыпуск подписок после правки одного профиля
+    # (sub_refresh_bg, lib/sub_links.sh). Один прогон за раз; флаг снимается ДО
+    # прохода, поэтому правка, пришедшая во время него, даст ещё один проход.
+    cron_lock sub-refresh
+    while [ -e "$SUB_DIRTY_FILE" ]; do
+        rm -f "$SUB_DIRTY_FILE"
+        sub_refresh
+    done
     exit 0
 fi
 
@@ -372,7 +386,7 @@ add_user_flow() {
     # Если настроена подписка — обновляем её и показываем единую ссылку,
     # которая соберёт ключи этого юзера со всех серверов кластера.
     if sub_enabled; then
-        sub_refresh
+        sub_refresh "$USERNAME"
         echo ""
         echo "  🌐 ССЫЛКА-ПОДПИСКА (все серверы, автообновление):"
         echo "  $(subscription_url "$USERNAME")"

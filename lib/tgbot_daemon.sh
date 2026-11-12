@@ -352,7 +352,7 @@ ${tl:-нет тарифов}
                     set_user_devices "$u" "$dev"; extra="$extra · устройств: $dev"
                 fi
                 write_authlimits 2>/dev/null
-                sub_enabled && sub_refresh >/dev/null 2>&1
+                sub_enabled && sub_refresh "$u" >/dev/null 2>&1
                 tg_send "$chat" "✅ Пользователь <b>$(tg_esc "$u")</b> создан${extra}.
 
 $(bot_access_text "$u")"
