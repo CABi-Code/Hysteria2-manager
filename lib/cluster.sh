@@ -1024,19 +1024,6 @@ cluster_proto_state() {   # node-name proto
         '$1==n && $2==p { printf "%s|%s|%s|%s|%s\n", $3, $4, $5, $6, $7; exit }'
 }
 
-# Список «имя<TAB>host<TAB>версия» по всем нодам кластера (эта + пиры из кэша).
-# Для экрана «версии нод». Версия пира пустая → «?» (ещё не синкнулись/старьё).
-cluster_versions() {
-    printf '%s\t%s\t%s\n' "$(node_name)" "$(node_host)" "${MANAGER_VERSION:-unknown}"
-    local host name ver self; self=$(node_host)
-    while IFS='|' read -r name host; do
-        [ -n "$host" ] && [ "$host" != "$self" ] || continue
-        [ -z "$name" ] && name="$host"
-        ver=$(peer_version "$name"); [ -z "$ver" ] && ver="?"
-        printf '%s\t%s\t%s\n' "$name" "$host" "$ver"
-    done < "$CLUSTER_CONF" 2>/dev/null
-}
-
 # Тихое локальное удаление (без печати/сообщений) — для применения tombstone.
 cluster_delete_local() {   # user
     local user="$1" _t

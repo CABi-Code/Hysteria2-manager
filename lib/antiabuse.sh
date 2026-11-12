@@ -30,7 +30,6 @@
 # Формат: «user|score|updated_ts|auto_hc_until|peak_active|viol_minutes».
 _abuse_row()          { row_by_key "$ABUSE_FILE" "$1"; }
 abuse_score()         { local v; v=$(fld_by_key "$ABUSE_FILE" "$1" 2); [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
-abuse_updated_ts()    { local v; v=$(fld_by_key "$ABUSE_FILE" "$1" 3); [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 abuse_auto_hc_until() { local v; v=$(fld_by_key "$ABUSE_FILE" "$1" 4); [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 abuse_peak_active()   { local v; v=$(_abuse_row "$1" | cut -d'|' -f5); [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0; }
 

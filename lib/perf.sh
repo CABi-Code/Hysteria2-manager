@@ -118,32 +118,6 @@ _perf_commit() {
     return 0
 }
 
-# Установить лимит скорости на клиента в КОНФИГЕ Hysteria. up/down — строки вида
-# "30 mbps" (пусто = сторона без лимита). Оба пустые -> блок bandwidth снимается.
-# При УСТАНОВКЕ лимита принудительно выключаем ignoreClientBandwidth: потолок
-# работает только в режиме Brutal-переговоров; в BBR-режиме он игнорируется.
-set_bandwidth() {   # up down
-    _perf_backup
-    _perf_del_block bandwidth
-    local up="$1" down="$2"
-    if [ -n "$up" ] || [ -n "$down" ]; then
-        {   echo ""
-            echo "bandwidth:"
-            [ -n "$up" ]   && echo "  up: $up"
-            [ -n "$down" ] && echo "  down: $down"
-        } >> "$CONFIG"
-        # Лимит без Brutal не работает — форсируем правильный режим сразу же,
-        # а не через отдельный пункт меню (раньше об этом легко было забыть).
-        _perf_del_block ignoreClientBandwidth
-        { echo ""; echo "ignoreClientBandwidth: false"; } >> "$CONFIG"
-    fi
-    _perf_commit || return 1
-    # Проверяем, что записанное реально читается обратно из конфига.
-    if [ -n "$up" ]   && [ "$(bw_up_get)" != "$up" ];   then _perf_restore; return 1; fi
-    if [ -n "$down" ] && [ "$(bw_down_get)" != "$down" ]; then _perf_restore; return 1; fi
-    return 0
-}
-
 # Режим управления перегрузкой: true = BBR-честность, false = Brutal/по клиенту.
 set_ignore_client_bw() {   # true|false
     _perf_backup
@@ -482,11 +456,6 @@ EOF
 klimit_tiers() {
     local t; t=$(klimit_get TIERS)
     [ -n "$t" ] && echo "$t" || echo "100 200 500"
-}
-klimit_set_tiers() {   # "100 200 500"
-    local list; list=$(printf '%s' "$1" | tr ',' ' ' | tr -s ' ')
-    KLIMIT_SET_TIERS="$list"   # подхватит klimit_apply ниже
-    klimit_apply "$(klimit_down)" "$(klimit_up)"
 }
 # Проверка: rate есть среди классов TARIFFS ($2 — список).
 # Есть ли хоть у одного юзера ненулевой тариф.

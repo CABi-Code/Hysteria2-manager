@@ -338,21 +338,6 @@ restart_hysteria() {
     fi
 }
 
-# Помечает изменения как ожидающие и предлагает перезапустить сейчас.
-# Вызывается после правок конфига (add/delete/disable/enable/смена пароля).
-prompt_apply_restart() {
-    mark_restart_pending
-    echo ""
-    echo "  ⚠️  Изменения вступят в силу только после перезапуска Hysteria."
-    local __ans
-    ask __ans "  Перезапустить сейчас? (отключит всех на пару секунд) (да/нет): "
-    if is_yes "$__ans"; then
-        restart_hysteria
-    else
-        echo "  ⏸  Перезапуск отложен. Применить позже: Настройки → Перезапустить Hysteria."
-    fi
-}
-
 get_ip() {
     curl -4s --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
 }

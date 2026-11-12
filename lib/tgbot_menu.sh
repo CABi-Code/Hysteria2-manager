@@ -26,7 +26,6 @@ EOF
 
 bot_start()  { bot_install_unit; systemctl enable --now hy2-bot.service &>/dev/null; bot_running; }
 bot_stop()   { systemctl disable --now hy2-bot.service &>/dev/null; return 0; }
-bot_remove() { bot_stop; rm -f "$BOT_UNIT"; systemctl daemon-reload 2>/dev/null; }
 bot_restart(){ bot_running && systemctl restart hy2-bot.service &>/dev/null; return 0; }
 
 # ---------- TUI-меню бота (вызывается из настроек менеджера) ----------

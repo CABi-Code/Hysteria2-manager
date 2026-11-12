@@ -231,11 +231,6 @@ cluster_user_speed() {
     echo "$(( ${ltx:-0} + $(_peer_stat_sum "$user" 5) )) $(( ${lrx:-0} + $(_peer_stat_sum "$user" 6) ))"
 }
 
-# Онлайн ли юзер ХОТЬ ГДЕ-ТО в кластере (0/1) — для статуса в списке.
-cluster_user_online_any() {
-    [ "$(cluster_user_connections "$1")" -gt 0 ] 2>/dev/null
-}
-
 # Разбивка по нодам: по строке «node<TAB>online<TAB>tx<TAB>rx<TAB>sptx<TAB>sprx».
 # Сначала эта нода (живые данные), затем пиры из кэша. Только где юзер присутствует.
 cluster_user_breakdown() {

@@ -32,9 +32,6 @@ userlimits_get_ts() {   # user -> ts (0 если нет)
     [[ "$t" =~ ^[0-9]+$ ]] && echo "$t" || echo 0
 }
 
-# Сырая строка «devices|hardcheck|rate» пользователя (пусто, если записи нет).
-_userlimits_row() { row_by_key "$USERLIMITS_FILE" "$1"; }
-
 # Кол-во устройств пользователя (по умолчанию DEFAULT_DEVICES=1).
 get_user_devices() {
     local v; v=$(fld_by_key "$USERLIMITS_FILE" "$1" 2)
@@ -102,9 +99,4 @@ tariff_raise_devices() {   # user tariff_devices
     cur=$(get_user_devices "$user")
     [ "${cur:-0}" -ge "$want" ] 2>/dev/null && return 0
     set_user_devices "$user" "$want"
-}
-
-# Удалить персональные лимиты (например, при полном удалении юзера).
-remove_user_limits() {
-    sed -i "/^${1}|/d" "$USERLIMITS_FILE" "$USERLIMITS_TS_FILE" 2>/dev/null
 }
