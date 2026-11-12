@@ -9,6 +9,7 @@
 | Документ | О чём | Код |
 |---|---|---|
 | [API.md](API.md) | **Web API менеджера** для внешних приложений (мини-апп, биллинг, бот, панель): ключи и scopes, все эндпоинты с примерами, приём платежей Stars | `webapi/*.py`, `webapi/dispatch.sh`, `lib/webapi.sh` |
+| [API-NODE.md](API-NODE.md) · [API-USERS.md](API-USERS.md) · [API-OTHER.md](API-OTHER.md) | Эндпоинты Web API по темам: нода и тарифы · пользователь · демо, Telegram, оплаты, поток, крючки нод. Указатель — в `API.md` | `webapi/` |
 | [MULTIPROTOCOL.md](MULTIPROTOCOL.md) | **Мультипротокол**: VLESS+REALITY, SS-2022, Trojan/WS (Xray), TUIC v5 (sing-box) рядом с Hysteria, единая подписка, деривация кредов | `lib/protocols.sh`, `lib/ui_protocols.sh` |
 | [ONLINE.md](ONLINE.md) | **Онлайн-статус и активность**: активность по всем протоколам, гистерезис, live-пуш через SSE, спидометр | `lib/online.sh`, `lib/publish.sh`, `webapi/wa_online.py` |
 | [DEVICE-LIMITS.md](DEVICE-LIMITS.md) | **Устройства**: что менеджер считает устройством, где хранится персональное число и как оно едет по кластеру, три механизма применения (кик по адресам, жёсткая проверка по нодам, анти-абуз), чего они не держат | `lib/limits.sh`, `lib/devlimits.sh`, `lib/online.sh`, `lib/antiabuse.sh` |
@@ -20,6 +21,7 @@
 | [SLOTS.md](SLOTS.md) | **Слоты**: устройство опознаётся по креду, а не по адресу — у каждой доп. ссылки подписки свой пароль Hysteria. Реализована фаза A (отказа на занятом слоте ещё нет) | `lib/sub_links.sh`, `lib/migration.sh`, `lib/users.sh` |
 | [SPEED-LIMITS.md](SPEED-LIMITS.md) | **Лимит скорости для всех протоколов**: tc HTB + fq_codel, пер-IP тарифные классы | `lib/perf.sh`, `lib/ui_perf.sh` |
 | [PEER-HEALTH.md](PEER-HEALTH.md) | **Здоровье пиров**: почему недоступная нода была не видна в TUI, диагноз пира (DNS / TLS / секрет), `.health`, баннер в главном меню | `lib/cluster.sh`, `lib/config.sh`, `hy2-manager.sh` |
+| [NODE-HEALTH.md](NODE-HEALTH.md) | **Самодиагноз ноды и дозор кластера**: справка ноды о себе в разделе `health` (юниты, свежесть кронов, сертификат, диск), разбор в беды у соседей, самолечение упавших юнитов, `--health`, живое сообщение `--watch` | `lib/health.sh`, `lib/cluster.sh` (`cluster_health_report`), `hy2-manager.sh` |
 | [CLUSTER-PROTOCOLS.md](CLUSTER-PROTOCOLS.md) | **Состояние протоколов по кластеру**: снимок «включён / слушает / порт» с каждой ноды, обмен через `/cluster/protocols`, экран в меню протоколов и почему внешней пробы портов нет | `lib/protocols.sh`, `lib/cluster.sh`, `lib/ui_protocols.sh` |
 | [CLUSTER-CHANNELS.md](CLUSTER-CHANNELS.md) | **Каналы связи между нодами**: файловый pull (`/cluster/*`, статика Caddy) против Web API (push «сделай сейчас»), что по какому ходит и почему, как добавить раздел, модель угроз при взломе канала и что ещё стоит перенести | `lib/cluster.sh`, `lib/publish.sh`, `lib/caddy.sh`, `webapi/*` |
 | [CLUSTER-SCOPE.md](CLUSTER-SCOPE.md) | **Область действия настроек в кластере**: локальный профиль против кластерного, что уезжает на другие ноды, правила для нового синхронизируемого поля | `lib/cluster.sh`, `lib/limits.sh`, `lib/ui_users.sh` |

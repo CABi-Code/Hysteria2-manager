@@ -51,7 +51,7 @@ header subscription-userinfo "{sub_info}"
 печатает красным «Квота исчерпана» — при живом безлимитном доступе. Поэтому
 `sub_userinfo_line` отдаёт `SUB_UNLIMITED_BYTES` = 1000 ТиБ: порог «показывать
 ∞» у клиентов — 10 ТиБ, выше него шкалы нет вовсе. Разбор —
-[issues/CLUSTER.md#p-97](../issues/CLUSTER.md#p-97).
+[issues/CLUSTER-CLOSED-1.md#p-97](../issues/CLUSTER-CLOSED-1.md#p-97).
 
 Следствия, которые надо помнить:
 

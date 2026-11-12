@@ -185,7 +185,7 @@ Trojan).
   Маскарад при настоящем серте — `type: file` с нейтральной страницей
   `NODEPAGE_DIR`, той же, что в корне 443 и за dest REALITY: всё, что видит
   сканер на любом порту ноды, — один и тот же «пустой» сайт её домена
-  ([P-165](../issues/PROTOCOLS.md#p-165), [P-168](../issues/PROTOCOLS.md#p-168)).
+  ([P-165](../issues/PROTOCOLS-CLOSED.md#p-165), [P-168](../issues/PROTOCOLS.md#p-168)).
 
 **Серт берётся у Caddy, самоподписанный — только запасной вариант.**
 `proto_sync_certs` копирует по движкам тот самый Let's Encrypt, который Caddy
@@ -201,7 +201,7 @@ Trojan).
 `hy2://`, а серт без `subjectAltName` Go-стек отвергает ещё до проверки
 цепочки. Живьём это выглядело так: в клиенте на Xray-core работал и пинговался
 один VLESS (REALITY серт не проверяет), Trojan/TUIC/HY2 молча отваливались на
-TLS. Подробности и замеры — [issues/PROTOCOLS.md P-50](../issues/PROTOCOLS.md#p-50).
+TLS. Подробности и замеры — [issues/PROTOCOLS.md P-50](../issues/PROTOCOLS-CLOSED.md#p-50).
 
 Отсюда флаг `.tls.trusted` в `$DATA_DIR/proto/`, по которому строятся ключи:
 
@@ -221,7 +221,7 @@ TLS. Подробности и замеры — [issues/PROTOCOLS.md P-50](../is
 | ссылка `hysteria2://` | `build_user_link` (`lib/sub_links.sh`) | подписка, манифест пирам, Web API, бот |
 | JSON-конфиг sing-box | `generate_user_config` (`lib/users.sh`) | пункт 8 карточки юзера в TUI |
 
-Правка только одного из них уже стоила [P-74](../issues/PROTOCOLS.md#p-74):
+Правка только одного из них уже стоила [P-74](../issues/PROTOCOLS-CLOSED.md#p-74):
 конфиг уходил с SNI маскарада и сервер рвал хендшейк, пока ссылка на тот же
 ключ работала. Совпадение обоих путей сторожит `tests/test-client-config.sh`.
 
