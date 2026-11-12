@@ -262,25 +262,40 @@ if [ "$1" = "--bot-daemon" ]; then
 fi
 
 # === ИНИЦИАЛИЗАЦИЯ ===
+# Меню не повторяет работу крона. Миграции, снимок лимитов и правила скорости
+# делает --online-sync каждые две минуты, сбор трафика и адресов — --collect раз
+# в полчаса; открытие меню раньше прогоняло всё это заново и на слабом ядре
+# стоило десятков секунд до первого кадра. Теперь шаг выполняется здесь, только
+# если крон его давно не делал (нода без крона, свежая установка, крон встал) —
+# об этом говорит отметка финиша режима (cron_done, lib/health.sh).
+_cron_fresh() {   # режим минут -> 0, если режим отработал не раньше N минут назад
+    [ -n "$(find "$DATA_DIR/.$1.done" -mmin "-$2" 2>/dev/null)" ]
+}
 
 migrate_auth
 migrate_to_command_auth
-migrate_device_limit        # старый device_limit -> общекластерный POOL_LIMIT
-migrate_caddy_api_prefix    # /api/* без снятия префикса — Web API был мёртв снаружи
-migrate_caddy_bind_loopback # bind без 127.0.0.1 — dest REALITY был мёртв изнутри (P-136)
-migrate_caddy_nodepage      # корень 443 = нейтральная страница, а не текст про клиентов (P-165)
-migrate_hy_masquerade       # маскарад Hysteria — своя страница, не чужой сайт (P-168)
-ip_privacy_ensure           # адреса клиентов — только хэшем, соль месяца (P-176)
-rates_timer_ensure          # таймер тика скорости (спидометр мини-аппа)
+if ! _cron_fresh online-sync 10; then
+    migrate_device_limit        # старый device_limit -> общекластерный POOL_LIMIT
+    migrate_caddy_api_prefix    # /api/* без снятия префикса — Web API был мёртв снаружи
+    migrate_caddy_bind_loopback # bind без 127.0.0.1 — dest REALITY был мёртв изнутри (P-136)
+    migrate_caddy_nodepage      # корень 443 = нейтральная страница, а не текст про клиентов (P-165)
+    migrate_hy_masquerade       # маскарад Hysteria — своя страница, не чужой сайт (P-168)
+    ip_privacy_ensure           # адреса клиентов — только хэшем, соль месяца (P-176)
+    rates_timer_ensure          # таймер тика скорости (спидометр мини-аппа)
+    write_authlimits            # снимок лимитов для скрипта аутентификации
+    klimit_sync_port            # kernel-лимит: перегенерировать правила, если порт сменился
+fi
 setup_stats_api
-collect_traffic
-journal_retention_ensure    # срок жизни журнала: в нём связки «IP ↔ юзер» (P-79)
-collect_ips
-collect_sub_ips
+# Свежие цифры трафика и адресов список пользователей (клавиша 2) собирает сам
+# при входе; здесь — только если получасовой сбор не шёл дольше положенного.
+if ! _cron_fresh collect 40; then
+    collect_traffic
+    journal_retention_ensure    # срок жизни журнала: в нём связки «IP ↔ юзер» (P-79)
+    collect_ips
+    collect_sub_ips
+fi
 check_expired_users
-write_authlimits            # снимок лимитов для скрипта аутентификации
 setup_cron
-klimit_sync_port            # kernel-лимит: перегенерировать правила, если порт сменился
 
 # Самовосстановление подписки: если она настроена, но Caddy лежит или его конфиг
 # битый — открываем порты и пересобираем конфиг автоматически (без действий юзера).
@@ -292,11 +307,15 @@ if sub_enabled; then
     fi
 fi
 
-# Самовосстановление доп. протоколов: если что-то включено, но сервис лежит или
-# конфиг устарел — переустановим/пересоберём и поднимем (идемпотентно, быстро,
-# если движки уже стоят). При выключенных протоколах — no-op.
+# Самовосстановление доп. протоколов — только когда есть что восстанавливать:
+# какой-то из положенных юнитов не работает (тот же список, что у самодиагноза).
+# Раньше полная пересборка конфигов и проверка движков шла на каждом открытии.
 if declare -F proto_any_enabled >/dev/null 2>&1 && proto_any_enabled; then
-    proto_bootstrap >/dev/null 2>&1 || true
+    while IFS='|' read -r _l _u; do
+        systemctl is-active --quiet "$_u" 2>/dev/null && continue
+        proto_bootstrap >/dev/null 2>&1 || true
+        break
+    done < <(health_units | grep -E '^(xray|tuic)\|')
 fi
 
 CACHED_IP=$(get_ip)
