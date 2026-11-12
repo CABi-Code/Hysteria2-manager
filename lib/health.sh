@@ -53,7 +53,7 @@ _health_cert_days() {
             end=$(date -d "$(openssl x509 -in "$crt" -noout -enddate 2>/dev/null | cut -d= -f2)" +%s 2>/dev/null)
             [ -n "$end" ] && echo $(( (end - $(date +%s)) / 86400 )) > "$cache"
         else
-            : > "$cache"
+            echo none > "$cache"      # доверенного сертификата нет вовсе (P-32)
         fi
     fi
     cat "$cache" 2>/dev/null
@@ -101,7 +101,9 @@ health_problems() {   # [peer] — для чужой справки провер
                 if ((kv[1] in lim) && kv[2] ~ /^[0-9]+$/ && kv[2] + 0 > lim[kv[1]])
                     printf "cron:%s\tкрон %s не отрабатывал %d мин\n", kv[1], kv[1], kv[2] / 60
             }
-            if (v["cert_days"] ~ /^-?[0-9]+$/ && v["cert_days"] + 0 < cmin)
+            if (v["cert_days"] == "none")
+                printf "cert\tнет доверенного сертификата — подписка и TLS-протоколы у клиентов не работают\n"
+            else if (v["cert_days"] ~ /^-?[0-9]+$/ && v["cert_days"] + 0 < cmin)
                 printf "cert\tсертификат истекает через %d дн. и не продлевается\n", v["cert_days"]
             if (v["disk"] ~ /^[0-9]+$/ && v["disk"] + 0 >= dmax)
                 printf "disk\tдиск занят на %d%%\n", v["disk"]
@@ -124,6 +126,23 @@ health_heal() {
         systemctl reset-failed "$u" 2>/dev/null
         systemctl start "$u" 2>/dev/null && echo "$l@$now" > "$DATA_DIR/.health_healed"
     done < <(health_units)
+    # Нода с недоверенным сертификатом сама не лечится (P-32): выпуск сорвался
+    # (не было A-записи, закрыт :80), Caddy откатился на свой CA и повторять не
+    # спешит. Перезапуск заставляет его попробовать снова. Судья — настоящий
+    # запрос к себе: рестарт только на отказе проверки цепочки (код curl 60), не
+    # чаще раза в час — потолок Let's Encrypt на неудачные проверки выше.
+    if sub_enabled && [ "$(cat "$DATA_DIR/.health_cert" 2>/dev/null)" = none ]; then
+        last=$(stat -c %Y "$DATA_DIR/.heal.cert" 2>/dev/null || echo 0)
+        if [ $(( now - last )) -ge 3600 ]; then
+            curl -sS --max-time 6 -o /dev/null "https://$(node_host)/" 2>/dev/null
+            if [ $? -eq 60 ]; then
+                touch "$DATA_DIR/.heal.cert"
+                echo "[$(date '+%F %T')] health: сертификат домена недоверенный — перезапускаю Caddy для нового выпуска" >&2
+                systemctl restart caddy 2>/dev/null && echo "cert@$now" > "$DATA_DIR/.health_healed"
+                rm -f "$DATA_DIR/.health_cert"
+            fi
+        fi
+    fi
     return 0
 }
 

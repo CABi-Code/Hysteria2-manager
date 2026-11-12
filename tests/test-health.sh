@@ -52,6 +52,9 @@ cert_days=<i>
 disk=many")
 [ -z "$out" ] || fail "мусорная справка дала беды: $out"
 
+grep -q '^cert	нет доверенного' <<< "$(health_problems peer <<< "ts=$now
+cert_days=none")" || fail "отсутствие доверенного сертификата не объявлено"
+
 # --- 5. Отметка крона ---
 [ "$(cron_age collect)" = 0 ] || fail "нет отметки — возраст должен быть 0 (не тревожим о неизвестном)"
 cron_done collect; touch -d '-2 hours' "$DATA_DIR/.collect.done"
