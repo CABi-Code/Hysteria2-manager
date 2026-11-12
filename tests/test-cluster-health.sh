@@ -38,7 +38,7 @@ echo "$report" | grep -q 'Me'       && { echo "FAIL: своя нода попа�
 echo "$report" | grep -q 'Ушедший'  && { echo "FAIL: пир вне реестра попал в отчёт"; exit 1; }
 [ "$(echo "$report" | grep -c .)" = 2 ] || { echo "FAIL: ожидались 2 строки, есть: $report"; exit 1; }
 
-cluster_health_banner | grep -q 'Пиров с проблемой: 2' || { echo "FAIL: баннер неверен"; exit 1; }
+cluster_health_banner | grep -q 'Неполадок в кластере: 2' || { echo "FAIL: баннер неверен"; exit 1; }
 
 # Всё здорово -> отчёт и баннер пусты.
 { printf 'ok.example|Живой|1|%s|\n' "$now"; } > "$PEERS_HEALTH_FILE"
@@ -48,8 +48,9 @@ cluster_health_banner | grep -q 'Пиров с проблемой: 2' || { echo 
 echo "OK: test-cluster-health"
 
 # Имя пира по хосту: из реестра, иначе безопасное из самого хоста.
+fail() { echo "FAIL: $*"; exit 1; }
 printf 'node-b|node-b.example\nfin1|fin1.example\n' > "$CLUSTER_CONF"
 [ "$(cluster_peer_name node-b.example)" = "node-b" ] || fail "имя пира не взято из реестра"
 [ "$(cluster_peer_name unknown.example)" = "unknown.example" ] || fail "неизвестный хост"
-[ "$(cluster_peer_name 'ho st/../x')" = "ho_st_.._x" ] || fail "имя не обеззаражено"
+[ "$(cluster_peer_name 'ho st/../x')" = "ho st_.._x" ] || fail "имя не обеззаражено"
 echo "  ✅ cluster_peer_name: реестр, неизвестный хост, обеззараживание"

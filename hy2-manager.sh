@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # stdout (хелперы ask/pause в lib/config.sh), а stderr тихо уходит в лог.
 
 # === ЗАГРУЗКА МОДУЛЕЙ ===
-_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish rublock protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo report ruprobe ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
+_required_libs=(config deps api traffic ip_tracking online expiry limits users cron migration node sub_links caddy diagnose devlimits publish rublock protocols antiabuse perf cluster update tgbot tariffs yoomoney tgbot_client tgbot_admin tgbot_daemon tgbot_menu notify webapi freeplan demo report ruprobe health ui ui_users ui_devices ui_perf ui_protocols ui_settings ui_subscription)
 for _lib in "${_required_libs[@]}"; do
     _libpath="$SCRIPT_DIR/lib/${_lib}.sh"
     if [ ! -f "$_libpath" ]; then
@@ -108,6 +108,7 @@ if [ "$1" = "--collect" ]; then
     find "$DATA_DIR" "$WEBROOT" -name '*.tmp.*' -mmin +120 -delete 2>/dev/null
     # То же для временных каталогов забора данных пира (peer_pull).
     find "$PEERS_DIR" -maxdepth 1 -name '.pull.*' -mmin +120 -exec rm -rf {} + 2>/dev/null
+    cron_done collect
     exit 0
 fi
 
@@ -138,6 +139,7 @@ if [ "$1" = "--cluster-sync" ]; then
     cron_lock cluster-sync
     # Периодический обмен ключами с пирами + пересборка подписок (cron).
     cluster_sync
+    cron_done cluster-sync
     exit 0
 fi
 
@@ -192,6 +194,7 @@ if [ "$1" = "--online-sync" ]; then
     klimit_sync_port    # перегенерировать лимит, если сменился порт ИЛИ набор протоколов (SHAPE-дрейф)
     klimit_reconcile    # разложить активные IP по тарифным классам скорости (tc)
     report_sample       # выборка скорости и здоровья пиров для суточного отчёта
+    cron_done online-sync
     exit 0
 fi
 
@@ -210,6 +213,22 @@ if [ "$1" = "--ruprobe" ]; then
     cron_lock ruprobe
     ruprobe_run
     exit 0
+fi
+
+if [ "$1" = "--watch" ]; then
+    # Дозор кластера (docs/guide/NODE-HEALTH.md): «ключ\nHTML» живого сообщения,
+    # пока в кластере подтверждённая неполадка; доставку настраивает оператор.
+    cron_lock watch
+    watch_run
+    exit 0
+fi
+
+if [ "$1" = "--health" ]; then
+    # Картина кластера одной командой, без меню: пусто и код 0 — всё в порядке.
+    out=$(cluster_health_report)
+    [ -z "$out" ] && { echo "💚 Неполадок не видно"; exit 0; }
+    printf '%s\n' "$out"
+    exit 1
 fi
 
 if [ "$1" = "--antiabuse" ]; then
@@ -412,13 +431,12 @@ while true; do
         if is_restart_pending; then
             echo "  ⚠️  Есть изменения, ожидающие перезапуска Hysteria (Настройки → 2)"
         fi
-        if declare -F cluster_health_banner >/dev/null 2>&1; then
-            _cl_banner=$(cluster_health_banner 2>/dev/null)
-            [ -n "$_cl_banner" ] && {
-                echo "  $_cl_banner"
-                cluster_health_report 2>/dev/null | sed 's/^/       · /'
-            }
-        fi
+        # Отчёт считаем ОДИН раз на кадр: баннер — это его число строк.
+        _cl_report=$(cluster_health_report 2>/dev/null)
+        [ -n "$_cl_report" ] && {
+            echo "  🔴 Неполадок в кластере: $(grep -c . <<< "$_cl_report") — часть ключей может не работать у клиентов"
+            sed 's/^/       · /' <<< "$_cl_report"
+        }
         if declare -F manager_update_banner >/dev/null 2>&1; then
             _upd_banner=$(manager_update_banner 2>/dev/null)
             [ -n "$_upd_banner" ] && echo "  🔔 $_upd_banner — обновить: Настройки → 8"

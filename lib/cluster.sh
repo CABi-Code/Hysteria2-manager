@@ -398,25 +398,31 @@ peer_health_set() {   # host name ok reason
 # Пир, по которому синхронизации не было дольше PEER_STALE_SEC, тоже проблема:
 # cron мог не отработать вовсе, и тогда свежего вердикта просто нет.
 PEER_STALE_SEC=900
-cluster_health_report() {
-    [ -s "$PEERS_HEALTH_FILE" ] || return 0
-    local now; now=$(date +%s)
-    local host name ok ts reason age
-    while IFS='|' read -r host name ok ts reason; do
-        [ -n "$host" ] || continue
-        [ "$host" = "$(node_host)" ] && continue          # мы сами
-        # Пир удалён из реестра — старый вердикт не повод для тревоги.
-        grep -q "|$host\$" "$CLUSTER_CONF" 2>/dev/null || continue
-        [[ "$ts" =~ ^[0-9]+$ ]] || ts=0
-        age=$(( now - ts ))
-        if [ "$ok" != "1" ]; then
-            printf '%s (%s) — %s\n' "${name:-$host}" "$host" "${reason:-недоступен}"
-        elif [ "$age" -gt "$PEER_STALE_SEC" ]; then
-            printf '%s (%s) — нет синхронизации %d мин\n' "${name:-$host}" "$host" "$((age / 60))"
-        fi
-    done < "$PEERS_HEALTH_FILE"
-    cluster_coverage_report
+# Все беды кластера строками «код<TAB>текст»: связь с пирами (.health), их и
+# наши справки о себе (lib/health.sh), недостача профилей. Код стабилен между
+# тактами — по нему дозор (watch_run) подтверждает беду вторым тактом.
+_cluster_health_lines() {
+    local now host name ok ts reason age
+    now=$(date +%s)
+    if [ -s "$PEERS_HEALTH_FILE" ]; then
+        while IFS='|' read -r host name ok ts reason; do
+            [ -n "$host" ] || continue
+            [ "$host" = "$(node_host)" ] && continue          # мы сами
+            # Пир удалён из реестра — старый вердикт не повод для тревоги.
+            grep -q "|$host\$" "$CLUSTER_CONF" 2>/dev/null || continue
+            [[ "$ts" =~ ^[0-9]+$ ]] || ts=0
+            age=$(( now - ts ))
+            if [ "$ok" != "1" ]; then
+                printf '%s:down\t%s (%s) — %s\n' "$host" "${name:-$host}" "$host" "${reason:-недоступен}"
+            elif [ "$age" -gt "$PEER_STALE_SEC" ]; then
+                printf '%s:nosync\t%s (%s) — нет синхронизации %d мин\n' "$host" "${name:-$host}" "$host" "$((age / 60))"
+            fi
+        done < "$PEERS_HEALTH_FILE"
+    fi
+    declare -F health_lines >/dev/null 2>&1 && health_lines
+    cluster_coverage_report | sed 's/^\([^ ]*\) /\1:cov\t&/'
 }
+cluster_health_report() { _cluster_health_lines | cut -f2-; }
 
 # Кто из кластерных профилей не заведён у пира. Пир жив, синхронизация идёт, а
 # профиля у него нет — снаружи это выглядит как «в подписке один сервер вместо
@@ -448,7 +454,7 @@ cluster_coverage_report() {
 cluster_health_banner() {
     local bad; bad=$(cluster_health_report | grep -c .) || true
     [ "${bad:-0}" -gt 0 ] || return 0
-    printf '%s' "🔴 Пиров с проблемой: $bad — ключи этих нод могут не работать у клиентов"
+    printf '%s' "🔴 Неполадок в кластере: $bad — часть ключей может не работать у клиентов"
 }
 
 # Живой опрос статистики пиров — для интерактивных экранов, где видно онлайн/
@@ -508,7 +514,7 @@ cluster_join() {   # token
 }
 
 # Метки разделов данных для подробного лога синхронизации. Порядок = порядок опроса.
-CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols updatereq demos netday"
+CLUSTER_SYNC_SECTIONS="manifest subtokens roster state erase pwreset ipforget nodeinfo freeplan ips expiry settings userlimits subips abuse tgbind version protocols updatereq demos netday health"
 _section_label() {
     case "$1" in
         manifest)   echo "ключи" ;;
@@ -1463,6 +1469,7 @@ cluster_online_sync() {
     # кластеру быстро, а не только по 5-минутной cluster_sync.
     publish_cluster_userlimits
     publish_cluster_abuse
+    declare -F publish_cluster_health >/dev/null 2>&1 && publish_cluster_health   # справка о себе + подъём упавших юнитов
 
     # Если в подписи используется {online} — стягиваем и манифесты пиров (раз в
     # минуту), чтобы онлайн ЧУЖИХ нод в нашей подписке был свежим, а не раз в
@@ -1481,7 +1488,7 @@ cluster_online_sync() {
         # Одним заходом (peer_pull): статистика — недоступен значит ноль, на
         # старом не залипаем; лимиты, анти-абуз и демо пустой ответ НЕ затирает
         # (устаревшая шкала лучше пропавшей); манифест — только ради {online}.
-        peer_pull "$host" "$name" "stats userlimits abuse demos${need_online:+ manifest}" 8 stats &
+        peer_pull "$host" "$name" "stats userlimits abuse demos health${need_online:+ manifest}" 8 stats &
     done < <(cluster_peers)
     wait
 
