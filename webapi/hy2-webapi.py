@@ -685,6 +685,10 @@ class Handler(BaseHTTPRequestHandler):
                                "method_not_allowed" if matched else "no_such_endpoint",
                                "метод не поддерживается" if matched else "нет такого эндпоинта (см. docs/guide/API.md)")
             if scope is not None:
+                src = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip() or "local"
+                if auth_blocked(src):
+                    raise ApiError(429, "rate_limited", "слишком много неудачных попыток",
+                                   {"Retry-After": "60"})
                 key = authenticate(self.headers.get("Authorization"))
                 # Соседняя нода приходит не с ключом, а с общим секретом кластера
                 # (тем же, что в cluster_call) — и только за демо: она заводит
@@ -694,6 +698,7 @@ class Handler(BaseHTTPRequestHandler):
                         and cluster_auth_ok(self.headers.get("X-Cluster-Auth")):
                     key = {"name": "cluster", "scopes": {"read", "users", "cluster"}}
                 if key is None:
+                    auth_failed(src)
                     raise ApiError(401, "unauthorized", "нужен заголовок Authorization: Bearer <ключ>")
                 # Крючки между нодами — ТОЛЬКО по секрету кластера. Проверять
                 # их обычным scope нельзя: ключу приложения могли выдать «*», и
@@ -745,7 +750,10 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         finally:
             ms = int((time.monotonic() - started) * 1000)
-            audit(key["name"] if key else "-", method, path, status, ms)
+            # Отсечённый потолком поток в аудит не пишем: журнал рос бы ровно
+            # с той скоростью, с какой нас заваливают (P-140).
+            if not (status == 429 and key is None):
+                audit(key["name"] if key else "-", method, path, status, ms)
 
     # Потолок дренажа невычитанного тела. Валидные тела ограничены 64 КБ (413);
     # всё, что больше, дешевле не дочитывать, а закрыть соединение.

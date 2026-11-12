@@ -170,6 +170,40 @@ def rate_ok(key_name, rpm):
         return True
 
 
+# --- Потолок на неудачную аутентификацию (P-140) ---
+# Подобрать ключ нереально (40 символов), дорог сам поток: каждый 401 — это
+# чтение webapi.keys и строка в аудит. Источник, набравший AUTH_FAIL_MAX отказов
+# за окно, до конца окна получает 429 сразу — без чтения ключей и без аудита.
+# Источник — адрес из X-Forwarded-For: демон слушает только loopback, заголовок
+# ставит свой Caddy (чужое значение он затирает); запрос без него — локальный.
+AUTH_FAIL_MAX = 30
+AUTH_FAIL_WINDOW = 60.0
+_auth_fail = {}   # источник -> [отказов, начало окна]
+
+
+def auth_blocked(src):
+    with _rate_lock:
+        rec = _auth_fail.get(src)
+        if not rec:
+            return False
+        if time.monotonic() - rec[1] > AUTH_FAIL_WINDOW:
+            del _auth_fail[src]
+            return False
+        return rec[0] >= AUTH_FAIL_MAX
+
+
+def auth_failed(src):
+    now = time.monotonic()
+    with _rate_lock:
+        if len(_auth_fail) > 10000:      # поток с тысяч адресов память не съест
+            _auth_fail.clear()
+        rec = _auth_fail.get(src)
+        if not rec or now - rec[1] > AUTH_FAIL_WINDOW:
+            _auth_fail[src] = [1, now]
+        else:
+            rec[0] += 1
+
+
 def audit(key_name, method, path, status, ms):
     # Стирание следов не должно оставлять след в аудите: сам факт операции
     # записываем, имя профиля — нет, иначе журнал переживёт удаление и вернёт
